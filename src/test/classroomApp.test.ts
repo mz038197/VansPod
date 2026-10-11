@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
+import { createPersistentConnectionStorage } from "../platformStorage";
+import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
+import type { ModelOptions } from "../routeFiles";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -9,6 +12,291 @@ import {
 
 const KEY = "vcr_sk_nick";
 const PROXY = "http://127.0.0.1:47821";
+
+function persistentStorageFake(): ConnectionStorage {
+  const records = createConnectionStorage(createMemorySecureStorage());
+  return {
+    getConnection: () => records.getConnection(),
+    clearConnection: () => records.clearConnection(),
+    async setConnection(connection) {
+      await records.setConnection(connection);
+      return { persistence: "persistent" };
+    },
+  };
+}
+
+it("a committed replacement keeps the new identity and key when Native route restoration fails", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "native" });
+  let failRoutes = false;
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    async setModelOptions() { if (failRoutes) throw new Error(`route failed ${KEY}`); },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  failRoutes = true;
+  await assert.doesNotReject(h.app.redeem("NEW", "New student"));
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().nickname, "New student");
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.app.view().catalog, undefined);
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+  await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().nickname, "New student");
+  await restarted.app.copyKey();
+  assert.equal(restarted.clipboard(), KEY);
+});
+
+it("a new session stays safely Native when publishing its Classroom model options fails", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let failPublish = false;
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    async setModelOptions(value) { if (failPublish && value) throw new Error(KEY); },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  failPublish = true;
+  await assert.doesNotReject(h.app.redeem("NEW", "New student"));
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().nickname, "New student");
+  assert.equal(h.app.view().mode, "native");
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+  await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+});
+
+it("clear during startup waits for restoration and leaves both memory and persistent storage empty", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { storage: {
+    async getConnection() {
+      const snapshot = await disk.getConnection();
+      entered();
+      await gate;
+      return snapshot;
+    },
+    setConnection: connection => disk.setConnection(connection),
+    clearConnection: () => disk.clearConnection(),
+  } });
+  const start = h.app.start();
+  await started;
+  const clear = h.app.clearConnection();
+  release();
+  await Promise.all([start, clear]);
+  assert.equal(h.app.view().connected, false);
+  assert.equal(await disk.getConnection(), undefined);
+  await h.app.start();
+  assert.equal(h.app.view().connected, false);
+});
+
+it("a request arriving during replacement uses the new key and new allowlist together", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, {
+    storage: {
+      getConnection: () => disk.getConnection(),
+      clearConnection: () => disk.clearConnection(),
+      async setConnection(connection) {
+        const result = await disk.setConnection(connection);
+        if (connection.apiKey === KEY) { entered(); await gate; }
+        return result;
+      },
+    },
+    sessionModels: async key => key === KEY ? ["new-only-model"] : ["old-only-model"],
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  const redeem = h.app.redeem("NEW", "New student");
+  await started;
+  const forward = h.app.forward({ client: "codex", model: "old-only-model" });
+  release();
+  await Promise.all([redeem, forward]);
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "new-only-model", apiKey: KEY }]);
+});
+
+it("an in-flight Router response does not block clear or authorize later requests", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sending = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { send: async () => { entered(); await gate; } });
+  await h.app.redeem("NEW", "New student");
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  const forward = h.app.forward({ client: "codex", model: "later" });
+  await sending;
+  const clear = h.app.clearConnection();
+  try {
+    assert.equal(await Promise.race([clear.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100))]), true);
+    await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  } finally {
+    release();
+    await Promise.all([forward, clear]);
+  }
+  assert.equal(h.sent().length, 1);
+});
+
+it("clear requested during a redeem runs after its commit and cannot leave a resurrected class", async () => {
+  const memory = createConnectionStorage(createMemorySecureStorage());
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { storage: {
+    getConnection: () => memory.getConnection(),
+    clearConnection: () => memory.clearConnection(),
+    async setConnection(connection) {
+      entered();
+      await gate;
+      return memory.setConnection(connection);
+    },
+  } });
+  const redeem = h.app.redeem("NEW", "New student");
+  await started;
+  const clear = h.app.clearConnection();
+  release();
+  await Promise.all([redeem, clear]);
+  assert.equal(h.app.view().connected, false);
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(await memory.getConnection(), undefined);
+});
+
+it("committed replacement never reuses the old allowlist or catalog while the new Router is offline", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    sessionModels: async key => {
+      if (key === KEY) throw new Error("offline");
+      return ["old-only-model"];
+    },
+    catalogFetch: async key => {
+      if (key === KEY) throw new Error("offline");
+      return { course_catalog_yaml: REMOTE_YAML };
+    },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.app.view().catalog, undefined);
+  await assert.rejects(h.app.forward({ client: "copilot", model: "old-only-model" }), /沒有上課模型/);
+  assert.equal(h.sent().length, 0);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().nickname, "New student");
+  await restarted.app.copyKey();
+  assert.equal(restarted.clipboard(), KEY);
+});
+
+it("refuses a session replacement when saving and deleting fail, keeping the usable class", async () => {
+  const disk = persistentStorageFake();
+  const old = { version: 1 as const, apiKey: "old-key", session: { class_name: "Old", name: "Lesson" }, nickname: "Old student", mode: "native" as const };
+  await disk.setConnection(old);
+  let refuseWrites = false;
+  const storage = createPersistentConnectionStorage({
+    getConnection: () => disk.getConnection(),
+    async setConnection(connection) {
+      if (refuseWrites) throw new Error(KEY);
+      return disk.setConnection(connection);
+    },
+    async clearConnection() { throw new Error("old-key"); },
+  });
+  const h = harness(undefined, { storage });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  refuseWrites = true;
+  const previous = h.app.view();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, previous.classLabel);
+  assert.equal(h.app.view().nickname, previous.nickname);
+  assert.deepEqual(h.app.view().catalog, previous.catalog);
+  assert.equal(h.app.view().mode, previous.mode);
+  assert.match(h.app.view().notice ?? "", /換堂|連線/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), "old-key");
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "later", apiKey: "old-key" }]);
+  assert.deepEqual(await disk.getConnection(), { ...old, mode: "classroom" });
+});
+
+it("replacement can be temporary only after persistent clearing, and restart never returns to the old class", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "native" });
+  const storage = createPersistentConnectionStorage({
+    getConnection: () => disk.getConnection(),
+    async setConnection() { throw new Error("secure storage unavailable"); },
+    clearConnection: () => disk.clearConnection(),
+  });
+  const h = harness(undefined, { storage });
+  await h.app.start();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+  await h.app.setSwitch("classroom");
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.apiKey, KEY);
+  assert.equal(await disk.getConnection(), undefined);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().connected, false);
+  assert.equal(restarted.app.view().canCopyKey, false);
+});
+
+it("an unreadable stored connection cannot be displaced by a failed redeem commit", async () => {
+  let retained = true;
+  const persistent: ConnectionStorage = {
+    async getConnection() { throw new Error("ciphertext cannot decrypt"); },
+    async setConnection() { throw new Error(KEY); },
+    async clearConnection() { if (retained) throw new Error(KEY); },
+  };
+  const h = harness(undefined, { storage: createPersistentConnectionStorage(persistent) });
+  await h.app.start();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().connected, false);
+  assert.equal(h.app.view().canCopyKey, false);
+  assert.match(h.app.view().notice ?? "", /換堂未完成/);
+  assert.equal(h.modelKeys.length, 0);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  retained = false;
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().connected, true);
+});
+
+it("temporary connections retain the whole record only in the current process storage", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const connection = { version: 1 as const, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native" as const };
+  assert.deepEqual(await storage.setConnection(connection), { persistence: "temporary" });
+  assert.deepEqual(await storage.getConnection(), connection);
+  assert.equal(await createConnectionStorage(createMemorySecureStorage()).getConnection(), undefined);
+  await storage.clearConnection();
+  assert.equal(await storage.getConnection(), undefined);
+});
 
 const REMOTE_YAML = `
 actions:
@@ -27,10 +315,13 @@ snippets:
 function harness(
   session?: { class_name?: string; name?: string },
   options?: {
+    storage?: ConnectionStorage;
+    send?: (upstream: UpstreamSend) => Promise<void>;
     redeemError?: Error;
     catalogYaml?: unknown;
     catalogBody?: { course_catalog_yaml?: unknown };
     catalogError?: Error;
+    catalogFetch?: (key: string) => Promise<{ course_catalog_yaml?: unknown }>;
     files?: Record<string, string | undefined>;
     run?: (cwd: string, command: string, onOutput?: (output: string) => void) => Promise<string>;
     runExitCode?: number;
@@ -45,6 +336,7 @@ function harness(
       cwd: string,
     ) => Promise<{ exitCode: number | undefined; output: string }>;
     providers?: Array<Record<string, unknown>>;
+    setModelOptions?: (value: ModelOptions | null) => Promise<void>;
   },
 ) {
   const redeemCalls: { invite_code: string; nickname: string }[] = [];
@@ -58,7 +350,7 @@ function harness(
   const copilotWrites: { providers: Array<Record<string, unknown>> }[] = [];
   const proxyReceived: string[] = [];
   const sent: UpstreamSend[] = [];
-  let storedKey: string | undefined;
+  const storage = options?.storage ?? createConnectionStorage(createMemorySecureStorage());
   let clipboard = "";
   let clipboardWrites = 0;
   let clipboardError: Error | undefined;
@@ -72,6 +364,7 @@ function harness(
   };
   const routeWrites = { codex: 0, claudeTerminal: 0, vsCode: 0 };
   let codexRouteBackup: { url?: unknown } | undefined;
+  let modelOptions: ModelOptions | null = null;
   const resolvedSession = session ?? { class_name: "Demo", name: "Week 1" };
   const app = new ClassroomApp({
     router: {
@@ -96,6 +389,7 @@ function harness(
     catalog: {
       async fetchCourseCatalog(apiKey) {
         catalogKeys.push(apiKey);
+        if (options?.catalogFetch) return options.catalogFetch(apiKey);
         if (options?.catalogError) {
           throw options.catalogError;
         }
@@ -125,17 +419,7 @@ function harness(
         clipboardWrites += 1;
       },
     },
-    storage: {
-      async getApiKey() {
-        return storedKey;
-      },
-      async setApiKey(apiKey: string) {
-        storedKey = apiKey;
-      },
-      async clearApiKey() {
-        storedKey = undefined;
-      },
-    },
+    storage,
     commands: {
       async run(cwd, command, onOutput) {
         runCalls.push({ cwd, command });
@@ -206,7 +490,10 @@ function harness(
         routeWrites.vsCode += 1;
         docs.vsCode = doc;
       },
-      async setModelOptions() {},
+      async setModelOptions(value) {
+        await options?.setModelOptions?.(value);
+        modelOptions = value && structuredClone(value);
+      },
     },
     copilot: {
       async read() {
@@ -230,6 +517,7 @@ function harness(
     },
     async send(upstream) {
       sent.push({ ...upstream });
+      await options?.send?.(upstream);
     },
   });
   return {
@@ -238,12 +526,14 @@ function harness(
     modelKeys,
     clipboard: () => clipboard,
     clipboardWrites: () => clipboardWrites,
-    storedKey: () => storedKey,
+    storedKey: async () => (await storage.getConnection())?.apiKey,
+    storedConnection: () => storage.getConnection(),
     stops: () => stops,
     proxyStops: () => proxyStops,
     proxyStarts: () => proxyStarts,
     docs,
     routeWrites,
+    modelOptions: () => modelOptions,
     catalogKeys,
     fileReads,
     copilotWrites: () => copilotWrites,
@@ -316,7 +606,7 @@ describe("Classroom App redeem", () => {
     assert.equal(view.sessionTitle, "Week 1");
     assert.equal(view.detail, "Classroom API Key 已設定。");
     assert.equal(view.canCopyKey, true);
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
@@ -337,7 +627,7 @@ describe("Classroom App redeem", () => {
     assert.equal(app.view().connected, false);
     assert.equal(app.view().canCopyKey, false);
     assert.equal(app.view().classLabel, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
     assert.equal(app.view().detail, "");
     assert.equal(app.view().connectionError, "連線失敗，請確認邀請碼與課堂暱稱後再試。");
@@ -360,6 +650,25 @@ describe("Classroom App redeem", () => {
 });
 
 describe("Copy Classroom API Key", () => {
+  it("does not read or forward unreadable saved credentials after startup rejects the connection", async () => {
+    const storage: ConnectionStorage = {
+      async getConnection() { throw new Error(`unreadable ${KEY}`); },
+      async setConnection() { throw new Error("unused"); },
+      async clearConnection() {},
+    };
+    const h = harness(undefined, { storage });
+    await h.app.start();
+    await h.app.copyKey();
+    await h.app.reloadAllowlist();
+    assert.equal(h.app.view().canCopyKey, false);
+    assert.equal(h.clipboardWrites(), 0);
+    assert.equal(renderPage(h.app.view()).includes(KEY), false);
+    await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+    assert.deepEqual(h.sent(), []);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.target, "chatgpt");
+    assert.equal(h.sent().at(-1)?.apiKey, undefined);
+  });
   it("copies the stored key and tells the student not to share it", async () => {
     const { app, clipboard } = harness();
     await app.redeem("ABC12345", "Ada");
@@ -403,6 +712,100 @@ describe("Copy Classroom API Key", () => {
 });
 
 describe("Clear Classroom Connection", () => {
+  for (const persistence of ["temporary", "persistent"] as const) {
+    it(`clears the entire ${persistence} connection across restart while preserving client settings and the running proxy`, async () => {
+      const retained = createConnectionStorage(createMemorySecureStorage());
+      const storage: ConnectionStorage = {
+        getConnection: () => retained.getConnection(),
+        async setConnection(value) { await retained.setConnection(value); return { persistence }; },
+        clearConnection: () => retained.clearConnection(),
+      };
+      const personalProvider = { name: "PersonalProvider", apiKey: "personal-key", models: [{ id: "personal-model" }] };
+      const h = harness(undefined, { storage, codex: { personal: "codex-personal" }, claudeTerminal: { PERSONAL: "claude-personal" }, vsCode: { personal: "vscode-personal" }, providers: [personalProvider], async write() { throw new Error("Workspace MCP Config must remain untouched"); } });
+      await h.app.redeem("invite", "Student");
+      await h.app.start();
+      await h.app.setSwitch("classroom");
+      await h.app.clearConnection();
+      const view = h.app.view();
+      assert.equal(view.connected, false);
+      assert.equal(view.classLabel, undefined);
+      assert.equal(view.nickname, undefined);
+      assert.equal(view.catalog, undefined);
+      assert.equal(view.modelId, undefined);
+      assert.equal(view.mode, "native");
+      assert.equal(view.canCopyKey, false);
+      assert.equal(h.modelOptions(), null);
+      assert.equal(h.proxyStops(), 0);
+      await h.app.copyKey();
+      assert.equal(h.clipboardWrites(), 0);
+      await h.app.forward({ client: "codex", model: "later" });
+      assert.equal(h.sent().at(-1)?.target, "chatgpt");
+      assert.equal(h.sent().at(-1)?.apiKey, undefined);
+      await h.app.forward({ client: "claude", model: "later" });
+      assert.equal(h.sent().at(-1)?.target, "claude.ai");
+      assert.equal(h.sent().at(-1)?.apiKey, undefined);
+      await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+      assert.equal(h.docs.codex.personal, "codex-personal");
+      assert.equal(h.docs.claudeTerminal.PERSONAL, "claude-personal");
+      assert.equal(h.docs.vsCode.personal, "vscode-personal");
+      assert.deepEqual(h.copilotProviders().find(p => p.name === "PersonalProvider"), personalProvider);
+      const restarted = harness(undefined, { storage });
+      await restarted.app.start();
+      assert.equal(restarted.app.view().connected, false);
+      assert.equal(restarted.app.view().mode, "native");
+      assert.equal(restarted.app.view().canCopyKey, false);
+    });
+  }
+  it("stays disconnected and Native when client model restoration fails after credential deletion", async () => {
+    let fail = false;
+    const h = harness(undefined, { async setModelOptions(value) { if (fail && !value) throw new Error(`route failed ${KEY}`); } });
+    await h.app.redeem("invite", "Student");
+    await h.app.start();
+    await h.app.setSwitch("classroom");
+    fail = true;
+    await h.app.clearConnection();
+    const view = h.app.view();
+    assert.equal(view.connected, false);
+    assert.equal(view.mode, "native");
+    assert.equal(view.canCopyKey, false);
+    assert.equal(await h.storedConnection(), undefined);
+    assert.match(view.notice ?? "", /已清除.*Native.*稍後/);
+    assert.equal(renderPage(view).includes(KEY), false);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.target, "chatgpt");
+    assert.equal(h.sent().at(-1)?.apiKey, undefined);
+  });
+  it("reports failed persistent clear without hiding the retained identity or restart behavior", async () => {
+    const retained = createConnectionStorage(createMemorySecureStorage());
+    await retained.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved", name: "Lesson" }, nickname: "Student", mode: "classroom" });
+    const storage: ConnectionStorage = {
+      getConnection: () => retained.getConnection(),
+      setConnection: connection => retained.setConnection(connection),
+      async clearConnection() { throw new Error(`delete failed ${KEY}`); },
+    };
+    const h = harness(undefined, { storage });
+    await h.app.start();
+    const catalog = h.app.view().catalog;
+    await h.app.clearConnection();
+    const view = h.app.view();
+    assert.equal(view.connected, true);
+    assert.equal(view.classLabel, "Saved · Lesson");
+    assert.equal(view.nickname, "Student");
+    assert.equal(view.mode, "classroom");
+    assert.deepEqual(view.catalog, catalog);
+    assert.equal(view.canCopyKey, true);
+    assert.match(view.notice ?? "", /無法清除.*重新啟動/);
+    assert.equal(renderPage(view).includes(KEY), false);
+    await h.app.copyKey();
+    assert.equal(h.clipboard(), KEY);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.apiKey, KEY);
+    assert.equal(h.sent().at(-1)?.target, "router");
+    const restarted = harness(undefined, { storage });
+    await restarted.app.start();
+    assert.equal(restarted.app.view().classLabel, "Saved · Lesson");
+    assert.equal(restarted.app.view().mode, "classroom");
+  });
   it("removes the copy entry and Class Label", async () => {
     const { app, storedKey, clipboardWrites } = harness();
     await app.redeem("ABC12345", "Ada");
@@ -417,7 +820,7 @@ describe("Clear Classroom Connection", () => {
     assert.equal(view.courseTitle, undefined);
     assert.equal(view.sessionTitle, undefined);
     assert.equal(view.notice, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(view.catalog, undefined);
     assert.equal(JSON.stringify(view).includes(KEY), false);
     await app.copyKey();
@@ -437,7 +840,7 @@ describe("Clear Classroom Connection", () => {
     assert.equal(view.canCopyKey, false);
     assert.equal(view.classLabel, undefined);
     assert.equal(view.notice, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(JSON.stringify(view).includes(KEY), false);
     await app.copyKey();
     assert.equal(clipboardWrites(), 0);
@@ -675,7 +1078,7 @@ describe("Course Catalog after redeem", () => {
     const { app, catalogKeys, storedKey, fileReads } = harness();
     await app.redeem("ABC12345", "Ada");
     assert.deepEqual(catalogKeys, [KEY]);
-    assert.equal(catalogKeys[0], storedKey());
+    assert.equal(catalogKeys[0], await storedKey());
     const view = app.view();
     assert.equal(view.catalog?.source, "remote");
     assert.deepEqual(view.catalog?.actions, [
@@ -1755,7 +2158,7 @@ describe("close window", () => {
     assert.equal(app.view().connected, true);
     assert.equal(app.view().classLabel, "Demo · Week 1");
     assert.equal(app.view().canCopyKey, true);
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     await app.copyKey();
     assert.equal(clipboardWrites(), 1);
     assert.equal(stops(), 0);
@@ -1793,7 +2196,7 @@ describe("VCRouter", () => {
       providers: [openRouter],
     });
     await app.redeem("ABC12345", "Ada");
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     await app.start();
     assert.equal(copilotWrites().length, 1);
     const written = copilotWrites()[0];
@@ -1999,4 +2402,230 @@ describe("VCRouter", () => {
     assert.deepEqual(proxyReceived(), ["VCRouter"]);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
+});
+
+it("redeem commits metadata, nickname and mode together through secure storage", async () => {
+ const h = harness();
+ await h.app.redeem(" invite ", " Student ");
+ assert.deepEqual(await h.storedConnection(), {
+  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native",
+ });
+ await h.app.setSwitch("classroom");
+ assert.equal((await h.storedConnection())?.mode, "classroom");
+});
+
+it("does not expose the connection key in installation output", async () => {
+  const h = harness(undefined, { run: async () => `failed credential: ${KEY}` });
+  await h.app.redeem("invite", "Student");
+  await h.app.setProjectFolder("C:/project");
+  h.app.prepare("demo");
+  await h.app.confirm();
+  assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
+  assert.equal(renderPage(h.app.view()).includes(KEY), false);
+});
+
+it("startup restores saved Classroom mode once after fetching a fresh nonempty allowlist", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved", name: "Lesson" }, nickname: "Student", mode: "classroom" });
+  const h = harness(undefined, { storage });
+  await Promise.all([h.app.start(), h.app.start()]);
+  assert.equal(h.app.view().connected, true);
+  assert.equal(h.app.view().classLabel, "Saved · Lesson");
+  assert.equal(h.app.view().nickname, "Student");
+  assert.equal(h.app.view().mode, "classroom");
+  assert.deepEqual(h.modelOptions()?.ids, ["second-looking-but-first", "later"]);
+  await h.app.forward({ client: "codex", model: "second-looking-but-first" });
+  assert.equal(h.sent().at(-1)?.target, "router");
+  assert.deepEqual(h.modelKeys, [KEY]);
+  assert.deepEqual(h.catalogKeys, [KEY]);
+  assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
+});
+
+it("a failed strict mode save preserves current routing and the mode restored next startup", async () => {
+  const retained = createConnectionStorage(createMemorySecureStorage());
+  await retained.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved", name: "Lesson" }, mode: "native" });
+  let fail = true;
+  const storage: ConnectionStorage = {
+    getConnection: () => retained.getConnection(),
+    clearConnection: () => retained.clearConnection(),
+    async setConnection(connection, options) {
+      if (fail && options?.allowTemporary === false) throw new Error(`storage failure ${KEY}`);
+      return retained.setConnection(connection);
+    },
+  };
+  const h = harness(undefined, { storage });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.modelOptions(), null);
+  assert.match(h.app.view().notice ?? "", /模式/);
+  assert.equal(renderPage(h.app.view()).includes(KEY), false);
+  await h.app.forward({ client: "codex", model: "second-looking-but-first" });
+  assert.equal(h.sent().at(-1)?.target, "chatgpt");
+  const restart = harness(undefined, { storage });
+  await restart.app.start();
+  assert.equal(restart.app.view().mode, "native");
+  fail = false;
+  await h.app.setSwitch("classroom");
+  assert.equal(h.app.view().mode, "classroom");
+  fail = true;
+  await h.app.setSwitch("native");
+  assert.equal(h.app.view().mode, "classroom");
+  await h.app.forward({ client: "claude", model: "later" });
+  assert.equal(h.sent().at(-1)?.target, "router");
+  const secondRestart = harness(undefined, { storage });
+  await secondRestart.app.start();
+  assert.equal(secondRestart.app.view().mode, "classroom");
+  fail = false;
+  await h.app.setSwitch("native");
+  const nativeRestart = harness(undefined, { storage });
+  await nativeRestart.app.start();
+  assert.equal(nativeRestart.app.view().mode, "native");
+  assert.equal(nativeRestart.modelOptions(), null);
+});
+
+describe("saved Mode startup availability", () => {
+  for (const mode of ["native", "classroom"] as const) {
+    it(`preserves saved ${mode} across restart when a fresh allowlist is valid`, async () => {
+      const storage = createConnectionStorage(createMemorySecureStorage());
+      await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved" }, mode });
+      const h = harness(undefined, { storage });
+      await h.app.start();
+      assert.equal(h.app.view().mode, mode);
+      assert.equal(h.modelOptions()?.ids.length ?? 0, mode === "classroom" ? 2 : 0);
+      await h.app.forward({ client: "codex", model: "later" });
+      assert.equal(h.sent().at(-1)?.target, mode === "classroom" ? "router" : "chatgpt");
+    });
+  }
+  for (const unavailable of ["offline", "missing", "empty", "malformed"] as const) {
+    it(`keeps saved Classroom identity and preference but uses Native on ${unavailable} startup`, async () => {
+      const storage = createConnectionStorage(createMemorySecureStorage());
+      await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved" }, nickname: "Student", mode: "classroom" });
+      let recovered = false;
+      const h = harness(undefined, { storage, async sessionModels() {
+        if (recovered) return ["freshly-allowed"];
+        if (unavailable === "offline") throw new Error(`offline ${KEY}`);
+        if (unavailable === "missing") return JSON.parse("{}");
+        if (unavailable === "malformed") return JSON.parse('[null]');
+        return [];
+      } });
+      await h.app.start();
+      assert.equal(h.app.view().connected, true);
+      assert.equal(h.app.view().classLabel, "Saved");
+      assert.equal(h.app.view().nickname, "Student");
+      assert.equal(h.app.view().mode, "native");
+      assert.equal(h.app.view().modelId, undefined);
+      assert.equal(h.modelOptions(), null);
+      assert.equal(renderPage(h.app.view()).includes(KEY), false);
+      await h.app.forward({ client: "codex", model: "freshly-allowed" });
+      assert.equal(h.sent().at(-1)?.target, "chatgpt");
+      assert.equal((await storage.getConnection())?.mode, "classroom");
+      await assert.rejects(h.app.forward({ client: "copilot", model: "freshly-allowed" }), /沒有上課模型/);
+      recovered = true;
+      await h.app.reloadAllowlist();
+      await h.app.setSwitch("classroom");
+      assert.equal(h.app.view().mode, "classroom");
+      assert.deepEqual(h.modelOptions()?.ids, ["freshly-allowed"]);
+      await h.app.forward({ client: "claude", model: "freshly-allowed" });
+      assert.equal(h.sent().at(-1)?.target, "router");
+    });
+  }
+});
+
+it("an authoritative missing allowlist revokes prior Classroom models without erasing the saved preference", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved" }, mode: "classroom" });
+  let missing = false;
+  const h = harness(undefined, { storage, async sessionModels() { return missing ? JSON.parse("null") : ["allowed"]; } });
+  await h.app.start();
+  assert.equal(h.app.view().mode, "classroom");
+  missing = true;
+  await h.app.reloadAllowlist();
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.app.view().modelId, undefined);
+  await h.app.forward({ client: "claude", model: "allowed" });
+  assert.equal(h.sent().at(-1)?.target, "claude.ai");
+  assert.equal((await storage.getConnection())?.mode, "classroom");
+  missing = false;
+  await h.app.reloadAllowlist();
+  await h.app.setSwitch("classroom");
+  await h.app.forward({ client: "claude", model: "allowed" });
+  assert.equal(h.sent().at(-1)?.target, "router");
+});
+
+
+it("malformed Router metadata preserves the current persistent connection before any save", async () => {
+  const original = { version: 1 as const, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "classroom" as const };
+  let saves = 0;
+  const h = harness(JSON.parse('{"class_name":42}'), { storage: {
+    async getConnection() { return structuredClone(original); },
+    async setConnection() { saves++; return { persistence: "persistent" }; },
+    async clearConnection() { throw new Error("must retain original"); },
+  } });
+  await h.app.start();
+  const before = h.app.view();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(saves, 0);
+  assert.equal(h.app.view().classLabel, before.classLabel);
+  assert.equal(h.app.view().nickname, "Old student");
+  assert.equal(h.app.view().mode, "classroom");
+  assert.match(h.app.view().notice ?? "", /資料格式/);
+  await h.app.copyKey(); assert.equal(h.clipboard(), "old-key");
+  await h.app.forward({ client: "copilot", model: "later" });
+  assert.equal(h.sent()[0]?.apiKey, "old-key");
+});
+
+
+it("failed Classroom model publication restores Native routes and persists the safe mode", async () => {
+  const disk = persistentStorageFake();
+  let fail = false, restorations = 0;
+  const h = harness(undefined, { storage: disk, async setModelOptions(value) {
+    if (fail && value) throw new Error(KEY);
+    if (fail && !value) restorations++;
+  } });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  fail = true;
+  await assert.doesNotReject(h.app.setSwitch("classroom"));
+  assert.equal(h.app.view().mode, "native");
+  assert.equal((await disk.getConnection())?.mode, "native");
+  assert.equal(restorations, 1);
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+});
+
+
+it("failed route and mode compensation reports partial failure while routing Native", async () => {
+  const disk = persistentStorageFake();
+  let failing = false;
+  const h = harness(undefined, { storage: {
+    getConnection: () => disk.getConnection(), clearConnection: () => disk.clearConnection(),
+    async setConnection(value) {
+      if (failing && value.mode === "native") throw new Error(KEY);
+      return disk.setConnection(value);
+    },
+  }, async setModelOptions() { if (failing) throw new Error(KEY); } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student");
+  failing = true;
+  await assert.doesNotReject(h.app.setSwitch("classroom"));
+  assert.equal(h.app.view().mode, "native");
+  assert.equal((await disk.getConnection())?.mode, "classroom");
+  assert.match(h.app.view().notice ?? "", /部分客戶端設定無法恢復/);
+  assert.match(h.app.view().notice ?? "", /重新啟動仍可能恢復 Classroom/);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" }); assert.equal(h.sent()[0]?.target, "chatgpt");
+});
+
+it("Native route restoration failure is controlled and retains the safely committed Native mode", async () => {
+  const disk = persistentStorageFake(); let failing = false;
+  const h = harness(undefined, { storage: disk, async setModelOptions(value) { if (failing && !value) throw new Error(KEY); } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom");
+  failing = true;
+  await assert.doesNotReject(h.app.setSwitch("native"));
+  assert.equal(h.app.view().mode, "native"); assert.equal((await disk.getConnection())?.mode, "native");
+  assert.match(h.app.view().notice ?? "", /部分客戶端設定無法恢復/);
+  assert.doesNotMatch(h.app.view().notice ?? "", /vcr_sk_nick|重新啟動仍可能恢復 Classroom/);
+  await h.app.forward({ client: "codex", model: "later" }); assert.equal(h.sent()[0]?.target, "chatgpt");
 });

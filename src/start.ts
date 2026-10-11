@@ -1,3 +1,5 @@
+import { createPlatformConnectionStorage } from "./platformStorage";
+import { readRuntimeOptions } from "./runtimeOptions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -22,7 +24,8 @@ import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody, ResponsesSse, responsesToChatBody, toolKindsFromResponses } from "./responsesChat";
 
-const port = 47821;
+const runtimeOptions = readRuntimeOptions(process.env);
+const port = runtimeOptions.port;
 const pageUrl = `http://127.0.0.1:${port}/`;
 const nodeRequire = createRequire(__filename);
 const responseSlot = new AsyncLocalStorage<{
@@ -99,35 +102,11 @@ async function writeCopilotProviders(doc: {
   );
 }
 
-function createFileStorage(filePath: string) {
-  return {
-    async getApiKey(): Promise<string | undefined> {
-      try {
-        const raw = await fs.readFile(filePath, "utf8");
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object") {
-          return undefined;
-        }
-        const apiKey = (parsed as { apiKey?: unknown }).apiKey;
-        return typeof apiKey === "string" && apiKey ? apiKey : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    async setApiKey(apiKey: string): Promise<void> {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify({ apiKey }), "utf8");
-    },
-    async clearApiKey(): Promise<void> {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, "{}", "utf8");
-    },
-  };
-}
-
 function modelIdsInRouterOrder(payload: unknown): string[] {
   if (!Array.isArray(payload)) {
-    throw new Error("模型清單格式錯誤");
+    // A successfully received response without a list is authoritative unavailability,
+    // unlike a transport failure where an existing valid runtime list may be retained.
+    return [];
   }
   const ids: string[] = [];
   for (const provider of payload) {
@@ -154,6 +133,7 @@ function modelIdsInRouterOrder(payload: unknown): string[] {
 async function fetchSessionModels(apiKey: string): Promise<string[]> {
   const root = routerBaseUrl();
   const response = await fetch(`${root}/extension/chat-language-models`, {
+    signal: AbortSignal.timeout(5_000),
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -174,7 +154,12 @@ function isRedeemResult(value: unknown): value is NicknameRedeemResult {
     typeof record.api_key === "string" &&
     record.api_key.length > 0 &&
     !!record.session &&
-    typeof record.session === "object"
+    typeof record.session === "object" &&
+    !Array.isArray(record.session) &&
+    ["class_name", "name", "invite_code", "expires_at"].every(field => {
+      const item = (record.session as Record<string, unknown>)[field];
+      return item === undefined || typeof item === "string";
+    })
   );
 }
 
@@ -183,6 +168,7 @@ async function fetchCourseCatalog(
 ): Promise<{ course_catalog_yaml?: unknown }> {
   const root = routerBaseUrl();
   const response = await fetch(`${root}/extension/course-catalog`, {
+    signal: AbortSignal.timeout(5_000),
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -220,6 +206,7 @@ async function redeemNickname(body: {
   const response = await fetch(
     `${root}/extension/sessions/nickname-redeem`,
     {
+      signal: AbortSignal.timeout(5_000),
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -564,6 +551,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const routeFiles = createRouteFiles(routePaths());
   const app = new ClassroomApp({
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
@@ -579,12 +567,17 @@ async function main(): Promise<void> {
         throw new Error("Classroom App 不寫 MCP 設定");
       },
     },
-    storage: createFileStorage(storageFile()),
+    storage: createPlatformConnectionStorage(storageFile()),
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
     proxyBaseUrl: pageUrl.replace(/\/$/, ""),
-    routes: createRouteFiles(routePaths()),
+    routes: {
+      ...routeFiles,
+      setModelOptions: options => routeFiles.setModelOptions(options && {
+        ...options, restartCodex: runtimeOptions.restartClients && options.restartCodex,
+      }),
+    },
     copilot: {
       read: readCopilotProviders,
       write: writeCopilotProviders,
@@ -814,8 +807,8 @@ async function main(): Promise<void> {
       process.stderr.write("無法寫入 VCRouter。\n");
     });
     const home = pageUrl;
-    const tray = process.platform === "win32" ? openTray(home) : undefined;
-    openBrowser(home);
+    const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
+    if (runtimeOptions.desktop) openBrowser(home);
     const shutdown = () => {
       tray?.kill();
       server.close();

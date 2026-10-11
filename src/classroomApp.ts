@@ -1,3 +1,5 @@
+import { isClassroomConnection, type ClassroomConnection, type ConnectionStorage } from "./secureStorage";
+import { StorageError } from "./storageErrors";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -74,11 +76,7 @@ export type ClassroomAppDeps = {
   files: {
     write(path: string, contents: string): Promise<void>;
   };
-  storage: {
-    getApiKey(): Promise<string | undefined>;
-    setApiKey(apiKey: string): Promise<void>;
-    clearApiKey(): Promise<void>;
-  };
+  storage: ConnectionStorage;
   stopProcess(): void;
   proxyBaseUrl: string;
   routes: {
@@ -181,6 +179,9 @@ const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
 const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一個。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
+  private readonly hiddenKeys = new Set<string>();
+  private initialization: Promise<void> | undefined;
+  private connectionOperations: Promise<unknown> = Promise.resolve();
   private connected = false;
   private classLabel: string | undefined;
   private nickname: string | undefined;
@@ -219,6 +220,12 @@ export class ClassroomApp {
   private modelNotice = new Set<ProxyClient>();
 
   constructor(private readonly deps: ClassroomAppDeps) {}
+
+  private serialConnectionOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.connectionOperations.then(operation, operation);
+    this.connectionOperations = next.catch(() => {});
+    return next;
+  }
 
   view(): ClassroomAppView {
     const view: ClassroomAppView = {
@@ -283,7 +290,11 @@ export class ClassroomApp {
       view.mustRestart = [...this.mustRestart];
     }
     if (this.modelRestart.length > 0) view.modelRestart = [...this.modelRestart];
-    return view;
+    let rendered = JSON.stringify(view);
+    for (const key of this.hiddenKeys) {
+      rendered = rendered.split(JSON.stringify(key).slice(1, -1)).join("[redacted]");
+    }
+    return JSON.parse(rendered) as ClassroomAppView;
   }
 
   async checkEnvironment(): Promise<void> {
@@ -355,6 +366,11 @@ export class ClassroomApp {
   }
 
   async copilotRequest(selection: string): Promise<void> {
+    const upstream = await this.serialConnectionOperation(() => this.copilotUpstream(selection));
+    if (upstream) await this.deps.send(upstream);
+  }
+
+  private async copilotUpstream(selection: string): Promise<UpstreamSend | undefined> {
     if (selection !== "VCRouter") {
       return;
     }
@@ -362,14 +378,17 @@ export class ClassroomApp {
       throw new Error("VCRouter 目前無法使用。請先啟動 Classroom App。");
     }
     await this.deps.proxy.receive({ provider: "VCRouter" });
-    const upstream = await this.classroomUpstream("copilot");
-    if (!upstream) {
-      return;
-    }
-    await this.deps.send(upstream);
+    return this.classroomUpstream("copilot");
   }
 
   async forward(request: ClientForward): Promise<ForwardedRecord> {
+    // Only select a coherent connection and permissions under the lock; streaming stays concurrent.
+    const upstream = await this.serialConnectionOperation(() => this.forwardUpstream(request));
+    await this.deps.send(withHttp(upstream, request));
+    return forwardedRecord(upstream);
+  }
+
+  private async forwardUpstream(request: ClientForward): Promise<UpstreamSend> {
     if (!this.proxyRunning) {
       throw new Error(
         request.client === "copilot"
@@ -383,16 +402,14 @@ export class ClassroomApp {
       if (!upstream) {
         throw new Error("沒有上課模型。");
       }
-      await this.deps.send(withHttp(upstream, request));
-      return forwardedRecord(upstream);
+      return upstream;
     }
     if (this.mode === "classroom") {
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
       }
-      await this.deps.send(withHttp(upstream, request));
-      return forwardedRecord(upstream);
+      return upstream;
     }
     const target: UpstreamTarget =
       request.client === "codex" ? "chatgpt" : "claude.ai";
@@ -401,15 +418,17 @@ export class ClassroomApp {
       target,
       model: request.model,
     };
-    await this.deps.send(withHttp(upstream, request));
-    return forwardedRecord(upstream);
+    return upstream;
   }
 
   private async classroomUpstream(
     client: ProxyClient,
     requested?: string,
   ): Promise<UpstreamSend | undefined> {
-    const apiKey = await this.deps.storage.getApiKey();
+    if (!this.connected) return undefined;
+    let apiKey: string | undefined;
+    try { apiKey = (await this.deps.storage.getConnection())?.apiKey; }
+    catch { return undefined; }
     const model = this.classroomModel(client, requested);
     if (!apiKey || !model) {
       return undefined;
@@ -535,6 +554,10 @@ export class ClassroomApp {
   }
 
   async redeem(inviteCode: string, nickname: string): Promise<void> {
+    return this.serialConnectionOperation(() => this.redeemNow(inviteCode, nickname));
+  }
+
+  private async redeemNow(inviteCode: string, nickname: string): Promise<void> {
     const invite = inviteCode.trim();
     const name = nickname.trim();
     this.connectionError = undefined;
@@ -559,23 +582,59 @@ export class ClassroomApp {
       }
       return;
     }
-    await this.deps.storage.setApiKey(redeemed.api_key);
+    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode };
+    if (!isClassroomConnection(connection)) {
+      this.notice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
+      return;
+    }
+    this.hiddenKeys.add(connection.apiKey);
+    try {
+      await this.deps.storage.setConnection(connection, { allowTemporary: true });
+    } catch {
+      this.notice = "無法安全保存或清除原有課堂連線，換堂未完成。請稍後再試。";
+      return;
+    }
+    const desiredMode = this.mode;
+    // A committed new session must never inherit permissions or resources from the old one.
+    this.mode = "native";
+    this.modelIds = [];
+    this.forgetModelChoices();
+    this.catalog = undefined;
+    this.catalogError = undefined;
+    this.remoteCatalogHeld = false;
+    this.pendingCommand = undefined;
+    this.pendingActionId = undefined;
+    this.applyConnectionIdentity(connection);
     this.connectionDraft = undefined;
-    const label = [redeemed.session.class_name, redeemed.session.name]
-      .filter(Boolean)
-      .join(" · ");
-    this.classLabel = label || undefined;
-    this.nickname = name;
-    this.courseTitle = redeemed.session.class_name || undefined;
-    this.sessionTitle = redeemed.session.name || undefined;
-    this.connected = true;
-    this.detail = "Classroom API Key 已設定。";
     this.notice = undefined;
+    // Storage is committed: publish its identity before any client-file operation can fail.
+    try {
+      await this.restoreModelOptions();
+    } catch {
+      this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+      return;
+    }
     await this.loadCatalog();
     await this.loadModels(redeemed.api_key);
+    if (desiredMode === "classroom" && this.modelIds.length > 0) {
+      this.mode = "classroom";
+      try {
+        await this.publishModelOptions();
+      } catch {
+        this.mode = "native";
+        this.modelIds = [];
+        this.forgetModelChoices();
+        try { await this.restoreModelOptions(); } catch { /* Keep proxy routing safely Native. */ }
+        this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+      }
+    }
   }
 
   async setProjectFolder(folder: string): Promise<void> {
+    return this.serialConnectionOperation(() => this.setProjectFolderNow(folder));
+  }
+
+  private async setProjectFolderNow(folder: string): Promise<void> {
     if (this.commandRunning) {
       return;
     }
@@ -592,36 +651,55 @@ export class ClassroomApp {
   }
 
   async setSwitch(mode: ModelSwitchMode): Promise<void> {
-    const previousMode = this.mode;
-    if (mode === "native") {
+    return this.serialConnectionOperation(() => this.setSwitchNow(mode));
+  }
+
+  private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
+    const requested = mode === "classroom" && this.connected && this.modelIds.length > 0 ? "classroom" : "native";
+    if (!await this.saveMode(requested)) return;
+    const entering = this.mode !== requested;
+    this.mode = requested;
+    if (entering || requested === "native") this.forgetModelChoices();
+    try {
+      if (requested === "classroom") await this.publishModelOptions();
+      else await this.restoreModelOptions();
+      if (entering) this.modelRestart = ["codex", "claude"];
+    } catch {
+      // Sequential client-file writes may have partially succeeded. Upstream must be safe immediately.
       this.mode = "native";
       this.forgetModelChoices();
-      await this.restoreModelOptions();
-      if (previousMode !== this.mode) this.modelRestart = ["codex", "claude"];
-      return;
+      let restored = true;
+      try { await this.restoreModelOptions(); } catch { restored = false; }
+      const persisted = requested === "native" || await this.saveMode("native");
+      this.notice = "無法更新模型設定。目前使用 Native，請稍後再試。" +
+        (restored ? "" : " 部分客戶端設定無法恢復，請重試或手動檢查。") +
+        (persisted ? "" : " 無法儲存 Native 模式，重新啟動仍可能恢復 Classroom；請重試。");
     }
-    const apiKey = await this.deps.storage.getApiKey();
-    if (!apiKey || this.modelIds.length === 0) {
-      this.mode = "native";
-      this.forgetModelChoices();
-      await this.restoreModelOptions();
-      return;
+  }
+
+  private async saveMode(mode: ModelSwitchMode): Promise<boolean> {
+    try {
+      const connection = await this.deps.storage.getConnection();
+      if (connection) await this.deps.storage.setConnection({ ...connection, mode }, { allowTemporary: false });
+      this.notice = undefined;
+      return true;
+    } catch {
+      this.notice = "無法儲存模型模式。已保留原本模式，請稍後再試。";
+      return false;
     }
-    const entering = this.mode !== "classroom";
-    this.mode = "classroom";
-    if (entering) {
-      this.forgetModelChoices();
-    }
-    await this.publishModelOptions();
-    if (entering) this.modelRestart = ["codex", "claude"];
   }
 
   async reloadCatalog(): Promise<void> {
-    await this.loadCatalog();
+    return this.serialConnectionOperation(() => this.loadCatalog());
   }
 
   async reloadAllowlist(): Promise<void> {
-    const apiKey = await this.deps.storage.getApiKey();
+    return this.serialConnectionOperation(() => this.reloadAllowlistNow());
+  }
+
+  private async reloadAllowlistNow(): Promise<void> {
+    if (!this.connected) return;
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       return;
     }
@@ -638,7 +716,7 @@ export class ClassroomApp {
     } catch {
       return;
     }
-    if (ids.length === 0) {
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || !id.trim())) {
       this.modelIds = [];
       this.mode = "native";
       this.forgetModelChoices();
@@ -666,12 +744,16 @@ export class ClassroomApp {
   }
 
   async copyKey(): Promise<void> {
-    const apiKey = await this.deps.storage.getApiKey();
-    if (!apiKey) {
-      this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
-      return;
-    }
+    return this.serialConnectionOperation(() => this.copyKeyNow());
+  }
+
+  private async copyKeyNow(): Promise<void> {
     try {
+      const apiKey = this.connected ? (await this.deps.storage.getConnection())?.apiKey : undefined;
+      if (!apiKey) {
+        this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
+        return;
+      }
       await this.deps.clipboard.write(apiKey);
     } catch {
       this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
@@ -692,15 +774,19 @@ export class ClassroomApp {
   }
 
   async clearConnection(): Promise<void> {
-    await this.deps.storage.clearApiKey();
-    this.connected = false;
+    return this.serialConnectionOperation(() => this.clearConnectionNow());
+  }
+
+  private async clearConnectionNow(): Promise<void> {
+    try {
+      await this.deps.storage.clearConnection();
+    } catch {
+      this.notice = "無法清除課堂連線。已保留原本連線，重新啟動後仍可能恢復。請稍後再試。";
+      return;
+    }
+    this.applyConnectionIdentity(undefined);
     this.connectionError = undefined;
     this.connectionDraft = undefined;
-    this.classLabel = undefined;
-    this.nickname = undefined;
-    this.courseTitle = undefined;
-    this.sessionTitle = undefined;
-    this.detail = "";
     this.notice = undefined;
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -708,10 +794,20 @@ export class ClassroomApp {
     this.mode = "native";
     this.modelIds = [];
     this.forgetModelChoices();
-    await this.restoreModelOptions();
+    try {
+      await this.restoreModelOptions();
+    } catch {
+      this.notice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
+    }
   }
 
   async start(): Promise<void> {
+    return this.serialConnectionOperation(() => this.startNow());
+  }
+
+  private async startNow(): Promise<void> {
+    if (!this.initialization) this.initialization = this.restoreConnection();
+    await this.initialization;
     const codex = await this.deps.routes.readCodex();
     const claude = await this.deps.routes.readClaudeTerminal();
     const vsCode = await this.deps.routes.readVsCodeClaude();
@@ -755,7 +851,39 @@ export class ClassroomApp {
     }
   }
 
+  private applyConnectionIdentity(connection: ClassroomConnection | undefined): void {
+    this.connected = connection !== undefined;
+    this.classLabel = connection && ([connection.session.class_name, connection.session.name].filter(Boolean).join(" · ") || undefined);
+    this.courseTitle = connection?.session.class_name || undefined;
+    this.sessionTitle = connection?.session.name || undefined;
+    this.nickname = connection?.nickname;
+    this.detail = connection ? "Classroom API Key 已設定。" : "";
+  }
+
+  private async restoreConnection(): Promise<void> {
+    if (this.connected) return;
+    let connection;
+    try { connection = await this.deps.storage.getConnection(); }
+    catch (error) {
+      this.detail = error instanceof StorageError ? error.message : "課堂連線無法讀取。請重新連線。";
+      return;
+    }
+    if (!connection) return;
+    this.hiddenKeys.add(connection.apiKey);
+    this.applyConnectionIdentity(connection);
+    this.mode = "native";
+    await this.loadCatalog();
+    await this.loadModels(connection.apiKey);
+    if (connection.mode === "classroom" && this.modelIds.length > 0) {
+      this.mode = "classroom";
+    }
+  }
+
   async stop(): Promise<void> {
+    return this.serialConnectionOperation(() => this.stopNow());
+  }
+
+  private async stopNow(): Promise<void> {
     this.proxyRunning = false;
     this.deps.proxy.stop();
     const claude = await this.deps.routes.readClaudeTerminal();
@@ -781,7 +909,7 @@ export class ClassroomApp {
     if (!this.connected) {
       return;
     }
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       this.catalog = undefined;
       this.catalogError = undefined;
