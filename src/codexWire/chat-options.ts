@@ -21,7 +21,9 @@ export function codexChatOptions(body: JsonObject, responseFormat: (value: unkno
   if (body.max_output_tokens !== undefined) fields.max_completion_tokens = body.max_output_tokens;
   if (body.reasoning !== undefined) {
     const reasoning = object(body.reasoning, "reasoning");
-    allowedFields(reasoning, ["effort", "summary"], "Chat reasoning");
+    // Match opencodex's reasoning-config projection: context and future
+    // config extensions are not Chat options. Input reasoning is validated
+    // separately, so this does not drop replayed reasoning or encrypted data.
     if (reasoning.summary != null && !["auto", "concise", "detailed", "none"].includes(String(reasoning.summary))) throw new AdapterError("Chat 無法轉換此 reasoning summary 設定。");
     if (reasoning.effort !== undefined) fields.reasoning_effort = reasoning.effort === "ultra" ? "max" : reasoning.effort;
   }

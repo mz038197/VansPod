@@ -643,3 +643,16 @@ for (const adapter of ["chat", "responses"] as const) test(`Codex ${adapter} sen
     assert.deepEqual(body.instructions, "ORIGINAL RULES");
   }, adapter === "chat" ? { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] } : { object: "response", status: "completed", output: [] });
 });
+
+for (const stream of [false, true]) test(`Chat accepts Codex reasoning context while preserving effort and source data (${stream})`, async () => {
+  const body = { input: "hello", stream, reasoning: { effort: "medium", summary: "auto", context: { source: "synthetic" }, future_reasoning_extension: true } };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const reply = await response.text();
+    assert.ok(stream ? reply.includes("event: response.completed") : JSON.parse(reply).status === "completed");
+    assert.deepEqual(calls[0].body, { model: "allowed", messages: [{ role: "user", content: "hello" }], stream, reasoning_effort: "medium" });
+    assert.deepEqual(body, original);
+  }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
