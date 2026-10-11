@@ -96,6 +96,8 @@ export type ModelOptions = {
   claudeModel: string;
   proxyBaseUrl: string;
   restartCodex?: boolean;
+  clients?: { codex: boolean; claude: boolean };
+  updateClient?: "codex" | "claude";
 };
 
 export function createRouteFiles(paths: RouteFilePaths) {
@@ -200,43 +202,63 @@ export function createRouteFiles(paths: RouteFilePaths) {
         backup = undefined;
         return;
       }
-      if (!backup) {
-        backup = (await readDiskBackup(paths)) ?? (await captureModelBackup(paths));
-        await writeText(backupFile(paths), `${JSON.stringify(backup)}\n`);
+      const clients = options.clients ?? { codex: true, claude: true };
+      backup ??= await readDiskBackup(paths);
+      const active = backup ? backup.clients ?? { codex: true, claude: true } : { codex: false, claude: false };
+      const current = await captureModelBackup(paths);
+      backup ??= { clients: { codex: false, claude: false } };
+      if (clients.codex && !active.codex) {
+        backup.codexModel = current.codexModel;
+        backup.catalogPath = current.catalogPath;
+        backup.modelsCache = current.modelsCache;
       }
-      const catalogPath = path.join(path.dirname(paths.codex), "classroom-catalog.json");
-      const cachePath = path.join(path.dirname(paths.codex), "models_cache.json");
-      const liveCache = await readOptional(cachePath);
-      const template = pickTemplate(liveCache) ?? pickTemplate(backup.modelsCache);
-      const models = catalogModels(options.ids, template);
-      const selected = catalogSlug(options.codexModel);
-      await writeText(catalogPath, `${JSON.stringify({ models }, null, 2)}\n`);
-      await writeText(
-        cachePath,
-        `${JSON.stringify(
-          {
-            fetched_at: "2000-01-01T00:00:00Z",
-            client_version: "0.0.0",
-            models,
-          },
-          null,
-          2,
-        )}\n`,
-      );
-      let toml = await readText(paths.codex);
-      toml = upsertRootTomlString(toml, "model_catalog_json", catalogPath);
-      toml = upsertRootTomlString(toml, "model", selected);
-      await writeText(paths.codex, toml);
-      await writeClaudeModel(paths.claude, options.claudeModel);
-      await writeText(
-        gatewayCachePath(paths.claude),
-        `${JSON.stringify({
-          baseUrl: options.proxyBaseUrl,
-          fetchedAt: 0,
-          models: options.ids.map((id) => ({ id, display_name: id })),
-        })}\n`,
-      );
-      if (options.restartCodex) {
+      if (clients.claude && !active.claude) {
+        backup.claudeFile = current.claudeFile;
+        backup.gateway = current.gateway;
+      }
+      // Record newly managed files before touching them, so a partial write can be restored.
+      backup.clients = { codex: active.codex || clients.codex, claude: active.claude || clients.claude };
+      await writeText(backupFile(paths), `${JSON.stringify(backup)}\n`);
+      await restoreModelOptions(paths, backup, { codex: active.codex && !clients.codex, claude: active.claude && !clients.claude });
+      backup.clients = clients;
+      await writeText(backupFile(paths), `${JSON.stringify(backup)}\n`);
+      if (clients.codex && options.updateClient !== "claude") {
+        const catalogPath = path.join(path.dirname(paths.codex), "classroom-catalog.json");
+        const cachePath = path.join(path.dirname(paths.codex), "models_cache.json");
+        const liveCache = await readOptional(cachePath);
+        const template = pickTemplate(liveCache) ?? pickTemplate(backup.modelsCache);
+        const models = catalogModels(options.ids, template);
+        const selected = catalogSlug(options.codexModel);
+        await writeText(catalogPath, `${JSON.stringify({ models }, null, 2)}\n`);
+        await writeText(
+          cachePath,
+          `${JSON.stringify(
+            {
+              fetched_at: "2000-01-01T00:00:00Z",
+              client_version: "0.0.0",
+              models,
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        let toml = await readText(paths.codex);
+        toml = upsertRootTomlString(toml, "model_catalog_json", catalogPath);
+        toml = upsertRootTomlString(toml, "model", selected);
+        await writeText(paths.codex, toml);
+      }
+      if (clients.claude && options.updateClient !== "codex") {
+        await writeClaudeModel(paths.claude, options.claudeModel);
+        await writeText(
+          gatewayCachePath(paths.claude),
+          `${JSON.stringify({
+            baseUrl: options.proxyBaseUrl,
+            fetchedAt: 0,
+            models: options.ids.map((id) => ({ id, display_name: id })),
+          })}\n`,
+        );
+      }
+      if (options.restartCodex && clients.codex && options.updateClient !== "claude") {
         await restartCodexAppServers();
       }
     },
@@ -244,6 +266,7 @@ export function createRouteFiles(paths: RouteFilePaths) {
 }
 
 type ModelBackup = {
+  clients?: { codex: boolean; claude: boolean };
   codexModel?: string;
   catalogPath?: string;
   modelsCache?: string;
@@ -473,26 +496,32 @@ async function restoreBackedFile(
 async function restoreModelOptions(
   paths: RouteFilePaths,
   backup: ModelBackup | undefined,
+  clients?: { codex: boolean; claude: boolean },
 ): Promise<void> {
   const saved = backup ?? (await readDiskBackup(paths));
   if (!saved) {
     return;
   }
-  let toml = await readText(paths.codex);
-  toml = saved.catalogPath
-    ? upsertRootTomlString(toml, "model_catalog_json", saved.catalogPath)
-    : removeRootTomlKey(toml, "model_catalog_json");
-  toml = saved.codexModel
-    ? upsertRootTomlString(toml, "model", saved.codexModel)
-    : removeRootTomlKey(toml, "model");
-  await writeText(paths.codex, toml);
-  await restoreBackedFile(
-    path.join(path.dirname(paths.codex), "models_cache.json"),
-    saved.modelsCache,
-  );
-  await restoreBackedFile(paths.claude, saved.claudeFile);
-  await restoreBackedFile(gatewayCachePath(paths.claude), saved.gateway);
-  await fs.rm(backupFile(paths), { force: true });
+  const restore = clients ?? saved.clients ?? { codex: true, claude: true };
+  if (restore.codex) {
+    let toml = await readText(paths.codex);
+    toml = saved.catalogPath
+      ? upsertRootTomlString(toml, "model_catalog_json", saved.catalogPath)
+      : removeRootTomlKey(toml, "model_catalog_json");
+    toml = saved.codexModel
+      ? upsertRootTomlString(toml, "model", saved.codexModel)
+      : removeRootTomlKey(toml, "model");
+    await writeText(paths.codex, toml);
+    await restoreBackedFile(
+      path.join(path.dirname(paths.codex), "models_cache.json"),
+      saved.modelsCache,
+    );
+  }
+  if (restore.claude) {
+    await restoreBackedFile(paths.claude, saved.claudeFile);
+    await restoreBackedFile(gatewayCachePath(paths.claude), saved.gateway);
+  }
+  if (!clients) await fs.rm(backupFile(paths), { force: true });
 }
 
 async function readText(file: string): Promise<string> {

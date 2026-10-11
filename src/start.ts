@@ -1,4 +1,5 @@
 import { createPlatformConnectionStorage } from "./platformStorage";
+import { detectClient } from "./clientDetection";
 import { readRuntimeOptions } from "./runtimeOptions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -515,6 +516,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
 async function main(): Promise<void> {
   const routeFiles = createRouteFiles(routePaths());
   const app = new ClassroomApp({
+    detectClient,
     adapterSettings: createAdapterSettingsStorage(path.join(os.homedir(), ".vanspod", "settings.json")),
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
@@ -700,7 +702,11 @@ async function main(): Promise<void> {
         const params = new URLSearchParams(await readBody(req));
         const mode = params.get("mode");
         if (mode === "classroom" || mode === "native") {
-          await app.setSwitch(mode);
+          const client = params.get("client");
+          if (client !== null && client !== "codex" && client !== "claude") {
+            res.writeHead(400); res.end("無效的客戶端。"); return;
+          }
+          await app.setSwitch(mode, client ?? undefined);
         }
         goHome(params);
         return;

@@ -2,6 +2,8 @@ import { createRequire } from "node:module";
 import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
+import { clientIcons } from "./clientIcons";
+import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
 import {
   actionKindLabel,
@@ -58,14 +60,6 @@ function statusWord(view: ClassroomAppView): string {
   return view.mode === "classroom" ? "Classroom" : "Native";
 }
 
-function modeLine(view: ClassroomAppView): string {
-  const current =
-    view.mode === "classroom"
-      ? `Classroom${view.modelId ? ` · ${escapeHtml(view.modelId)}` : ""}`
-      : "Native";
-  return `<p class="mode-line">目前：${current}</p>`;
-}
-
 function notices(view: ClassroomAppView): string {
   const notice = view.notice && view.notice !== view.connectionNotice ? `<p class="notice">${escapeHtml(view.notice)}</p>` : "";
   const running = view.commandRunning ? `<p class="running">執行中</p>` : "";
@@ -110,15 +104,14 @@ function folderInner(view: ClassroomAppView): string {
 
 function modelInner(view: ClassroomAppView): string {
   const off = locked(view);
-  const classroomOn = view.mode === "classroom" ? " on" : "";
-  const nativeOn = view.mode === "native" ? " on" : "";
-  return `${modeLine(view)}
+  const models = view.allowedModels ?? (view.modelId ? [view.modelId] : []);
+  const list = models.length
+    ? `<ul class="allowed-model-list">${models.map(id => `<li>${escapeHtml(id)}</li>`).join("")}</ul>`
+    : `<p class="hint">${view.connected ? "這堂課尚無可用模型。" : "連線課堂後可查看。"}</p>`;
+  return `
     ${restartHtml(view)}
-    <form class="modes" method="post" action="/switch">
-      <button type="submit" name="mode" value="classroom" class="${classroomOn.trim()}"${off}>Classroom</button>
-      <button type="submit" name="mode" value="native" class="${nativeOn.trim()}"${off}>Native</button>
-    </form>
     ${adapterForms(view)}
+    <details class="allowed-models"><summary>老師允許的模型 <span>${models.length}</span></summary>${list}</details>
     <form method="post" action="/reload">
       <button type="submit" class="quiet"${off}>重新載入</button>
     </form>`;
@@ -129,9 +122,13 @@ function adapterForms(view: ClassroomAppView): string {
   const forms = (["codex", "claude"] as const).map(client => {
     const choices = client === "codex" ? ["responses", "chat"] : ["responses", "chat", "messages"];
     const options = choices.map(id => `<option value="${id}"${selected[client] === id ? " selected" : ""}>${id === "responses" ? "Responses" : id === "chat" ? "Chat" : "Messages"}</option>`).join("");
-    return `<form class="stack" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><label>${clientLabel(client)} 上游 API <select name="adapter"${locked(view)}>${options}</select></label><button type="submit" class="quiet"${locked(view)}>儲存</button></form>`;
+    const mode = view.clientModes?.[client] ?? view.mode;
+    const detected = view.detectedClients?.[client] ?? false;
+    const status = `${clientLabel(client)} ${detected ? "已偵測" : "未偵測"}`;
+    const available = view.connected && (view.allowedModels?.length ?? (view.modelId ? 1 : 0)) > 0;
+    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${detected ? " detected" : ""}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${mode !== "classroom" || view.commandRunning ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
   }).join("");
-  return forms + `<p class="hint">僅套用於 Classroom 模式的下一個請求。</p>` + (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
+  return forms + (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
 
 function environmentInner(view: ClassroomAppView): string {
@@ -141,7 +138,7 @@ function environmentInner(view: ClassroomAppView): string {
     .map((tool) => {
       const checked = tool.selected ? " checked" : "";
       const mark = tool.installed ? "已安裝" : "未安裝";
-      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> <span>${escapeHtml(tool.label)}</span> <em>${mark}</em></label>`;
+      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span>${escapeHtml(tool.label)}</span> <em>${mark}</em></label>`;
     })
     .join("");
   const note = view.environmentNotice
@@ -425,6 +422,7 @@ const CSS = `
   label { display: flex; flex-direction: column; gap: 0.3rem; }
   .tool { flex-direction: row; align-items: center; gap: 0.55rem; width: 100%; }
   .tool span { min-width: 0; }
+  .tool svg { width: 20px; height: 20px; flex-shrink: 0; color: var(--text); }
   .tool em { margin-left: auto; font-style: normal; color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
   .tool input[type="checkbox"] {
     width: 1.15rem;
@@ -608,6 +606,10 @@ function presentCommand(body: string): { inline: string; dialog: string } {
   return { inline, dialog };
 }
 
+function projectFolderRow(view: ClassroomAppView): string {
+  return `<div class="project-folder-row"><div class="project-folder-info"><span class="hint">專案資料夾</span><p class="folder-path"${view.projectFolder ? ` title="${escapeHtml(view.projectFolder)}"` : ""}>${escapeHtml(view.projectFolder || "尚未選擇安裝位置")}</p></div><form method="post" action="/pick-folder"><button type="submit" class="quiet"${locked(view)}>${view.projectFolder ? "變更" : "選擇專案資料夾"}</button></form>${view.folderError ? `<p class="error" role="alert">${escapeHtml(view.folderError)}</p>` : ""}${view.installNotice ? `<p class="hint" role="status">${escapeHtml(view.installNotice)}</p>` : ""}</div>`;
+}
+
 function splitCourseCards(html: string, view: ClassroomAppView): string {
   const commandMatch = html.match(
     /<section class="tile wide"><h2>指令<\/h2>([\s\S]*?)<\/section>/,
@@ -631,10 +633,7 @@ function splitCourseCards(html: string, view: ClassroomAppView): string {
     return `<article class="install-card snippet-card"><div class="install-top"><span data-kind="snippet" class="kind-tag">片段</span><strong>${escapeHtml(snippet.title)}</strong></div>${hint}<pre class="snippet-code">${escapeHtml(snippet.body)}</pre><div class="snippet-actions"><button type="button" data-copy-snippet="${escapeHtml(snippet.id)}">複製</button><span class="hint" data-snippet-copy-status role="status" aria-live="polite"></span></div></article>`;
   }).join("") || `<p class="empty">這堂課沒有片段。</p>`;
   const chevron = `<svg class="course-chevron" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>`;
-  const folderRequired = !view.projectFolder && view.catalog?.actions.length
-    ? `<div class="install-requirement" role="status"><p>請先設定專案資料夾，再進行安裝。</p><form method="post" action="/pick-folder"><button type="submit" class="quiet"${locked(view)}>設定資料夾</button></form></div>`
-    : "";
-  const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${folderRequired}${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
+  const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
   const snippets = `<section class="tile wide"><details class="course-section" data-course-section="snippets" open><summary class="tile-head"><h2>課程片段</h2>${chevron}</summary><div class="course-content">${snippetBody}</div></details></section>`;
   return html.replace(commandMatch[0], install).replace(courseMatch[0], snippets);
 }
@@ -702,7 +701,7 @@ function courseSectionScript(): string {
 
 function organizeSettings(html: string, view: ClassroomAppView): string {
   const cards: string[] = [];
-  const updated = html.replace(/<section class="tile"><div class="tile-head"><h2>(連線|資料夾|模型|環境)<\/h2>([\s\S]*?)<\/section>/g,
+  const updated = html.replace(/<section class="tile"><div class="tile-head"><h2>(連線|模型|環境)<\/h2>([\s\S]*?)<\/section>/g,
     (_card, title: string, rest: string) => {
       const headEnd = rest.indexOf("</div>") + 6;
       const head = `<div class="tile-head"><h2>${title}</h2>${rest.slice(0, headEnd)}`;
@@ -724,14 +723,11 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
             return "";
           });
         }
-      } else if (title === "資料夾") {
-        moveForm("pick-folder");
       } else if (title === "模型") {
         body = body.replace(/<div class="model-update"[\s\S]*?<\/div><\/div>/, (block) => {
           reminder = block;
           return "";
         });
-        moveForm("switch");
         moveForm("reload");
       } else {
         moveForm("environment-check");
@@ -745,11 +741,11 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
         body = body.replace(/<div class="tools">([\s\S]*?)<\/div>/,
           `<p class="environment-summary">${summary}</p><details class="environment-tools"><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
       }
-      cards.push(`<section class="tile settings-card" data-setting="${title}">${head}<div class="settings-content">${body}</div>${reminder}<div class="settings-actions">${actions}</div></section>`);
+      cards.push(`<section class="tile settings-card${title === "環境" ? " environment-card" : ""}" data-setting="${title}">${head}<div class="settings-content">${body}</div>${reminder}<div class="settings-actions">${actions}</div></section>`);
       return "";
     });
-  if (cards.length !== 4) return html;
-  return updated.replace('<div class="modules">', `<div class="modules"><div class="settings-grid">${[cards[0], cards[2], cards[1], cards[3]].join("")}</div>`);
+  if (cards.length !== 3) return html;
+  return updated.replace('<div class="modules">', `<div class="modules"><div class="settings-grid">${cards.slice(0, 2).join("")}</div>${projectFolderRow(view)}${cards[2]}`);
 }
 
 export function renderPage(view: ClassroomAppView): string {
@@ -768,39 +764,21 @@ export function renderPage(view: ClassroomAppView): string {
     `<button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
     `<nav aria-label="選單"><button type="button" class="side-item" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 3-.6 2.3-2 .9-2.1-.6-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.6 2 .9.6 2.3h5l.6-2.3 2-.9 2.1.6 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.6-2-.9L14.5 3z"/><circle cx="12" cy="12" r="3"/></svg><span>教室設定</span></button></nav><button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
   );
-  const folderTag = view.projectFolder
-    ? `<span class="badge">已設定</span>`
-    : `<span class="badge off">未設定</span>`;
-  const folderOff = view.commandRunning ? " disabled" : "";
-  const folderInput = view.projectFolder
-    ? ` value="${escapeHtml(view.projectFolder)}"`
-    : "";
-  const folderError = view.folderError
-    ? `<p class="error">${escapeHtml(view.folderError)}</p>`
-    : "";
   html = html.replace(
-    `<section class="tile"><h2>資料夾</h2>`,
-    `<section class="tile"><div class="tile-head"><h2>資料夾</h2>${folderTag}</div>`,
+    /<section class="tile"><h2>資料夾<\/h2>[\s\S]*?<\/section>/,
+    "",
   );
-  html = html.replace(
-    /<form class="stack" method="post" action="\/project-folder">[\s\S]*?<\/form>/,
-    `<form class="stack" method="post" action="/project-folder"><label>專案資料夾 <input name="project_folder" autocomplete="off" placeholder="還沒選擇"${folderInput}${folderOff}></label>${folderError}</form><form method="post" action="/pick-folder"><button type="submit"${folderOff}>設定</button></form>`,
-  );
-  const modelTag =
-    view.mode === "classroom"
-      ? `<span class="badge">課堂</span>`
-      : `<span class="badge off">個人</span>`;
-  const modelValue =
-    view.mode === "classroom"
-      ? escapeHtml(view.modelId || "尚未載入")
-      : "使用自己的帳號";
+  const modelCount = view.allowedModels?.length ?? (view.modelId ? 1 : 0);
+  const modelTag = modelCount
+    ? `<span class="badge">課堂可用 ${modelCount} 個</span>`
+    : `<span class="badge off">${view.connected ? "無課堂模型" : "未連線"}</span>`;
   html = html.replace(
     `<section class="tile"><h2>模型</h2>`,
     `<section class="tile"><div class="tile-head"><h2>模型</h2>${modelTag}</div>`,
   );
   html = html.replace(
     /<p class="mode-line">[\s\S]*?<\/p>/,
-    `<label>目前模型 <div class="model-value">${modelValue}</div></label>`,
+    "",
   );
   html = html.replaceAll(">Classroom</button>", ">課堂</button>");
   html = html.replaceAll(">Native</button>", ">個人</button>");
@@ -848,7 +826,7 @@ export function renderPage(view: ClassroomAppView): string {
   );
   html = html.replace(
     `<div class="modules">`,
-    `<header class="page-head"><h2>教室設定</h2><p>連線、資料夾、模型與環境。</p></header><div class="modules">`,
+    `<header class="page-head"><h2>教室設定</h2><p>連線、模型與開發環境。</p></header><div class="modules">`,
   );
   if (view.catalog?.actions.length) {
     html = html.replace(/<table>[\s\S]*?<\/table>/, installActionCards(view));
@@ -890,7 +868,11 @@ export function renderPage(view: ClassroomAppView): string {
     .course-chevron { width: 20px; height: 20px; flex-shrink: 0; color: var(--muted); }
     .course-section[open] > summary .course-chevron { transform: rotate(90deg); }
     .course-content { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
-    .install-requirement { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); font-size: 13px; }
+    .project-folder-row { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); font-size: 13px; }
+    .project-folder-info { flex: 1 1 200px; min-width: 0; }
+    .project-folder-info .hint { font-size: 12px; }
+    .folder-path { margin-top: 4px; overflow-wrap: anywhere; }
+    .project-folder-row > .error, .project-folder-row > .hint { flex-basis: 100%; }
     .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; background: light-dark(rgba(16, 163, 127, 0.10), rgba(78, 203, 157, 0.13)); color: light-dark(#0a7d5c, #4ecb9d); font-size: 12px; font-weight: 600; }
     .badge.off { background: light-dark(#f4f4f4, #303030); color: light-dark(#6e6e6e, #a6a6a6); }
     .connection-identity { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -898,7 +880,6 @@ export function renderPage(view: ClassroomAppView): string {
     .connection-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }
     .connection-meta > span { min-width: 0; overflow-wrap: anywhere; }
     .connection-separator { opacity: 0.5; }
-    .model-value { min-height: 2.75rem; border-radius: 10px; background: var(--input); padding: 0.55rem 0.8rem; display: flex; align-items: center; overflow-wrap: anywhere; }
     .tool em { color: var(--text); }
     .tool em.missing { color: var(--muted); }
     .install-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: 100%; padding: 14px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
@@ -932,11 +913,37 @@ export function renderPage(view: ClassroomAppView): string {
     .settings-grid { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .settings-card { gap: 16px; padding: 18px; }
     .settings-card .tile-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
-    .settings-content { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; }
+    .settings-content { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; container-type: inline-size; }
     .settings-content label { font-size: 13px; color: var(--muted); }
-    .settings-content input, .settings-content .model-value { color: var(--text); }
+    .settings-content input { color: var(--text); }
+    .model-client { display: grid; grid-template-columns: minmax(0, 1fr) auto 104px; align-items: center; gap: 6px; min-width: 0; }
+    .model-client + .model-client { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 4px; }
+    .client-head { display: contents; }
+    .adapter-row { min-width: 0; }
+    .adapter-label { display: flex; align-items: center; gap: 8px; line-height: 1.4; font-size: 13px; color: var(--text); }
+    .adapter-label svg { width: 20px; height: 20px; flex-shrink: 0; }
+    .client-light { position: relative; display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: light-dark(#b58a39, #c5a15b); box-shadow: 0 0 0 2px light-dark(rgba(181, 138, 57, 0.08), rgba(197, 161, 91, 0.09)); }
+    .client-light:focus-visible::after { content: attr(title); position: absolute; top: 14px; left: -6px; z-index: 10; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--tile); color: var(--text); font-size: 11px; white-space: nowrap; }
+    .client-light.detected { background: light-dark(#4b9274, #70b697); box-shadow: 0 0 0 2px light-dark(rgba(75, 146, 116, 0.08), rgba(112, 182, 151, 0.09)); }
+    main .client-modes button { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+    @container (max-width: 330px) {
+      .model-client { grid-template-columns: minmax(0, 1fr) auto; }
+      .adapter-row { grid-column: 2; width: 104px; justify-self: end; }
+    }
+    .allowed-models { padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
+    .allowed-models summary { cursor: pointer; color: var(--muted); }
+    .allowed-models summary span { margin-left: 6px; }
+    .allowed-model-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; padding: 0; }
+    .allowed-model-list li { padding: 8px 10px; border-radius: 8px; background: var(--input); overflow-wrap: anywhere; font-size: 12px; }
+    .allowed-models > .hint { margin-top: 10px; }
+    .adapter-select { display: block; position: relative; min-width: 0; }
+    .adapter-select select { appearance: none; width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--input); color: var(--text); font: inherit; font-size: 12px; padding: 5px 24px 5px 8px; cursor: pointer; }
+    .adapter-select select:disabled { cursor: default; opacity: 0.5; }
+    .adapter-select svg { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; color: var(--muted); pointer-events: none; }
     .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 53px; padding-top: 12px; border-top: 1px solid var(--line); }
     .settings-actions .modes { width: auto; }
+    .environment-card { grid-column: 1 / -1; }
+    .environment-card .settings-actions { justify-content: flex-end; }
     .connection-error { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 10px 12px; border-radius: 10px; background: light-dark(#fef2f2, #40272b); color: light-dark(#b91c1c, #fca5a5); font-size: 13px; line-height: 1.6; }
     .connection-error svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
     .connection-error p { min-width: 0; overflow-wrap: anywhere; }

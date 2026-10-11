@@ -7,12 +7,12 @@ export const settingsActionsScript = `
     if (settingsBusy || installBusy || installOpening || document.querySelector(".confirm-dialog")) return;
     settingsBusy = true;
     var main = document.querySelector("main");
-    var card = form.closest(".settings-card") || form;
+    var card = form.closest(".settings-card, .project-folder-row") || form;
     card.querySelector(".settings-action-error")?.remove();
     form.querySelector(".connection-error")?.remove();
     var body = new URLSearchParams(new FormData(form));
     if (event.submitter?.name) body.set(event.submitter.name, event.submitter.value);
-    var buttons = main.querySelectorAll("button");
+    var buttons = main.querySelectorAll("button, select");
     var disabled = Array.from(buttons, function (button) { return button.disabled; });
     buttons.forEach(function (button) { button.disabled = true; });
     card.setAttribute("aria-busy", "true");
@@ -35,6 +35,8 @@ export const settingsActionsScript = `
       });
       window.scrollTo({ top: top, behavior: "instant" });
     } catch (error) {
+      var adapter = form.querySelector('select[name="adapter"]');
+      if (adapter) adapter.value = adapter.querySelector("option[selected]").value;
       var message = document.createElement("p");
       message.className = "error settings-action-error";
       message.setAttribute("role", "alert");
@@ -45,5 +47,14 @@ export const settingsActionsScript = `
       card.removeAttribute("aria-busy");
       settingsBusy = false;
     }
+  });
+  document.addEventListener("change", function (event) {
+    var select = event.target;
+    if (!select?.matches?.('form[action="/adapter"] select[name="adapter"]')) return;
+    if (settingsBusy || installBusy || installOpening || document.querySelector(".confirm-dialog")) {
+      select.value = select.querySelector("option[selected]").value;
+      return;
+    }
+    select.form.requestSubmit();
   });
 `;

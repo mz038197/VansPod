@@ -27,6 +27,7 @@ export type NicknameRedeemResult = {
 };
 
 export type ModelSwitchMode = "native" | "classroom";
+export type ClientModes = Record<AdapterClient, ModelSwitchMode>;
 
 export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
 
@@ -46,6 +47,7 @@ export type CopilotDocument = {
 };
 
 export type ClassroomAppDeps = {
+  detectClient?(client: AdapterClient): Promise<boolean>;
   adapterSettings?: AdapterSettingsStorage;
   router: {
     redeemNickname(body: {
@@ -174,6 +176,9 @@ export type ClassroomAppView = {
   commandSucceeded?: boolean;
   installedActionIds?: string[];
   mode: ModelSwitchMode;
+  clientModes?: ClientModes;
+  detectedClients?: Record<AdapterClient, boolean>;
+  allowedModels?: string[];
   modelId?: string;
   tools: EnvironmentToolView[];
   environmentNotice?: string;
@@ -216,7 +221,13 @@ export class ClassroomApp {
   private commandOutput: string | undefined;
   private commandRunning = false;
   private commandSucceeded: boolean | undefined;
-  private mode: ModelSwitchMode = "native";
+  private clientModes: ClientModes = { codex: "native", claude: "native" };
+  private detectedClients = { codex: false, claude: false };
+  // Legacy shared operations still reset both clients; aggregate mode keeps old connections readable.
+  private get mode(): ModelSwitchMode {
+    return Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
+  }
+  private set mode(mode: ModelSwitchMode) { this.clientModes = { codex: mode, claude: mode }; }
   private modelIds: string[] = [];
   private environmentInstalled: Record<EnvironmentToolId, boolean> = {
     uv: false,
@@ -249,6 +260,9 @@ export class ClassroomApp {
       installAvailable: Boolean(this.projectFolder),
       commandRunning: this.commandRunning,
       mode: this.mode,
+      clientModes: { ...this.clientModes },
+      detectedClients: { ...this.detectedClients },
+      allowedModels: [...this.modelIds],
       adapters: { ...this.adapters },
       adapterNotice: this.adapterNotice,
       tools: this.environmentTools(),
@@ -421,7 +435,7 @@ export class ClassroomApp {
       }
       return upstream;
     }
-    if (this.mode === "classroom") {
+    if (this.clientModes[request.client] === "classroom") {
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
@@ -456,6 +470,10 @@ export class ClassroomApp {
   async setAdapter(client: AdapterClient, id: string): Promise<void> {
     if (!isAdapterChoice(client, id)) throw new Error(`無效的 ${client === "codex" ? "Codex" : "Claude Code"} adapter。`);
     await this.serialConnectionOperation(async () => {
+      if (this.clientModes[client] !== "classroom") {
+        this.adapterNotice = "請先將這個客戶端切換到課堂模式。";
+        return;
+      }
       const next = { ...this.adapters, [client]: id } as AdapterSettings;
       try { await this.deps.adapterSettings?.save(next); }
       catch { this.adapterNotice = "無法儲存 adapter 選擇，已保留原本設定。"; return; }
@@ -503,7 +521,7 @@ export class ClassroomApp {
     this.modelNotice.clear();
   }
 
-  private async publishModelOptions(): Promise<void> {
+  private async publishModelOptions(updateClient?: AdapterClient): Promise<void> {
     const first = this.modelIds[0];
     if (!first || this.mode !== "classroom") {
       await this.restoreModelOptions();
@@ -515,8 +533,10 @@ export class ClassroomApp {
       claudeModel: this.sending.get("claude") ?? first,
       proxyBaseUrl: this.deps.proxyBaseUrl,
       restartCodex: true,
+      clients: { codex: this.clientModes.codex === "classroom", claude: this.clientModes.claude === "classroom" },
+      updateClient,
     };
-    await this.deps.routes.setCodexRoute(true, this.deps.proxyBaseUrl);
+    if (updateClient !== "claude") await this.deps.routes.setCodexRoute(this.clientModes.codex === "classroom", this.deps.proxyBaseUrl);
     await this.deps.routes.setModelOptions(options);
   }
 
@@ -610,7 +630,7 @@ export class ClassroomApp {
       }
       return;
     }
-    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode };
+    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode, clientModes: { ...this.clientModes } };
     if (!isClassroomConnection(connection)) {
       this.notice = this.connectionNotice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
       return;
@@ -623,6 +643,7 @@ export class ClassroomApp {
       return;
     }
     const desiredMode = this.mode;
+    const desiredClientModes = { ...this.clientModes };
     // A committed new session must never inherit permissions or resources from the old one.
     this.mode = "native";
     this.modelIds = [];
@@ -646,6 +667,7 @@ export class ClassroomApp {
     await this.loadModels(redeemed.api_key);
     if (desiredMode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
+      this.clientModes = desiredClientModes;
       try {
         await this.publishModelOptions();
       } catch {
@@ -678,14 +700,46 @@ export class ClassroomApp {
     this.folderError = "這不是資料夾。";
   }
 
-  async setSwitch(mode: ModelSwitchMode): Promise<void> {
-    return this.serialConnectionOperation(() => this.setSwitchNow(mode));
+  async setSwitch(mode: ModelSwitchMode, client?: AdapterClient): Promise<void> {
+    return this.serialConnectionOperation(() => client ? this.setClientSwitch(mode, client) : this.setSwitchNow(mode));
+  }
+
+  private async setClientSwitch(mode: ModelSwitchMode, client: AdapterClient): Promise<void> {
+    if (mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.notice = "請先連線到有可用模型的課堂。";
+      return;
+    }
+    const previous = { ...this.clientModes };
+    if (previous[client] === mode) return;
+    const next = { ...previous, [client]: mode };
+    const aggregate = Object.values(next).includes("classroom") ? "classroom" : "native";
+    if (!await this.saveMode(aggregate, next)) return;
+    this.clientModes = next;
+    this.sending.delete(client);
+    this.modelNotice.delete(client);
+    try {
+      await this.publishModelOptions(client);
+      if (!this.modelRestart.includes(client)) this.modelRestart.push(client);
+      this.adapterNotice = undefined;
+    } catch {
+      this.clientModes = previous;
+      let restored = true;
+      try { await this.publishModelOptions(client); } catch {
+        restored = false;
+        this.mode = "native";
+        try { await this.restoreModelOptions(); } catch { /* Surface partial recovery below. */ }
+      }
+      const persisted = await this.saveMode(this.mode, this.clientModes);
+      this.notice = "無法更新客戶端模型設定，請稍後再試。" +
+        (restored ? " 已保留原本模式。" : " 目前使用個人模式，部分客戶端設定需要重新檢查。") +
+        (persisted ? "" : " 無法儲存恢復後的模式，請重試。");
+    }
   }
 
   private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
     const requested = mode === "classroom" && this.connected && this.modelIds.length > 0 ? "classroom" : "native";
     if (!await this.saveMode(requested)) return;
-    const entering = this.mode !== requested;
+    const entering = Object.values(this.clientModes).some(mode => mode !== requested);
     this.mode = requested;
     if (entering || requested === "native") this.forgetModelChoices();
     try {
@@ -705,10 +759,10 @@ export class ClassroomApp {
     }
   }
 
-  private async saveMode(mode: ModelSwitchMode): Promise<boolean> {
+  private async saveMode(mode: ModelSwitchMode, clientModes: ClientModes = { codex: mode, claude: mode }): Promise<boolean> {
     try {
       const connection = await this.deps.storage.getConnection();
-      if (connection) await this.deps.storage.setConnection({ ...connection, mode }, { allowTemporary: false });
+      if (connection) await this.deps.storage.setConnection({ ...connection, mode, clientModes }, { allowTemporary: false });
       this.notice = undefined;
       return true;
     } catch {
@@ -722,7 +776,15 @@ export class ClassroomApp {
   }
 
   async reloadAllowlist(): Promise<void> {
+    await this.detectClients();
     return this.serialConnectionOperation(() => this.reloadAllowlistNow());
+  }
+
+  private async detectClients(): Promise<void> {
+    await Promise.all((["codex", "claude"] as const).map(async client => {
+      try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
+      catch { this.detectedClients[client] = false; }
+    }));
   }
 
   private async reloadAllowlistNow(): Promise<void> {
@@ -734,7 +796,7 @@ export class ClassroomApp {
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     await this.loadModels(apiKey);
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
-    if (previous !== current) this.modelRestart = ["codex", "claude"];
+    if (previous !== current) this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
   }
 
   private async loadModels(apiKey: string): Promise<void> {
@@ -841,6 +903,7 @@ export class ClassroomApp {
         catch { this.adapterNotice = "無法讀取 adapter 設定，目前使用 Responses 預設值。"; }
       }
       await this.restoreConnection();
+      await this.detectClients();
     })();
     await this.initialization;
     const codex = await this.deps.routes.readCodex();
@@ -911,6 +974,7 @@ export class ClassroomApp {
     await this.loadModels(connection.apiKey);
     if (connection.mode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
+      this.clientModes = connection.clientModes ?? { codex: "classroom", claude: "classroom" };
     }
   }
 

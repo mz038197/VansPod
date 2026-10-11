@@ -37,8 +37,8 @@ _Avoid_: 在畫面上展示 API Key、只顯示學生暱稱而稱為課堂名稱
 _Avoid_: Router Model Template 全集、App 內建模型表、把 Allowlist 塞進 Course Catalog
 
 **Model Switch**:
-同一個本機開關，讓 Codex 與 Claude Code 使用 Classroom 模型或各自的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提。
-_Avoid_: 每個客戶端各自切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
+每個客戶端各自的本機開關，讓 Codex 與 Claude Code 獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個客戶端不改變另一個。
+_Avoid_: 全域強制一起切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
 
 **Model API Adapter**:
 VansPod 配合 Router 上游模型 API 協定、適配 Codex 或 Claude Code 請求與回應的方式。它不同於 Model Switch 的 Classroom／Native 模式選擇。

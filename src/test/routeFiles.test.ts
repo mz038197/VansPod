@@ -18,6 +18,31 @@ async function tempRoutes() {
 }
 
 describe("route files", () => {
+  it("isolates model files and backups when clients switch independently across restart", async () => {
+    const { routes, paths, root } = await tempRoutes();
+    try {
+      const originalCodex = 'model = "personal-codex"\n';
+      const originalClaude = '{"model":"personal-claude","theme":"dark"}\n';
+      await fs.writeFile(paths.codex, originalCodex);
+      await fs.writeFile(paths.claude, originalClaude);
+      const options = { ids: ["lesson"], codexModel: "lesson", claudeModel: "lesson", proxyBaseUrl: PROXY };
+      await routes.setModelOptions({ ...options, clients: { codex: true, claude: false }, updateClient: "codex" });
+      assert.equal(await fs.readFile(paths.claude, "utf8"), originalClaude);
+      const codexClassroom = await fs.readFile(paths.codex, "utf8");
+      const newerClaude = '{"model":"new-personal-claude","theme":"light"}\n';
+      await fs.writeFile(paths.claude, newerClaude);
+      const reopened = createRouteFiles(paths);
+      await reopened.setModelOptions({ ...options, clients: { codex: true, claude: true }, updateClient: "claude" });
+      assert.equal(await fs.readFile(paths.codex, "utf8"), codexClassroom);
+      await reopened.setModelOptions({ ...options, clients: { codex: false, claude: true }, updateClient: "codex" });
+      assert.equal(await fs.readFile(paths.codex, "utf8"), originalCodex);
+      const newerCodex = 'model = "new-personal-codex"\n';
+      await fs.writeFile(paths.codex, newerCodex);
+      await createRouteFiles(paths).setModelOptions(null);
+      assert.equal(await fs.readFile(paths.codex, "utf8"), newerCodex);
+      assert.equal(await fs.readFile(paths.claude, "utf8"), newerClaude);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
   it("restores the personal Codex URL across process restarts and preserves other config edits", async () => {
     for (const personalUrl of [undefined, "https://personal.example/v1"]) {
       const { root, routes, paths } = await tempRoutes();

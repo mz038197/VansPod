@@ -242,7 +242,7 @@ it("refuses a session replacement when saving and deleting fail, keeping the usa
   assert.equal(h.clipboard(), "old-key");
   await h.app.forward({ client: "codex", model: "later" });
   assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "later", apiKey: "old-key", adapter: "responses" }]);
-  assert.deepEqual(await disk.getConnection(), { ...old, mode: "classroom" });
+  assert.deepEqual(await disk.getConnection(), { ...old, mode: "classroom", clientModes: { codex: "classroom", claude: "classroom" } });
 });
 
 it("replacement can be temporary only after persistent clearing, and restart never returns to the old class", async () => {
@@ -316,6 +316,7 @@ snippets:
 function harness(
   session?: { class_name?: string; name?: string },
   options?: {
+    detectClient?: (client: "codex" | "claude") => Promise<boolean>;
     adapterSettings?: AdapterSettingsStorage;
     storage?: ConnectionStorage;
     send?: (upstream: UpstreamSend) => Promise<void>;
@@ -369,6 +370,7 @@ function harness(
   let modelOptions: ModelOptions | null = null;
   const resolvedSession = session ?? { class_name: "Demo", name: "Week 1" };
   const app = new ClassroomApp({
+    detectClient: options?.detectClient,
     adapterSettings: options?.adapterSettings,
     router: {
       async redeemNickname(body) {
@@ -581,8 +583,8 @@ it("adapter selections default to Responses, remain independent, and survive red
   const h = harness(undefined, { adapterSettings });
   await h.app.start();
   assert.deepEqual(h.app.view().adapters, { codex: "responses", claude: "responses" });
-  await h.app.setAdapter("codex", "chat"); await h.app.setAdapter("claude", "messages");
   await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom");
+  await h.app.setAdapter("codex", "chat"); await h.app.setAdapter("claude", "messages");
   await h.app.forward({ client: "codex", model: "later" }); await h.app.forward({ client: "claude", model: "later" });
   assert.equal(h.sent()[0].adapter, "chat"); assert.equal(h.sent()[1].adapter, "messages");
   await h.app.setSwitch("native"); await h.app.forward({ client: "codex", model: "personal" });
@@ -591,6 +593,74 @@ it("adapter selections default to Responses, remain independent, and survive red
   const restarted = harness(undefined, { adapterSettings }); await restarted.app.start();
   assert.deepEqual(restarted.app.view().adapters, { codex: "chat", claude: "messages" });
   await assert.rejects(restarted.app.setAdapter("codex", "messages"), /Codex/);
+});
+
+it("routes each client independently and restores mixed modes after restart", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const h = harness(undefined, { storage });
+  await h.app.start(); await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "claude");
+  assert.deepEqual(h.app.view().clientModes, { codex: "native", claude: "classroom" });
+  assert.deepEqual(h.modelOptions()?.clients, { codex: false, claude: true });
+  assert.equal(h.modelOptions()?.updateClient, "claude");
+  await h.app.setAdapter("codex", "chat");
+  assert.equal(h.app.view().adapters?.codex, "responses");
+  assert.match(h.app.view().adapterNotice ?? "", /課堂模式/);
+  await h.app.forward({ client: "codex", model: "personal" });
+  await h.app.forward({ client: "claude", model: "later" });
+  assert.deepEqual(h.sent().map(item => item.target), ["chatgpt", "router"]);
+  const reopened = harness(undefined, { storage });
+  await reopened.app.start();
+  assert.deepEqual(reopened.app.view().clientModes, { codex: "native", claude: "classroom" });
+  await reopened.app.setSwitch("classroom", "codex");
+  await reopened.app.setSwitch("native", "claude");
+  await reopened.app.forward({ client: "codex", model: "later" });
+  await reopened.app.forward({ client: "claude", model: "personal" });
+  assert.deepEqual(reopened.sent().map(item => item.target), ["router", "claude.ai"]);
+  await reopened.app.clearConnection();
+  assert.deepEqual(reopened.app.view().clientModes, { codex: "native", claude: "native" });
+});
+
+it("rolls back a failed client switch without changing the other client", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const h = harness(undefined, { storage, async setModelOptions(options) {
+    if (options?.clients?.codex) throw new Error("route failed");
+  } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.setSwitch("classroom", "codex");
+  const expected = { codex: "native", claude: "classroom" };
+  assert.deepEqual(h.app.view().clientModes, expected);
+  assert.deepEqual((await storage.getConnection())?.clientModes, expected);
+  assert.match(h.app.view().notice ?? "", /保留原本模式/);
+});
+
+it("refuses client classroom switches without models and resets both after allowlist removal", async () => {
+  let models = ["one", "two"];
+  const h = harness(undefined, { sessionModels: async () => models });
+  await h.app.start();
+  await h.app.setSwitch("classroom", "codex");
+  assert.equal(h.app.view().clientModes?.codex, "native");
+  await h.app.redeem("DEMO", "Student");
+  assert.deepEqual(h.app.view().allowedModels, models);
+  await h.app.setSwitch("classroom", "codex");
+  models = [];
+  await h.app.reloadAllowlist();
+  assert.deepEqual(h.app.view().clientModes, { codex: "native", claude: "native" });
+  assert.deepEqual(h.app.view().allowedModels, []);
+  assert.equal(h.modelOptions(), null);
+});
+
+it("detects clients on startup and refresh without treating probe failure as a connection failure", async () => {
+  let found = true;
+  const h = harness(undefined, { async detectClient(client) {
+    if (client === "claude") throw new Error("missing executable");
+    return found;
+  } });
+  await h.app.start();
+  assert.deepEqual(h.app.view().detectedClients, { codex: true, claude: false });
+  found = false; await h.app.reloadAllowlist();
+  assert.deepEqual(h.app.view().detectedClients, { codex: false, claude: false });
 });
 
 it("switching adapters leaves an ongoing send unchanged and applies to the next request", async () => {
@@ -608,7 +678,7 @@ it("switching adapters leaves an ongoing send unchanged and applies to the next 
 
 it("failed adapter persistence keeps the old preference and shows a safe notice", async () => {
   const h = harness(undefined, { adapterSettings: { async load() { return { codex: "responses", claude: "responses" }; }, async save() { throw new Error(KEY); } } });
-  await h.app.start(); await h.app.setAdapter("codex", "chat");
+  await h.app.start(); await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom"); await h.app.setAdapter("codex", "chat");
   assert.deepEqual(h.app.view().adapters, { codex: "responses", claude: "responses" });
   assert.match(h.app.view().adapterNotice ?? "", /無法儲存/);
   assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
@@ -1801,7 +1871,7 @@ describe("confirm one catalog command", () => {
     app.prepare("demo");
     assert.equal(app.view().pendingCommand, undefined);
     const blocked = renderPage(app.view());
-    assert.match(blocked, /請先設定專案資料夾，再進行安裝。/);
+    assert.match(blocked, /尚未選擇安裝位置/);
     assert.match(blocked, /<button type="submit" disabled>安裝<\/button>/);
     await app.setProjectFolder("D:\\lesson");
     app.prepare("demo");
@@ -1812,7 +1882,7 @@ describe("confirm one catalog command", () => {
     assert.equal(JSON.stringify(view).includes(KEY), false);
     const ready = renderPage(view);
     assert.match(ready, /class="confirm-dialog"/);
-    assert.equal(ready.includes("請先設定專案資料夾，再進行安裝。"), false);
+    assert.equal(ready.includes("尚未選擇安裝位置"), false);
   });
 
   it("confirm runs the pending command", async () => {
@@ -2452,7 +2522,7 @@ it("redeem commits metadata, nickname and mode together through secure storage",
  const h = harness();
  await h.app.redeem(" invite ", " Student ");
  assert.deepEqual(await h.storedConnection(), {
-  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native",
+  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native", clientModes: { codex: "native", claude: "native" },
  });
  await h.app.setSwitch("classroom");
  assert.equal((await h.storedConnection())?.mode, "classroom");

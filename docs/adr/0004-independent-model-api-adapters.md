@@ -13,7 +13,9 @@ VansPod 目前將 Codex 的 Responses 請求轉成 Chat 請求送往 Router，Cl
 - 保留 Codex 既有的 Responses ↔ Chat 轉換，增加 Responses 上游路徑：將 Codex 的 Responses 請求送往 Router `/v1/responses`，並回傳 Responses 串流。
 - Claude Code 保留既有 Messages 上游路徑，增加 Chat 與 Responses 選項；這需要在 VansPod 內處理 Messages 與所選上游協定之間的轉換。
 - Claude Code 既有 Messages 上游路徑由 MessagesAdapter 實作同一份 Adapter 介面，僅供 Claude Code 選用；本次不提供 Codex ↔ Messages 轉換。
-- Codex 可選 Chat／Responses；Claude Code 可選 Messages／Chat／Responses。兩者各自選擇 Model API Adapter，與既有共用的 Model Switch 是不同概念。
+- Codex 可選 Chat／Responses；Claude Code 可選 Messages／Chat／Responses。兩者各自選擇 Model API Adapter，與 Model Switch 是不同概念。
+- Model Switch 現在由 Codex、Claude Code 各自選擇 Native／Classroom，可使用混合模式。只有該客戶端在 Classroom 時才能變更 adapter；各自模式隨 Classroom Connection 保存。舊版共用模式恢復為兩者相同模式，清除連線或課堂清單失效時兩者回到 Native。
+- 模型卡片共用展示 Router 回傳的 Session Model Allowlist；它是允許清單，不是客戶端當前所選模型。偵測燈號表示 CLI 或 Codex 桌面程式被偵測到，不表示模型 API 連通。
 - 現階段由使用者手動選擇，不依 Router 模型 metadata 自動選擇。選項先放在各客戶端的模型選單旁；未來可能移到 VansPod 的系統設定（Settings），這不是本次已承諾實作的範圍。
 - 尚未選過 adapter 時，Codex 與 Claude Code 均預設 Responses。
 - 保存各客戶端的 adapter 選擇；重啟 VansPod、切換模型或重新兌換課堂後仍保留，未來移至 Settings 時沿用同一份設定。

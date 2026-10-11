@@ -37,6 +37,20 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
 });
 
 describe("VansPod page", () => {
+  it("shows independent switches, subtle detection lights, gated adapters and the escaped classroom list", () => {
+    const html = renderPage(view({
+      clientModes: { codex: "native", claude: "classroom" },
+      detectedClients: { codex: true, claude: false },
+      allowedModels: ["lesson-one", "lesson<&two"],
+    }));
+    const adapters = [...html.matchAll(/<form[^>]*action="\/adapter"[\s\S]*?<\/form>/g)].map(item => item[0]);
+    assert.match(adapters[0], /<select[^>]*disabled/);
+    assert.doesNotMatch(adapters[1], /<select[^>]*disabled/);
+    assert.match(html, /class="client-light detected"[^>]*title="Codex 已偵測"/);
+    assert.match(html, /class="client-light"[^>]*title="Claude Code 未偵測"/);
+    assert.equal((html.match(/<form[^>]*action="\/switch"/g) ?? []).length, 2);
+    assert.match(html, /<li>lesson&lt;&amp;two<\/li>/);
+  });
   it("keeps all connection feedback inside the connection card above its actions, without duplicates", () => {
     const messages = [
       { connected: true, canCopyKey: true, notice: "已複製 Classroom API Key。請勿分享給不信任的人。" },
@@ -70,14 +84,14 @@ describe("VansPod page", () => {
     const oldDetails = [{ open: true }, { open: false }];
     const newDetails = [{ open: false }, { open: true }];
     const main = {
-      querySelectorAll(selector: string) { return selector === "button" ? [button] : replaced ? newDetails : oldDetails; },
+      querySelectorAll(selector: string) { return selector === "button, select" ? [button] : replaced ? newDetails : oldDetails; },
       replaceChildren() { replaced = true; },
     };
     const card = { querySelector: () => null, setAttribute() {}, removeAttribute() {} };
     const form = { action: "/switch", matches: () => true, querySelector: () => null, closest: () => card };
     const window = { scrollY: 240, scrollTo({ top }: { top: number }) { this.scrollY = top; } };
     vm.runInNewContext(settingsActionsScript, {
-      document: { addEventListener(_event: string, handler: typeof submit) { submit = handler; }, querySelector: (selector: string) => selector === "main" ? main : null },
+      document: { addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; }, querySelector: (selector: string) => selector === "main" ? main : null },
       window, installBusy: false, installOpening: false,
       initializeCourseSections() {},
       FormData: class { *[Symbol.iterator]() {} }, URLSearchParams,
@@ -162,10 +176,9 @@ describe("VansPod page", () => {
     assert.match(official, /class="display"/);
     assert.match(official, /\.tile \{ border: 1px solid light-dark\(#e6e6e6, #3d3d3d\); \}/);
     assert.match(official, /\.display \{ display: none; \}/);
-    assert.match(official, /class="page-head"><h2>教室設定<\/h2><p>連線、資料夾、模型與環境。<\/p>/);
-    assert.match(official, /class="badge off">個人</);
-    assert.match(official, /目前模型/);
-    assert.match(official, /使用自己的帳號/);
+    assert.match(official, /class="page-head"><h2>教室設定<\/h2><p>連線、模型與開發環境。<\/p>/);
+    assert.match(official, /class="badge off">無課堂模型</);
+    assert.doesNotMatch(official, /目前模型|使用自己的帳號/);
     assert.match(official, />課堂</);
     assert.match(official, />個人</);
     assert.match(official, /<h2>環境<\/h2><span class="badge off">未完成<\/span>/);
@@ -245,21 +258,24 @@ describe("VansPod page", () => {
     assert.match(onePicked, /class="go">確認安裝/);
     const classroom = renderPage(
       view({ mode: "classroom", modelId: "gpt", modelRestart: ["codex"] }));
-    assert.match(classroom, /class="badge">課堂</);
-    assert.match(classroom, /class="model-value">gpt</);
+    assert.match(classroom, /class="badge">課堂可用 1 個</);
+    assert.match(classroom, /<li>gpt<\/li>/);
+    assert.doesNotMatch(classroom, /class="model-value"/);
     assert.match(classroom, /設定已更新，重新開啟 Codex 後生效。/);
     assert.match(official, /\.restart \{ color: light-dark\(#9a4a08, #fbbf24\); \}/);
     assert.match(official, /:root:not\(\[data-appearance="light"\]\) \{ --bg: #212121; \}/);
-    assert.match(official, /class="badge off">未設定</);
+    assert.doesNotMatch(official, /data-setting="資料夾"/);
     assert.match(official, /action="\/pick-folder"/);
-    assert.match(official, />設定</);
+    assert.match(official, />選擇專案資料夾</);
     assert.equal(official.includes("設定專案資料夾"), false);
     const picked = renderPage(view({ projectFolder: "D:\\lesson" }));
-    assert.match(picked, /class="badge">已設定</);
-    assert.match(official, /placeholder="還沒選擇"/);
-    assert.match(official, /name="project_folder"/);
+    assert.match(picked, />變更</);
+    assert.match(official, /尚未選擇安裝位置/);
+    assert.equal((official.match(/<form[^>]*action="\/pick-folder"/g) ?? []).length, 1);
+    assert.ok(official.indexOf('class="project-folder-row"') < official.indexOf('data-setting="環境"'));
+    assert.ok(official.indexOf('data-setting="環境"') < official.indexOf('data-course-section="install"'));
     assert.equal(official.includes("安裝課程時會寫進這裡。"), false);
-    assert.match(picked, /value="D:\\lesson"/);
+    assert.match(picked, /class="folder-path" title="D:\\lesson">D:\\lesson</);
     const bad = renderPage(view({ folderError: "這不是資料夾。" }));
     assert.match(bad, /這不是資料夾。/);
     assert.match(official, /class="brand-title">VansPod</);

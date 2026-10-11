@@ -16,6 +16,7 @@ export type ClassroomConnection = {
   session: NicknameRedeemResult["session"];
   nickname?: string;
   mode: ModelSwitchMode;
+  clientModes?: { codex: ModelSwitchMode; claude: ModelSwitchMode };
 };
 
 export interface ConnectionStorage {
@@ -60,6 +61,9 @@ export function createConnectionStorage(storage: SecureStorage): ConnectionStora
 export function isClassroomConnection(value: unknown): value is ClassroomConnection {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ClassroomConnection>;
+  if (record.clientModes !== undefined && (!record.clientModes ||
+    !["native", "classroom"].includes(record.clientModes.codex) ||
+    !["native", "classroom"].includes(record.clientModes.claude))) return false;
   if (record.version !== 1 || typeof record.apiKey !== "string" || !record.apiKey ||
     (record.mode !== "native" && record.mode !== "classroom") ||
     (record.nickname !== undefined && typeof record.nickname !== "string") ||

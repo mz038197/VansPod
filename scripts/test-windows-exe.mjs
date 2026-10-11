@@ -134,7 +134,7 @@ async function startExe(exe, box, router, port, overrides = {}) {
 }
 async function post(app, route, fields = {}) { const res = await fetch(app.url + route, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual', signal: AbortSignal.timeout(15000) }); safeAssert(res.status === 303, `Unexpected status for ${route}`); }
 async function page(app) { const html = await (await fetch(app.url)).text(); for (const s of Object.values(sessions)) safeAssert(!html.includes(s.key), 'API Key appeared on app page'); return html; }
-function selectedMode(html, mode) { return new RegExp(`value="${mode}" class="on"`).test(html); }
+function selectedMode(html, mode) { return new RegExp(`value="${mode}"[^>]*class="on"`).test(html); }
 function assertSession(html, which) { for (const field of ['class_name', 'name', 'nickname']) safeAssert(html.includes(sessions[which][field]), `Missing restored ${field}`); }
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
@@ -252,6 +252,17 @@ export async function runLifecycle({ exe }) {
     await post(app, '/redeem', { invite_code: 'first', nickname: sessions.first.nickname });
     assertSession(await page(app), 'first'); await assertPrivateDisk(box.root); record('redeem: whole-record protected disk and metadata');
     await post(app, '/switch', { mode: 'classroom' }); safeAssert(selectedMode(await page(app), 'classroom'), 'Classroom mode unavailable after valid allowlist');
+    const independentCodex = await fs.readFile(box.paths.codex, 'utf8');
+    await post(app, '/switch', { client: 'claude', mode: 'native' });
+    safeAssert(await fs.readFile(box.paths.codex, 'utf8') === independentCodex, 'Claude switch changed Codex files');
+    safeAssert(/aria-label="Claude Code API 協定" disabled/.test(await page(app)), 'Native Claude adapter was enabled');
+    await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
+    safeAssert(/value="responses" selected/.test(await page(app)), 'Native adapter selection changed');
+    await restart();
+    const mixedHtml = await page(app);
+    safeAssert(/aria-label="Claude Code API 協定" disabled/.test(mixedHtml) && !/aria-label="Codex API 協定" disabled/.test(mixedHtml), 'Mixed modes did not restore');
+    await post(app, '/switch', { client: 'claude', mode: 'classroom' });
+    record('independent modes: Claude switch preserves Codex files, adapter gating, mixed restart');
     safeAssert(await proxy(app) === 200, 'Allowed classroom proxy request failed');
     safeAssert(await proxy(app, 'synthetic-denied-model') === 200, 'Existing disallowed-model substitution behavior changed');
     safeAssert(router.state.calls.at(-1).model === sessions.first.model, 'Proxy forwarded an out-of-allowlist model');
