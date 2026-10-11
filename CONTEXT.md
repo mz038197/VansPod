@@ -47,3 +47,41 @@ _Avoid_: 從畫面選取金鑰文字、複製 Invite Code、清除連線後仍�
 **Clear Classroom Connection**:
 學生主動撤去本機的 Classroom Connection，移除憑證與 Class Label，並讓 Model Switch 回到 Native；不刪除其他客戶端的個人設定。
 _Avoid_: 僅清除畫面狀態卻保留憑證、刪除其他 provider、刪除 Workspace MCP Config
+
+### Discord 與 ACP
+
+**Discord Agent**:
+Classroom App 提供的遠端 Coding Agent 操作入口；學生透過自己的 Discord Bot，向本機的 Agent 提交任務。它不是獨立部署的雲端 Agent。
+_Avoid_: Discord 上另有一套模型服務、全班共用的 Bot、把 Discord Bot 當成 Agent 本身
+
+**Bot Owner**:
+在 Classroom App 中指定的 Discord 使用者，是這台電腦 Discord Agent 的管理者與 ACP 權限批准者。Public 模式允許其他人發送任務，但不改變 Bot Owner 的批准權。
+_Avoid_: Discord Server Owner、頻道管理員、Bot Token 的持有者自動等於 Owner
+
+**Access Mode**:
+Discord Agent 接受任務的存取範圍：Private 僅接受 Bot Owner 的指令，Public 接受指定頻道內其他使用者的指令。它不等於 Coding Agent 自身的工具執行權限。
+_Avoid_: Agent 的 sandbox mode、模型權限、單靠頻道存在就表示有權批准工具
+
+**Default Agent**:
+學生在 Classroom App 選定、建立新 Discord Thread 時使用的 Coding Agent 類型；不會覆蓋既有 Thread 已綁定的 Agent。
+_Avoid_: Model Switch、每次送訊息都重新選 Agent、全域強制切換既有 Thread
+
+**Thread Binding**:
+一個 Discord Thread 與其 Coding Agent 類型、Project Folder 及可恢復 ACP Session 的關聯。這個關聯可跨 App 重啟保留，但封存或刪除 Thread 後不再保留。
+_Avoid_: 一則 Discord 訊息對應一個 Agent、所有 Thread 共用同一個 Session
+
+**Thread Agent Session**:
+一個 Discord Thread 內持續接收任務、供參與者共用的 Agent 對話上下文。重建 Session 不會重建或清除 Discord 歷史訊息，也不會清空 Project Folder。
+_Avoid_: Discord Thread 本身、Discord 聊天紀錄、獨立的每人 Session
+
+**Agent Task**:
+Discord 使用者交給 Thread Agent Session 的單次工作請求；具有可追蹤的排隊、執行與結束狀態。同一 Thread 的任務依序處理。
+_Avoid_: 將一整個 Thread 稱為單一 Task、把 Discord 訊息送達等同執行完成
+
+**Task Queue**:
+已被 Discord Agent 接受、尚未開始執行的 Agent Task 集合。它與正在執行的任務不同，取消或中斷的任務不會自動重新排隊。
+_Avoid_: Discord 離線期間所有歷史訊息、已執行中的 ACP Prompt
+
+**ACP Approval**:
+Thread Agent Session 經由 Coding Agent 權限機制提出、等待 Bot Owner 允許或拒絕的一次工具操作請求。它不同於 Access Mode 對「誰可以送任務」的判斷。
+_Avoid_: Public 使用者可批准、永久信任同類操作、Agent 原本自動允許的動作也一定會提出批准
