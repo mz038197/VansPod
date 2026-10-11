@@ -107,3 +107,19 @@ it("new redeem can use memory after unavailable storage is safely cleared, while
   assert.deepEqual(await storage.setConnection(CONNECTION, { allowTemporary: true }), { persistence: "temporary" });
   assert.deepEqual(await storage.getConnection(), CONNECTION);
 });
+
+
+it("invalid replacement is rejected before persistent save or destructive temporary fallback", async () => {
+  const valid = createConnectionStorage({ async get() { return undefined; }, async set() { return { persistence: "persistent" }; }, async delete() {} });
+  let saved = 0, cleared = 0;
+  const wrapper = createPersistentConnectionStorage({
+    async getConnection() { return structuredClone(CONNECTION); },
+    async setConnection(value) { saved++; return valid.setConnection(value); },
+    async clearConnection() { cleared++; },
+  });
+  const invalid = JSON.parse('{"version":1,"apiKey":"replacement","session":[],"mode":"native"}');
+  await assert.rejects(wrapper.setConnection(invalid, { allowTemporary: true }));
+  assert.equal(saved, 0);
+  assert.equal(cleared, 0);
+  assert.deepEqual(await wrapper.getConnection(), CONNECTION);
+});

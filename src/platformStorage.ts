@@ -1,5 +1,5 @@
 import {
-  createConnectionStorage, createMemorySecureStorage,
+  createConnectionStorage, createMemorySecureStorage, isClassroomConnection,
   type ClassroomConnection, type ConnectionStorage, type StorageResult,
 } from "./secureStorage";
 import { createWindowsSecureStorage, protectedFiles, StorageError, type WindowsStorageOptions } from "./windowsSecureStorage";
@@ -29,6 +29,7 @@ export function createPersistentConnectionStorage(persistent: ConnectionStorage)
     },
     setConnection(connection, options) {
       const snapshot = structuredClone(connection);
+      if (!isClassroomConnection(snapshot)) return Promise.reject(new StorageError("invalid"));
       return serial(async () => {
         if (temporary && !options?.allowTemporary) return memory.setConnection(snapshot);
         let result: StorageResult;

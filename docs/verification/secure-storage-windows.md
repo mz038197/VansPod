@@ -6,9 +6,10 @@
 
 - Windows `10.0.26300`、x64；Node.js `v24.19.0`。
 - 系統內建 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，版本 `5.1.26100.9444`。
-- 包含整合提交 `c36cbea` 的核心、儲存與路由修正，以及此票的啟動控制。`npm test`：151／151 通過，無略過。
+- 包含整合提交 `65925ea`，以及 #1 review 的資料驗證、模式寫入失敗補償與身分欄位共用 helper 修正。`npm test`：156／156 通過，無略過。
+- 真實 SEA 驗證完成 21 組情境，全部通過，包含實際 Copy Key 與原剪貼簿完整還原。
 - `npm run test:windows-exe` 先執行 `npm run dist`，再啟動真正的 `dist/classroom-app.exe`；加解密使用真實 DPAPI CurrentUser，沒有替代加密器。
-- 本次驗證 EXE 的 SHA-256：`30AEF8BF28D985113448E65D9B00F361C1380FC8836D113D8A35F8557D66BCAD`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
+- 本次驗證 EXE 的 SHA-256：`ED50E817EA512F4C312B3AFEAA16D398071E38E31AB8120CED27A2F327D9C4FD`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
 
 在 Windows 安裝專案依賴後，可重跑：
 
@@ -26,6 +27,7 @@ npm run test:windows-exe
 | 情境 | 結果與觀察 |
 | --- | --- |
 | Nickname Redeem | 成功保存整筆受保護連線；Class／Session／Nickname 的繁體中文與 emoji 正確顯示。 |
+| malformed Router 回應 | 實際 EXE 接收 session 陣列與 class_name 數值兩種無效回應，原密文逐位元組不變，畫面／模式保留原課堂，代理仍使用原金鑰；重新啟動後亦保留原課堂。 |
 | Copy Classroom API Key | 真實 EXE `/copy` 將當次金鑰放入剪貼簿，原生 helper 在記憶體中核對，最後完整恢復原有格式 ID、順序與每個格式的原始位元組，並再次讀回驗證完全相同。 |
 | 同帳號跨行程恢復 | 結束 EXE 後重新啟動，可解密金鑰並恢復 Class Label、Nickname 與 Classroom Mode；以恢復的金鑰送出真實 HTTP 代理請求。 |
 | 有效 Allowlist | 允許模型送 Router。請求清單外模型時沿用原有替代行為，Router 收到清單內模型，未收到被拒絕的模型 ID。 |
@@ -48,7 +50,7 @@ npm run test:windows-exe
 
 在正常保存、換堂、遷移完成、可清除的失敗路徑、清除與終止／重啟之後，遞迴掃描沙盒中的每個檔案，確認沒有合成 Classroom API Key、Class／Session 名稱或 Nickname 明文。HTTP 頁面及錯誤／代理回應不含金鑰；子行程 stdout／stderr 亦掃描合成敏感字串。保護與解密之間的資料只在記憶體與 stdin 中傳遞。
 
-本次以 Windows 行程資訊實際觀察到 6 筆具備執行檔路徑與命令列的 PowerShell 子行程紀錄：均為系統內建路徑，命令列沒有合成憑證。行程取樣不能證明所有短命子行程均被觀察；此外，儲存邊界測試驗證 stdin 傳入、argv 不含秘密、錯誤輸出不外洩、輸出大小上限及逾時。
+本次以 Windows 行程資訊實際觀察到 4 筆具備執行檔路徑與命令列的 PowerShell 子行程紀錄：均為系統內建路徑，命令列沒有合成憑證。行程取樣不能證明所有短命子行程均被觀察；此外，儲存邊界測試驗證 stdin 傳入、argv 不含秘密、錯誤輸出不外洩、輸出大小上限及逾時。
 
 實際 Copy 測試前，helper 已完整備份剪貼簿的七個 HGLOBAL 格式：HTML Format、UnicodeText、Chromium internal source RFH token、Chromium internal source URL、Locale、Text、OEMText。資料只保留於 helper 記憶體，未列印或寫磁碟；以有效隱藏 owner HWND 及正確的 handle 所有權規則恢復。成功結果為 `actualCopyKey: true` 與 `exactFormatsAndBytesRestored: true`。若遇到不支援的 GDI／不可鎖定格式，腳本會在變更前拒絕；恢復若需重試，helper 保留備份直到驗證成功，父行程不逾時終止它。其他應用程式仍可能同時操作剪貼簿，測試沒有凍結整個桌面。
 
@@ -62,3 +64,7 @@ npm run test:windows-exe
 - 在每一個檔案取代指令邊界精確終止行程：儲存邊界有保護、驗證、寫入／取代與刪除失敗測試，實際 EXE 有四次終止時序與遺留密文暫存檔測試，但未窮盡所有中斷點。
 
 本報告驗證 Encryption at Rest；不宣稱能阻止同一 Windows 使用者呼叫 DPAPI，或讀取程序記憶體／剪貼簿。
+
+## Review 回歸
+
+公共核心／儲存 seam 回歸涵蓋無效連線在保存或 fallback 前拒絕，以及模式客戶端寫入失敗後回到 Native、恢復設定、補償保存 Native，補償失敗時的受控部分失敗提示。嚴格模式保存失敗保留原模式；Copilot 的獨立 Classroom 路由行為維持原規格。

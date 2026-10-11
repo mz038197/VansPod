@@ -1,4 +1,4 @@
-import type { ConnectionStorage } from "./secureStorage";
+import { isClassroomConnection, type ClassroomConnection, type ConnectionStorage } from "./secureStorage";
 import { StorageError } from "./storageErrors";
 import {
   parseCourseCatalog,
@@ -566,11 +566,14 @@ export class ClassroomApp {
       }
       return;
     }
-    this.hiddenKeys.add(redeemed.api_key);
+    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode };
+    if (!isClassroomConnection(connection)) {
+      this.notice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
+      return;
+    }
+    this.hiddenKeys.add(connection.apiKey);
     try {
-      await this.deps.storage.setConnection({
-        version: 1, apiKey: redeemed.api_key, session: redeemed.session, nickname: name, mode: this.mode,
-      }, { allowTemporary: true });
+      await this.deps.storage.setConnection(connection, { allowTemporary: true });
     } catch {
       this.notice = "無法安全保存或清除原有課堂連線，換堂未完成。請稍後再試。";
       return;
@@ -585,15 +588,7 @@ export class ClassroomApp {
     this.remoteCatalogHeld = false;
     this.pendingCommand = undefined;
     this.pendingActionId = undefined;
-    const label = [redeemed.session.class_name, redeemed.session.name]
-      .filter(Boolean)
-      .join(" · ");
-    this.classLabel = label || undefined;
-    this.nickname = name;
-    this.courseTitle = redeemed.session.class_name || undefined;
-    this.sessionTitle = redeemed.session.name || undefined;
-    this.connected = true;
-    this.detail = "Classroom API Key 已設定。";
+    this.applyConnectionIdentity(connection);
     this.notice = undefined;
     // Storage is committed: publish its identity before any client-file operation can fail.
     try {
@@ -643,26 +638,25 @@ export class ClassroomApp {
   }
 
   private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
-    if (mode === "native") {
-      if (!await this.saveMode("native")) return;
+    const requested = mode === "classroom" && this.connected && this.modelIds.length > 0 ? "classroom" : "native";
+    if (!await this.saveMode(requested)) return;
+    const entering = this.mode !== requested;
+    this.mode = requested;
+    if (entering || requested === "native") this.forgetModelChoices();
+    try {
+      if (requested === "classroom") await this.publishModelOptions();
+      else await this.restoreModelOptions();
+    } catch {
+      // Sequential client-file writes may have partially succeeded. Upstream must be safe immediately.
       this.mode = "native";
       this.forgetModelChoices();
-      await this.restoreModelOptions();
-      return;
+      let restored = true;
+      try { await this.restoreModelOptions(); } catch { restored = false; }
+      const persisted = requested === "native" || await this.saveMode("native");
+      this.notice = "無法更新模型設定。目前使用 Native，請稍後再試。" +
+        (restored ? "" : " 部分客戶端設定無法恢復，請重試或手動檢查。") +
+        (persisted ? "" : " 無法儲存 Native 模式，重新啟動仍可能恢復 Classroom；請重試。");
     }
-    if (!this.connected || this.modelIds.length === 0) {
-      this.mode = "native";
-      this.forgetModelChoices();
-      await this.restoreModelOptions();
-      return;
-    }
-    if (!await this.saveMode("classroom")) return;
-    const entering = this.mode !== "classroom";
-    this.mode = "classroom";
-    if (entering) {
-      this.forgetModelChoices();
-    }
-    await this.publishModelOptions();
   }
 
   private async saveMode(mode: ModelSwitchMode): Promise<boolean> {
@@ -769,12 +763,7 @@ export class ClassroomApp {
       this.notice = "無法清除課堂連線。已保留原本連線，重新啟動後仍可能恢復。請稍後再試。";
       return;
     }
-    this.connected = false;
-    this.classLabel = undefined;
-    this.nickname = undefined;
-    this.courseTitle = undefined;
-    this.sessionTitle = undefined;
-    this.detail = "";
+    this.applyConnectionIdentity(undefined);
     this.notice = undefined;
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -843,6 +832,15 @@ export class ClassroomApp {
     }
   }
 
+  private applyConnectionIdentity(connection: ClassroomConnection | undefined): void {
+    this.connected = connection !== undefined;
+    this.classLabel = connection && ([connection.session.class_name, connection.session.name].filter(Boolean).join(" · ") || undefined);
+    this.courseTitle = connection?.session.class_name || undefined;
+    this.sessionTitle = connection?.session.name || undefined;
+    this.nickname = connection?.nickname;
+    this.detail = connection ? "Classroom API Key 已設定。" : "";
+  }
+
   private async restoreConnection(): Promise<void> {
     if (this.connected) return;
     let connection;
@@ -853,12 +851,7 @@ export class ClassroomApp {
     }
     if (!connection) return;
     this.hiddenKeys.add(connection.apiKey);
-    this.classLabel = [connection.session.class_name, connection.session.name].filter(Boolean).join(" · ") || undefined;
-    this.courseTitle = connection.session.class_name || undefined;
-    this.sessionTitle = connection.session.name || undefined;
-    this.nickname = connection.nickname;
-    this.connected = true;
-    this.detail = "Classroom API Key 已設定。";
+    this.applyConnectionIdentity(connection);
     this.mode = "native";
     await this.loadCatalog();
     await this.loadModels(connection.apiKey);

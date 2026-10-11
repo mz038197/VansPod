@@ -20,7 +20,7 @@ async function body(req) { let text = ''; for await (const chunk of req) text +=
 function reply(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); }
 
 export async function fakeRouter() {
-  const state = { models: 'valid', offline: false, calls: [], hanging: false };
+  const state = { invalidRedeem: undefined, models: 'valid', offline: false, calls: [], hanging: false };
   const server = http.createServer(async (req, res) => {
     try {
       const pathname = new URL(req.url, 'http://localhost').pathname;
@@ -29,7 +29,7 @@ export async function fakeRouter() {
         const input = JSON.parse(await body(req));
         const selected = sessions[input.invite_code];
         if (!selected) return reply(res, 400, { error: 'synthetic invalid invite' });
-        return reply(res, 200, { api_key: selected.key, session: { class_name: selected.class_name, name: selected.name } });
+        return reply(res, 200, { api_key: selected.key, session: state.invalidRedeem === 'array' ? [] : state.invalidRedeem === 'number' ? { class_name: 42 } : { class_name: selected.class_name, name: selected.name } });
       }
       const selected = Object.values(sessions).find(s => req.headers.authorization === `Bearer ${s.key}`);
       // Never save headers or keys in call records or error messages.
@@ -236,6 +236,19 @@ export async function runLifecycle({ exe }) {
     assertSession(await page(app), 'first'); safeAssert(selectedMode(await page(app), 'classroom'), 'Stored Classroom mode did not restore');
     safeAssert(await proxy(app) === 200, 'Restarted proxy did not restore the credential');
     record('same-account SEA restart: DPAPI key, Unicode class/session/nickname, Classroom mode');
+    const beforeInvalidRedeem = await fs.readFile(box.paths.connection, 'utf8');
+    for (const invalid of ['array', 'number']) {
+      router.state.invalidRedeem = invalid;
+      await post(app, '/redeem', { invite_code: 'second', nickname: sessions.second.nickname });
+      assertSession(await page(app), 'first');
+      safeAssert(selectedMode(await page(app), 'classroom'), 'Malformed redeem changed current mode');
+      safeAssert(await fs.readFile(box.paths.connection, 'utf8') === beforeInvalidRedeem, 'Malformed redeem changed previous ciphertext');
+      safeAssert(await proxy(app) === 200 && router.state.calls.at(-1).authorizedSession === 'first', 'Malformed redeem displaced old usable credential');
+    }
+    router.state.invalidRedeem = undefined;
+    await restart(); assertSession(await page(app), 'first');
+    record('malformed Router session array/metadata: old ciphertext, identity, mode and routed credential preserved across restart');
+
     for (const condition of ['empty', 'missing', 'offline', 'hanging']) {
       router.state.models = condition === 'empty' || condition === 'missing' ? condition : 'valid';
       router.state.offline = condition === 'offline'; router.state.hanging = condition === 'hanging';
