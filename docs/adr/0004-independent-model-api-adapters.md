@@ -78,3 +78,7 @@ code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議
 本輪 code-review 的 Standards 軸提出 1 項遠端工具 grammar 保留問題，Spec 軸提出同一問題及 1 項工具識別歧義問題；補上 JSON／SSE 回歸測試、保留完整 namespace 身分並拒絕衝突宣告／歧義輸出後，兩軸複查均無剩餘項目。
 
 2026-10-11 `access_programs` 修正：移除 Chat 整份客戶端正文的頂層白名單，改為選取支援的模型選項；不送出私有／未知客戶端頂層擴充，仍明確拒絕已知且無法保留的模型語意。Responses 僅剝除已確認的 `access_programs`。`npm test`（224 項）、型別檢查與最新版 Windows EXE 驗證通過，真實課堂 Router 的 Chat／Responses JSON／SSE 在帶有此欄位時皆完成。兩軸審查提出的 prompt／logprobs 語意遺失問題已改為明確報錯，複查無剩餘項目；仍未驗證 Codex 實際 MCP 操作。
+
+2026-10-11 工具提示對齊：參照 opencodex 2.81.0（19bd34a）的 tool-catalog-nudge、responses-code-mode 與 exec 輸出契約，將提示實作於 VansPod 的 codexWire/tool-guidance。Chat 依實際送出的工具名稱追加工具目錄契約；Chat／Responses 在選中的工具含 builtin freeform exec、且沒有 builtin shell bridge 時，追加輸出與 host 契約及 exec input 描述。functions namespace 視為 Codex builtin，遠端同名工具不觸發 code mode；tool_choice=none 不追加目錄，forced／allowed 選擇限制可見工具。保留原始提示詞、訊息位置、grammar 描述及既有 Router 相容轉換，避免重複追加相同提示。這是工具提示行為對齊，不代表所有 adapter 封包或工具結果正規化已逐字複製 opencodex；VansPod 不依賴該專案。
+
+本次驗證：完整測試 230 項與型別檢查通過；最後介面簡化後 65 項轉接相關測試再次通過。Windows EXE 的五條 JSON／SSE 路徑、偏好恢復與憑證生命週期驗證通過，真實使用者設定雜湊不變。離線執行同版 opencodex 與 VansPod 的三組對照輸入，Responses instructions 在純文字、inline 及頂層工具樣本逐字一致；Chat 工具樣本均包含目錄、echo 與 host 契約。規範／需求兩軸審查均無剩餘項目。未在本輪驗證真實課堂模型或 Codex 實際 MCP 執行，不能以提示對齊宣稱 aborted 已修復。

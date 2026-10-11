@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { decodeRequestBody, ResponsesSse, responsesToChatBody, toolKindsFromResponses } from "../responsesChat";
+import { codexResponsesUpstreamBody } from "../codexWire/request";
+import { codexToolGuidance, CODE_MODE_RESULT_ECHO_SENTENCE, CODE_MODE_HOST_CONTRACT_SENTENCE } from "../codexWire/tool-guidance";
 
 describe("responses to chat", () => {
   it("turns Responses input into a streaming chat completion", () => {
@@ -90,7 +92,9 @@ describe("responses to chat", () => {
       "vcr-auto",
     );
     const parsed = JSON.parse(body);
-    assert.deepEqual(parsed.messages, [
+    assert.equal(parsed.messages[0].role, "system");
+    assert.match(parsed.messages[0].content, /Valid tool names for this turn are exactly `shell`/);
+    assert.deepEqual(parsed.messages.slice(1), [
       { role: "user", content: "list files" },
       {
         role: "assistant",
@@ -166,4 +170,53 @@ describe("responses to chat", () => {
     assert.match(done, /event: response\.completed/);
     assert.match(done, /data: \[DONE\]/);
   });
+});
+
+
+test("Tool guidance distinguishes code mode from structured exec and shell bridges", () => {
+  const exec = { type: "custom", name: "exec", format: { type: "text" } };
+  const shell = { type: "function", name: "exec_command", parameters: { type: "object" } };
+  for (const tools of [[{ ...exec, type: "function" }], [{ type: "namespace", name: "remote", tools: [exec] }], [exec, shell]]) {
+    const body = { tools, input: "hello" };
+    assert.equal(codexToolGuidance(body).codeMode, false);
+    assert.equal(codexResponsesUpstreamBody(body).instructions, undefined);
+  }
+  assert.equal(codexToolGuidance({ tools: [exec, { type: "namespace", name: "remote", tools: [shell] }] }).codeMode, true);
+});
+
+test("Tool guidance follows none, forced and allowed tool choices", () => {
+  const exec = { type: "custom", name: "exec" };
+  const read = { type: "function", name: "read", parameters: {} };
+  for (const tool_choice of ["none", { type: "function", name: "read" }, { type: "allowed_tools", tools: [{ type: "function", name: "read" }] }]) {
+    const body = { tools: [exec, read], tool_choice };
+    assert.equal(codexToolGuidance(body).codeMode, false);
+    assert.equal(codexResponsesUpstreamBody(body).instructions, undefined);
+  }
+  assert.equal(codexToolGuidance({ tools: [exec, read], tool_choice: { type: "custom", name: "exec" } }).codeMode, true);
+  const chat = JSON.parse(responsesToChatBody(JSON.stringify({ tools: [exec, read], tool_choice: "none", input: "hello" }), "model"));
+  assert.deepEqual(chat.messages, [{ role: "user", content: "hello" }]);
+});
+
+test("Responses guidance is idempotent and retains the original grammar and transcript", () => {
+  const body = { instructions: `ORIGINAL\n\n${CODE_MODE_RESULT_ECHO_SENTENCE}`, tools: [{ type: "custom", name: "exec", format: { type: "grammar", syntax: "regex", definition: "RAW-GRAMMAR" } }], input: [{ role: "developer", content: "PROJECT" }] };
+  const original = structuredClone(body);
+  const first = codexResponsesUpstreamBody(body);
+  const second = codexResponsesUpstreamBody({ ...body, instructions: first.instructions });
+  assert.deepEqual(second, first);
+  assert.equal(String(first.instructions).split(CODE_MODE_RESULT_ECHO_SENTENCE).length, 2);
+  assert.ok(String(first.instructions).includes(CODE_MODE_HOST_CONTRACT_SENTENCE));
+  assert.match(JSON.stringify(first.tools), /RAW-GRAMMAR/);
+  assert.deepEqual(first.input, body.input);
+  assert.deepEqual(body, original);
+});
+
+test("Chat guidance uses collision-safe aliases and is not appended twice", () => {
+  const tools = [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec" }] }, { type: "function", name: "functions__exec", parameters: {} }];
+  const raw = { instructions: "ORIGINAL", tools, input: "hello" };
+  const first = JSON.parse(responsesToChatBody(JSON.stringify(raw), "model"));
+  const name = first.tools[0].function.name;
+  assert.match(name, /^vanspod_tool_/);
+  assert.ok(first.messages[0].content.includes(`\`${name}\` is Codex code mode`));
+  const second = JSON.parse(responsesToChatBody(JSON.stringify({ ...raw, instructions: first.messages[0].content }), "model"));
+  assert.deepEqual(first, second);
 });

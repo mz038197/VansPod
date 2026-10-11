@@ -170,7 +170,7 @@ for (const stream of [false, true]) test(`Codex Chat restores namespaced freefor
       body: { stream, tools: [tool], input: [output[0], { type: "custom_tool_call_output", call_id: "call_exec", output: "hello" }] } });
     await next.text();
     const messages = calls[1].body.messages as Array<{ tool_calls: Array<{ function: { name: string } }> }>;
-    assert.equal(messages[0].tool_calls[0].function.name, "functions__exec");
+    assert.equal(messages.find(message => message.tool_calls)?.tool_calls[0].function.name, "functions__exec");
   }, stream ? `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ ...call, index: 0 }] }, finish_reason: "tool_calls" }] })}\n\n` : { choices: [{ message: { content: null, tool_calls: [call] }, finish_reason: "tool_calls" }] });
 });
 
@@ -625,4 +625,21 @@ test("Chat adapter carries Codex text and images and returns a non-streaming Res
     const body = await response.json() as { output: Array<{ content: Array<{ text: string }> }> };
     assert.equal(body.output[0].content[0].text, "圖中有文字");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+for (const adapter of ["chat", "responses"] as const) test(`Codex ${adapter} sends code-mode guidance with its actual tool identity`, async () => {
+  const body = { instructions: "ORIGINAL RULES", stream: false, input: [{ type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "text" } }] }] }, { role: "user", content: "hello" }] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter(adapter).send({ client: "codex", model: "allowed", body, routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal });
+    await response.text();
+    const sent = calls[0].body;
+    const guidance = adapter === "chat" ? JSON.stringify(sent.messages) : String(sent.instructions);
+    assert.match(guidance, /ORIGINAL RULES/);
+    assert.match(guidance, /Nothing in the isolate is echoed automatically/);
+    assert.match(guidance, /Host contract for the nested helpers/);
+    assert.match(guidance, /ALL_TOOLS/);
+    assert.match(JSON.stringify(sent.tools), /JavaScript source for unified exec/);
+    if (adapter === "chat") assert.match(guidance, /functions__exec/);
+    assert.deepEqual(body.instructions, "ORIGINAL RULES");
+  }, adapter === "chat" ? { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] } : { object: "response", status: "completed", output: [] });
 });

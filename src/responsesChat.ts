@@ -1,3 +1,5 @@
+import { normalizeCodexRequest } from "./codexWire/request";
+import { codexToolGuidance, appendToolInstructions, codeModeInputDescription } from "./codexWire/tool-guidance";
 import { Buffer } from "node:buffer";
 import { gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import {
@@ -225,7 +227,9 @@ export function responsesToChatBody(raw: string, model: string): string {
   } catch {
     throw new AdapterError("Responses 正文必須是 JSON 物件。");
   }
-  parsed = codexChatTools(parsed).body;
+  const source = normalizeCodexRequest(parsed);
+  parsed = codexChatTools(source).body;
+  const guidance = codexToolGuidance(source, Array.isArray(parsed.tools) ? parsed.tools.map(value => String(object(value, "tool").name)) : []);
   const options = codexChatOptions(parsed, chatResponseFormat);
   if (parsed.tools !== undefined) for (const tool of list(parsed.tools, "tools")) {
     const record = object(tool, "tool");
@@ -324,6 +328,17 @@ export function responsesToChatBody(raw: string, model: string): string {
         return converted ? [converted] : [];
       })
     : [];
+  if (guidance.catalog) {
+    const instructions = typeof parsed.instructions === "string" ? parsed.instructions : "";
+    const guided = appendToolInstructions(instructions, [guidance.catalog]);
+    if (instructions) messages[0] = { role: "system", content: guided };
+    else messages.unshift({ role: "system", content: guided });
+  }
+  for (const tool of tools) if (guidance.execNames.has(tool.function.name)) {
+    const parameters = object(tool.function.parameters, "parameters");
+    const input = object(object(parameters.properties, "properties").input, "input");
+    input.description = codeModeInputDescription(typeof input.description === "string" ? input.description : undefined);
+  }
   return JSON.stringify({
     model,
     messages,

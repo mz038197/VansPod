@@ -1,3 +1,4 @@
+import { codexToolGuidance, appendToolInstructions, codeModeInputDescription, CODE_MODE_RESULT_ECHO_SENTENCE, CODE_MODE_HOST_CONTRACT_SENTENCE } from "./tool-guidance";
 import { allowedFields, list, object, string, type JsonObject } from "../adapters/types";
 
 /** Move Codex's inline tool catalog into the standard Responses tools field. */
@@ -25,13 +26,16 @@ export function codexResponsesUpstreamBody(body: JsonObject): JsonObject {
   // This Codex private account selector is not part of the Router's Responses
   // contract. Other unknown fields remain intact for upstream extensions.
   const { access_programs: _accessPrograms, ...publicBody } = body;
-  const tool = (value: unknown): JsonObject => {
+  const guidance = codexToolGuidance(body);
+  const tool = (value: unknown, namespace?: string): JsonObject => {
     const record = object(value, "tool");
-    if (record.type === "namespace") return { ...record, tools: list(record.tools, "namespace tools").map(tool) };
+    if (record.type === "namespace") return { ...record, tools: list(record.tools, "namespace tools").map(value => tool(value, String(record.name))) };
     if (record.type !== "custom") return record;
     const { format, ...rest } = record;
+    const codeMode = guidance.codeMode && record.name === "exec" && (namespace === undefined || namespace === "functions");
+    const description = `Raw input for ${String(record.name)}.${format === undefined ? "" : ` The input must follow this format definition: ${JSON.stringify(format)}`}`;
     return { ...rest, type: "function", parameters: { type: "object", properties: { input: {
-      type: "string", description: `Raw input for ${String(record.name)}.${format === undefined ? "" : ` The input must follow this format definition: ${JSON.stringify(format)}`}`,
+      type: "string", description: codeMode ? codeModeInputDescription(description) : description,
     } }, required: ["input"], additionalProperties: false } };
   };
   const choice = (value: unknown): unknown => {
@@ -42,7 +46,8 @@ export function codexResponsesUpstreamBody(body: JsonObject): JsonObject {
     return record;
   };
   return { ...publicBody,
-    ...(body.tools === undefined ? {} : { tools: list(body.tools, "tools").map(tool) }),
+    ...(guidance.codeMode ? { instructions: appendToolInstructions(typeof body.instructions === "string" ? body.instructions : "", [CODE_MODE_RESULT_ECHO_SENTENCE, CODE_MODE_HOST_CONTRACT_SENTENCE]) } : {}),
+    ...(body.tools === undefined ? {} : { tools: list(body.tools, "tools").map(value => tool(value)) }),
     ...(body.tool_choice === undefined ? {} : { tool_choice: choice(body.tool_choice) }),
     ...(Array.isArray(body.input) ? { input: body.input.map(value => {
       const item = object(value, "input item");
