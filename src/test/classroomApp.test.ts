@@ -282,6 +282,7 @@ function harness(
       cwd: string,
     ) => Promise<{ exitCode: number | undefined; output: string }>;
     providers?: Array<Record<string, unknown>>;
+    setModelOptions?: (value: ModelOptions | null) => Promise<void>;
   },
 ) {
   const redeemCalls: { invite_code: string; nickname: string }[] = [];
@@ -420,7 +421,10 @@ function harness(
         routeWrites.vsCode += 1;
         docs.vsCode = doc;
       },
-      async setModelOptions(options) { modelOptions = options && structuredClone(options); },
+      async setModelOptions(value) {
+        await options?.setModelOptions?.(value);
+        modelOptions = value && structuredClone(value);
+      },
     },
     copilot: {
       async read() {
@@ -560,6 +564,25 @@ describe("Classroom App redeem", () => {
 });
 
 describe("Copy Classroom API Key", () => {
+  it("does not read or forward unreadable saved credentials after startup rejects the connection", async () => {
+    const storage: ConnectionStorage = {
+      async getConnection() { throw new Error(`unreadable ${KEY}`); },
+      async setConnection() { throw new Error("unused"); },
+      async clearConnection() {},
+    };
+    const h = harness(undefined, { storage });
+    await h.app.start();
+    await h.app.copyKey();
+    await h.app.reloadAllowlist();
+    assert.equal(h.app.view().canCopyKey, false);
+    assert.equal(h.clipboardWrites(), 0);
+    assert.equal(renderPage(h.app.view()).includes(KEY), false);
+    await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+    assert.deepEqual(h.sent(), []);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.target, "chatgpt");
+    assert.equal(h.sent().at(-1)?.apiKey, undefined);
+  });
   it("copies the stored key and tells the student not to share it", async () => {
     const { app, clipboard } = harness();
     await app.redeem("ABC12345", "Ada");
@@ -603,6 +626,100 @@ describe("Copy Classroom API Key", () => {
 });
 
 describe("Clear Classroom Connection", () => {
+  for (const persistence of ["temporary", "persistent"] as const) {
+    it(`clears the entire ${persistence} connection across restart while preserving client settings and the running proxy`, async () => {
+      const retained = createConnectionStorage(createMemorySecureStorage());
+      const storage: ConnectionStorage = {
+        getConnection: () => retained.getConnection(),
+        async setConnection(value) { await retained.setConnection(value); return { persistence }; },
+        clearConnection: () => retained.clearConnection(),
+      };
+      const personalProvider = { name: "PersonalProvider", apiKey: "personal-key", models: [{ id: "personal-model" }] };
+      const h = harness(undefined, { storage, codex: { personal: "codex-personal" }, claudeTerminal: { PERSONAL: "claude-personal" }, vsCode: { personal: "vscode-personal" }, providers: [personalProvider], async write() { throw new Error("Workspace MCP Config must remain untouched"); } });
+      await h.app.redeem("invite", "Student");
+      await h.app.start();
+      await h.app.setSwitch("classroom");
+      await h.app.clearConnection();
+      const view = h.app.view();
+      assert.equal(view.connected, false);
+      assert.equal(view.classLabel, undefined);
+      assert.equal(view.nickname, undefined);
+      assert.equal(view.catalog, undefined);
+      assert.equal(view.modelId, undefined);
+      assert.equal(view.mode, "native");
+      assert.equal(view.canCopyKey, false);
+      assert.equal(h.modelOptions(), null);
+      assert.equal(h.proxyStops(), 0);
+      await h.app.copyKey();
+      assert.equal(h.clipboardWrites(), 0);
+      await h.app.forward({ client: "codex", model: "later" });
+      assert.equal(h.sent().at(-1)?.target, "chatgpt");
+      assert.equal(h.sent().at(-1)?.apiKey, undefined);
+      await h.app.forward({ client: "claude", model: "later" });
+      assert.equal(h.sent().at(-1)?.target, "claude.ai");
+      assert.equal(h.sent().at(-1)?.apiKey, undefined);
+      await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+      assert.equal(h.docs.codex.personal, "codex-personal");
+      assert.equal(h.docs.claudeTerminal.PERSONAL, "claude-personal");
+      assert.equal(h.docs.vsCode.personal, "vscode-personal");
+      assert.deepEqual(h.copilotProviders().find(p => p.name === "PersonalProvider"), personalProvider);
+      const restarted = harness(undefined, { storage });
+      await restarted.app.start();
+      assert.equal(restarted.app.view().connected, false);
+      assert.equal(restarted.app.view().mode, "native");
+      assert.equal(restarted.app.view().canCopyKey, false);
+    });
+  }
+  it("stays disconnected and Native when client model restoration fails after credential deletion", async () => {
+    let fail = false;
+    const h = harness(undefined, { async setModelOptions(value) { if (fail && !value) throw new Error(`route failed ${KEY}`); } });
+    await h.app.redeem("invite", "Student");
+    await h.app.start();
+    await h.app.setSwitch("classroom");
+    fail = true;
+    await h.app.clearConnection();
+    const view = h.app.view();
+    assert.equal(view.connected, false);
+    assert.equal(view.mode, "native");
+    assert.equal(view.canCopyKey, false);
+    assert.equal(await h.storedConnection(), undefined);
+    assert.match(view.notice ?? "", /已清除.*Native.*稍後/);
+    assert.equal(renderPage(view).includes(KEY), false);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.target, "chatgpt");
+    assert.equal(h.sent().at(-1)?.apiKey, undefined);
+  });
+  it("reports failed persistent clear without hiding the retained identity or restart behavior", async () => {
+    const retained = createConnectionStorage(createMemorySecureStorage());
+    await retained.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved", name: "Lesson" }, nickname: "Student", mode: "classroom" });
+    const storage: ConnectionStorage = {
+      getConnection: () => retained.getConnection(),
+      setConnection: connection => retained.setConnection(connection),
+      async clearConnection() { throw new Error(`delete failed ${KEY}`); },
+    };
+    const h = harness(undefined, { storage });
+    await h.app.start();
+    const catalog = h.app.view().catalog;
+    await h.app.clearConnection();
+    const view = h.app.view();
+    assert.equal(view.connected, true);
+    assert.equal(view.classLabel, "Saved · Lesson");
+    assert.equal(view.nickname, "Student");
+    assert.equal(view.mode, "classroom");
+    assert.deepEqual(view.catalog, catalog);
+    assert.equal(view.canCopyKey, true);
+    assert.match(view.notice ?? "", /無法清除.*重新啟動/);
+    assert.equal(renderPage(view).includes(KEY), false);
+    await h.app.copyKey();
+    assert.equal(h.clipboard(), KEY);
+    await h.app.forward({ client: "codex", model: "later" });
+    assert.equal(h.sent().at(-1)?.apiKey, KEY);
+    assert.equal(h.sent().at(-1)?.target, "router");
+    const restarted = harness(undefined, { storage });
+    await restarted.app.start();
+    assert.equal(restarted.app.view().classLabel, "Saved · Lesson");
+    assert.equal(restarted.app.view().mode, "classroom");
+  });
   it("removes the copy entry and Class Label", async () => {
     const { app, storedKey, clipboardWrites } = harness();
     await app.redeem("ABC12345", "Ada");
