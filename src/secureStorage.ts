@@ -1,3 +1,4 @@
+import { StorageError } from "./storageErrors";
 import type { ModelSwitchMode, NicknameRedeemResult } from "./classroomApp";
 
 export type StorageResult = { persistence: "temporary" | "persistent" };
@@ -19,7 +20,7 @@ export type ClassroomConnection = {
 
 export interface ConnectionStorage {
   getConnection(): Promise<ClassroomConnection | undefined>;
-  setConnection(connection: ClassroomConnection): Promise<StorageResult>;
+  setConnection(connection: ClassroomConnection, options?: { allowTemporary?: boolean }): Promise<StorageResult>;
   clearConnection(): Promise<void>;
 }
 
@@ -36,7 +37,7 @@ export function createMemorySecureStorage(): SecureStorage {
   };
 }
 
-const CONNECTION_KEY = "classroom-connection";
+export const CONNECTION_KEY = "classroom-connection";
 
 export function createConnectionStorage(storage: SecureStorage): ConnectionStorage {
   return {
@@ -44,12 +45,12 @@ export function createConnectionStorage(storage: SecureStorage): ConnectionStora
       const raw = await storage.get(CONNECTION_KEY);
       if (raw === undefined) return undefined;
       let value: unknown;
-      try { value = JSON.parse(raw); } catch { throw new Error("課堂連線資料無法讀取。請重新連線。"); }
-      if (!isClassroomConnection(value)) throw new Error("課堂連線資料無法讀取。請重新連線。");
+      try { value = JSON.parse(raw); } catch { throw new StorageError("unreadable"); }
+      if (!isClassroomConnection(value)) throw new StorageError("unreadable");
       return value;
     },
     async setConnection(connection) {
-      if (!isClassroomConnection(connection)) throw new Error("課堂連線資料無法保存。");
+      if (!isClassroomConnection(connection)) throw new StorageError("unavailable");
       return storage.set(CONNECTION_KEY, JSON.stringify(connection));
     },
     async clearConnection() { await storage.delete(CONNECTION_KEY); },

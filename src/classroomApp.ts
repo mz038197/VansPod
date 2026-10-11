@@ -1,4 +1,5 @@
 import type { ConnectionStorage } from "./secureStorage";
+import { StorageError } from "./storageErrors";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -175,6 +176,7 @@ const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一�
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private readonly hiddenKeys = new Set<string>();
+  private initialization: Promise<void> | undefined;
   private connected = false;
   private classLabel: string | undefined;
   private nickname: string | undefined;
@@ -547,7 +549,7 @@ export class ClassroomApp {
     }
     await this.deps.storage.setConnection({
       version: 1, apiKey: redeemed.api_key, session: redeemed.session, nickname: name, mode: this.mode,
-    });
+    }, { allowTemporary: true });
     this.hiddenKeys.add(redeemed.api_key);
     const label = [redeemed.session.class_name, redeemed.session.name]
       .filter(Boolean)
@@ -699,6 +701,8 @@ export class ClassroomApp {
   }
 
   async start(): Promise<void> {
+    if (!this.initialization) this.initialization = this.restoreConnection();
+    await this.initialization;
     const codex = await this.deps.routes.readCodex();
     const claude = await this.deps.routes.readClaudeTerminal();
     const vsCode = await this.deps.routes.readVsCodeClaude();
@@ -744,6 +748,28 @@ export class ClassroomApp {
       });
       this.noteRestart("vscode");
     }
+  }
+
+  private async restoreConnection(): Promise<void> {
+    if (this.connected) return;
+    let connection;
+    try { connection = await this.deps.storage.getConnection(); }
+    catch (error) {
+      this.detail = error instanceof StorageError ? error.message : "課堂連線無法讀取。請重新連線。";
+      return;
+    }
+    if (!connection) return;
+    this.hiddenKeys.add(connection.apiKey);
+    this.classLabel = [connection.session.class_name, connection.session.name].filter(Boolean).join(" · ") || undefined;
+    this.courseTitle = connection.session.class_name || undefined;
+    this.sessionTitle = connection.session.name || undefined;
+    this.nickname = connection.nickname;
+    this.connected = true;
+    this.detail = "Classroom API Key 已設定。";
+    // Saved Classroom mode needs the fresh allowlist before a later restoration step enables it.
+    this.mode = "native";
+    await this.loadCatalog();
+    await this.loadModels(connection.apiKey);
   }
 
   async stop(): Promise<void> {

@@ -1,4 +1,4 @@
-import { createConnectionStorage, createMemorySecureStorage } from "./secureStorage";
+import { createPlatformConnectionStorage } from "./platformStorage";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -554,7 +554,7 @@ async function main(): Promise<void> {
         throw new Error("Classroom App 不寫 MCP 設定");
       },
     },
-    storage: createConnectionStorage(createMemorySecureStorage()),
+    storage: createPlatformConnectionStorage(storageFile()),
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
