@@ -1,3 +1,4 @@
+import { createConnectionStorage, createMemorySecureStorage } from "./secureStorage";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -97,32 +98,6 @@ async function writeCopilotProviders(doc: {
     `${JSON.stringify(doc.providers, null, 2)}\n`,
     "utf8",
   );
-}
-
-function createFileStorage(filePath: string) {
-  return {
-    async getApiKey(): Promise<string | undefined> {
-      try {
-        const raw = await fs.readFile(filePath, "utf8");
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object") {
-          return undefined;
-        }
-        const apiKey = (parsed as { apiKey?: unknown }).apiKey;
-        return typeof apiKey === "string" && apiKey ? apiKey : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    async setApiKey(apiKey: string): Promise<void> {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify({ apiKey }), "utf8");
-    },
-    async clearApiKey(): Promise<void> {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, "{}", "utf8");
-    },
-  };
 }
 
 function modelIdsInRouterOrder(payload: unknown): string[] {
@@ -579,7 +554,7 @@ async function main(): Promise<void> {
         throw new Error("Classroom App 不寫 MCP 設定");
       },
     },
-    storage: createFileStorage(storageFile()),
+    storage: createConnectionStorage(createMemorySecureStorage()),
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
