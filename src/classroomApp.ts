@@ -627,20 +627,19 @@ export class ClassroomApp {
 
   private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
     if (mode === "native") {
-      await this.saveMode("native");
+      if (!await this.saveMode("native")) return;
       this.mode = "native";
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
-    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
-    if (!apiKey || this.modelIds.length === 0) {
+    if (!this.connected || this.modelIds.length === 0) {
       this.mode = "native";
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
-    await this.saveMode("classroom");
+    if (!await this.saveMode("classroom")) return;
     const entering = this.mode !== "classroom";
     this.mode = "classroom";
     if (entering) {
@@ -649,9 +648,16 @@ export class ClassroomApp {
     await this.publishModelOptions();
   }
 
-  private async saveMode(mode: ModelSwitchMode): Promise<void> {
-    const connection = await this.deps.storage.getConnection();
-    if (connection) await this.deps.storage.setConnection({ ...connection, mode });
+  private async saveMode(mode: ModelSwitchMode): Promise<boolean> {
+    try {
+      const connection = await this.deps.storage.getConnection();
+      if (connection) await this.deps.storage.setConnection({ ...connection, mode }, { allowTemporary: false });
+      this.notice = undefined;
+      return true;
+    } catch {
+      this.notice = "無法儲存模型模式。已保留原本模式，請稍後再試。";
+      return false;
+    }
   }
 
   async reloadCatalog(): Promise<void> {
@@ -677,7 +683,7 @@ export class ClassroomApp {
     } catch {
       return;
     }
-    if (ids.length === 0) {
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || !id.trim())) {
       this.modelIds = [];
       this.mode = "native";
       this.forgetModelChoices();
@@ -826,10 +832,12 @@ export class ClassroomApp {
     this.nickname = connection.nickname;
     this.connected = true;
     this.detail = "Classroom API Key 已設定。";
-    // Saved Classroom mode needs the fresh allowlist before a later restoration step enables it.
     this.mode = "native";
     await this.loadCatalog();
     await this.loadModels(connection.apiKey);
+    if (connection.mode === "classroom" && this.modelIds.length > 0) {
+      this.mode = "classroom";
+    }
   }
 
   async stop(): Promise<void> {
