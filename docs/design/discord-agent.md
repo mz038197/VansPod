@@ -77,7 +77,7 @@ Discord Thread 中應能看到 Queue 排名、執行進度、最終結果、取�
 
 - 不做 Slack／LINE／Telegram／飛書、OpenAB 專用 EXE、對外 HTTP 入口、Cloudflare Tunnel、控制平面、多機器人共享一個學生環境、語音、slash command、表情反應操作。
 - 不強制覆寫 Agent 原本工具權限，不讓其他 Public 使用者批准權限，不提供批次批准。
-- **Q29 已由「5 分鐘逾時」改為「無限等待」；Q30 最終是「崩潰後不自動重試」**，Q31「重試上限」提問因而不適用。
+- **Q29 已由「5 分鐘逾時」改為「無限等待」；Q30 最終是「崩潰後不自動重試」**，先前關於「崩潰自動重試上限」的追問因此不適用；後續 **Q31** 已另用於「取消執行中任務」的決策。
 - **Thread 封存／刪除都清 Session（Q20 最終 B）**；重新開啟封存 Thread 建立新的 Session，而不是恢復舊上下文。
 - 舊 [2026-10-10 handoff](../../handoff/2026-10-10-discord-acp.md) 的「ACP CLI 已由學生自行安裝」已被 **Classroom App 協助安裝／偵測** 的新決策更新。
 
