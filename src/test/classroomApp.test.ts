@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
+import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
 import {
   ClassroomApp,
@@ -10,6 +11,227 @@ import {
 
 const KEY = "vcr_sk_nick";
 const PROXY = "http://127.0.0.1:47821";
+
+function persistentStorageFake(): ConnectionStorage {
+  const records = createConnectionStorage(createMemorySecureStorage());
+  return {
+    getConnection: () => records.getConnection(),
+    clearConnection: () => records.clearConnection(),
+    async setConnection(connection) {
+      await records.setConnection(connection);
+      return { persistence: "persistent" };
+    },
+  };
+}
+
+it("clear during startup waits for restoration and leaves both memory and persistent storage empty", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { storage: {
+    async getConnection() {
+      const snapshot = await disk.getConnection();
+      entered();
+      await gate;
+      return snapshot;
+    },
+    setConnection: connection => disk.setConnection(connection),
+    clearConnection: () => disk.clearConnection(),
+  } });
+  const start = h.app.start();
+  await started;
+  const clear = h.app.clearConnection();
+  release();
+  await Promise.all([start, clear]);
+  assert.equal(h.app.view().connected, false);
+  assert.equal(await disk.getConnection(), undefined);
+  await h.app.start();
+  assert.equal(h.app.view().connected, false);
+});
+
+it("a request arriving during replacement uses the new key and new allowlist together", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, {
+    storage: {
+      getConnection: () => disk.getConnection(),
+      clearConnection: () => disk.clearConnection(),
+      async setConnection(connection) {
+        const result = await disk.setConnection(connection);
+        if (connection.apiKey === KEY) { entered(); await gate; }
+        return result;
+      },
+    },
+    sessionModels: async key => key === KEY ? ["new-only-model"] : ["old-only-model"],
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  const redeem = h.app.redeem("NEW", "New student");
+  await started;
+  const forward = h.app.forward({ client: "codex", model: "old-only-model" });
+  release();
+  await Promise.all([redeem, forward]);
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "new-only-model", apiKey: KEY }]);
+});
+
+it("an in-flight Router response does not block clear or authorize later requests", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sending = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { send: async () => { entered(); await gate; } });
+  await h.app.redeem("NEW", "New student");
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  const forward = h.app.forward({ client: "codex", model: "later" });
+  await sending;
+  const clear = h.app.clearConnection();
+  try {
+    assert.equal(await Promise.race([clear.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100))]), true);
+    await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  } finally {
+    release();
+    await Promise.all([forward, clear]);
+  }
+  assert.equal(h.sent().length, 1);
+});
+
+it("clear requested during a redeem runs after its commit and cannot leave a resurrected class", async () => {
+  const memory = createConnectionStorage(createMemorySecureStorage());
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, { storage: {
+    getConnection: () => memory.getConnection(),
+    clearConnection: () => memory.clearConnection(),
+    async setConnection(connection) {
+      entered();
+      await gate;
+      return memory.setConnection(connection);
+    },
+  } });
+  const redeem = h.app.redeem("NEW", "New student");
+  await started;
+  const clear = h.app.clearConnection();
+  release();
+  await Promise.all([redeem, clear]);
+  assert.equal(h.app.view().connected, false);
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(await memory.getConnection(), undefined);
+});
+
+it("committed replacement never reuses the old allowlist or catalog while the new Router is offline", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    sessionModels: async key => {
+      if (key === KEY) throw new Error("offline");
+      return ["old-only-model"];
+    },
+    catalogFetch: async key => {
+      if (key === KEY) throw new Error("offline");
+      return { course_catalog_yaml: REMOTE_YAML };
+    },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.app.view().catalog, undefined);
+  await assert.rejects(h.app.forward({ client: "copilot", model: "old-only-model" }), /沒有上課模型/);
+  assert.equal(h.sent().length, 0);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().nickname, "New student");
+  await restarted.app.copyKey();
+  assert.equal(restarted.clipboard(), KEY);
+});
+
+it("refuses a session replacement when saving and deleting fail, keeping the usable class", async () => {
+  const disk = persistentStorageFake();
+  const old = { version: 1 as const, apiKey: "old-key", session: { class_name: "Old", name: "Lesson" }, nickname: "Old student", mode: "native" as const };
+  await disk.setConnection(old);
+  let refuseWrites = false;
+  const storage = createPersistentConnectionStorage({
+    getConnection: () => disk.getConnection(),
+    async setConnection(connection) {
+      if (refuseWrites) throw new Error(KEY);
+      return disk.setConnection(connection);
+    },
+    async clearConnection() { throw new Error("old-key"); },
+  });
+  const h = harness(undefined, { storage });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  refuseWrites = true;
+  const previous = h.app.view();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, previous.classLabel);
+  assert.equal(h.app.view().nickname, previous.nickname);
+  assert.deepEqual(h.app.view().catalog, previous.catalog);
+  assert.equal(h.app.view().mode, previous.mode);
+  assert.match(h.app.view().notice ?? "", /換堂|連線/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), "old-key");
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "later", apiKey: "old-key" }]);
+  assert.deepEqual(await disk.getConnection(), { ...old, mode: "classroom" });
+});
+
+it("replacement can be temporary only after persistent clearing, and restart never returns to the old class", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "native" });
+  const storage = createPersistentConnectionStorage({
+    getConnection: () => disk.getConnection(),
+    async setConnection() { throw new Error("secure storage unavailable"); },
+    clearConnection: () => disk.clearConnection(),
+  });
+  const h = harness(undefined, { storage });
+  await h.app.start();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+  await h.app.setSwitch("classroom");
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.apiKey, KEY);
+  assert.equal(await disk.getConnection(), undefined);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().connected, false);
+  assert.equal(restarted.app.view().canCopyKey, false);
+});
+
+it("an unreadable stored connection cannot be displaced by a failed redeem commit", async () => {
+  let retained = true;
+  const persistent: ConnectionStorage = {
+    async getConnection() { throw new Error("ciphertext cannot decrypt"); },
+    async setConnection() { throw new Error(KEY); },
+    async clearConnection() { if (retained) throw new Error(KEY); },
+  };
+  const h = harness(undefined, { storage: createPersistentConnectionStorage(persistent) });
+  await h.app.start();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().connected, false);
+  assert.equal(h.app.view().canCopyKey, false);
+  assert.match(h.app.view().notice ?? "", /換堂未完成/);
+  assert.equal(h.modelKeys.length, 0);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  retained = false;
+  await h.app.redeem("NEW", "New student");
+  assert.equal(h.app.view().connected, true);
+});
 
 it("temporary connections retain the whole record only in the current process storage", async () => {
   const storage = createConnectionStorage(createMemorySecureStorage());
@@ -39,10 +261,12 @@ function harness(
   session?: { class_name?: string; name?: string },
   options?: {
     storage?: ConnectionStorage;
+    send?: (upstream: UpstreamSend) => Promise<void>;
     redeemError?: Error;
     catalogYaml?: unknown;
     catalogBody?: { course_catalog_yaml?: unknown };
     catalogError?: Error;
+    catalogFetch?: (key: string) => Promise<{ course_catalog_yaml?: unknown }>;
     files?: Record<string, string | undefined>;
     run?: (cwd: string, command: string, onOutput?: (output: string) => void) => Promise<string>;
     runExitCode?: number;
@@ -107,6 +331,7 @@ function harness(
     catalog: {
       async fetchCourseCatalog(apiKey) {
         catalogKeys.push(apiKey);
+        if (options?.catalogFetch) return options.catalogFetch(apiKey);
         if (options?.catalogError) {
           throw options.catalogError;
         }
@@ -217,6 +442,7 @@ function harness(
     },
     async send(upstream) {
       sent.push({ ...upstream });
+      await options?.send?.(upstream);
     },
   });
   return {
