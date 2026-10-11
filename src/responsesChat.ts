@@ -5,6 +5,8 @@ import {
   repairFreeformToolInput,
 } from "./codexWire/apply-patch-envelope";
 import { progressiveFreeformInput } from "./codexWire/progressive-freeform-input";
+import { codexChatTools } from "./codexWire/chat-tools";
+import { codexChatOptions } from "./codexWire/chat-options";
 import { AdapterError, allowedFields, object, list, string } from "./adapters/types";
 import {
   toolCallArgumentsCouldBeJson,
@@ -31,6 +33,8 @@ type ChatTool = {
     strict?: boolean;
   };
 };
+
+export type FreeformToolIdentity = { name: string; namespace?: string };
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
@@ -77,6 +81,7 @@ export function toolKindsFromResponses(raw: string): Map<string, "function" | "c
   } catch {
     return kinds;
   }
+  parsed = codexChatTools(parsed).body;
   if (!Array.isArray(parsed.tools)) {
     return kinds;
   }
@@ -220,15 +225,8 @@ export function responsesToChatBody(raw: string, model: string): string {
   } catch {
     throw new AdapterError("Responses 正文必須是 JSON 物件。");
   }
-  allowedFields(parsed, ["model", "input", "instructions", "tools", "tool_choice", "stream", "max_output_tokens", "temperature", "top_p", "parallel_tool_calls", "reasoning", "store", "metadata", "user", "text", "stream_options"], "Responses → Chat");
-  if (parsed.reasoning !== undefined) {
-    const reasoning = object(parsed.reasoning, "reasoning");
-    allowedFields(reasoning, ["effort"], "Chat reasoning");
-  }
-  if (parsed.text !== undefined) {
-    const text = object(parsed.text, "text");
-    allowedFields(text, ["format"], "Chat text");
-  }
+  parsed = codexChatTools(parsed).body;
+  const options = codexChatOptions(parsed, chatResponseFormat);
   if (parsed.tools !== undefined) for (const tool of list(parsed.tools, "tools")) {
     const record = object(tool, "tool");
     if (record.type !== "function" && record.type !== "custom") throw new AdapterError(`Chat 無法轉換工具類型 ${String(record.type)}。`);
@@ -256,6 +254,22 @@ export function responsesToChatBody(raw: string, model: string): string {
   } else if (Array.isArray(input)) {
     for (const item of input) {
       const record = object(item, "Responses input item");
+      if (record.type === "reasoning") {
+        allowedFields(record, ["type", "id", "status", "summary", "content"], "Chat reasoning item");
+        const summary = list(record.summary, "reasoning summary").map(value => {
+          const part = object(value, "reasoning summary part");
+          allowedFields(part, ["type", "text"], "reasoning summary part");
+          if (part.type !== "summary_text") throw new AdapterError("Chat 無法轉換此 reasoning summary 類型。");
+          return string(part.text, "reasoning summary text");
+        }).join("") + (record.content === undefined ? "" : list(record.content, "reasoning content").map(value => {
+          const part = object(value, "reasoning content part");
+          allowedFields(part, ["type", "text"], "reasoning content part");
+          if (part.type !== "reasoning_text") throw new AdapterError("Chat 無法轉換此 reasoning content 類型。");
+          return string(part.text, "reasoning text");
+        }).join(""));
+        if (summary) messages.push({ role: "assistant", content: `<reasoning>\n${summary}\n</reasoning>` });
+        continue;
+      }
       if (record.type === "input_text" || record.type === "output_text") {
         allowedFields(record, ["type", "text"], "Responses text item");
         const text = string(record.text, "text");
@@ -314,10 +328,7 @@ export function responsesToChatBody(raw: string, model: string): string {
     model,
     messages,
     stream: parsed.stream ?? true,
-    ...(parsed.max_output_tokens !== undefined ? { max_completion_tokens: parsed.max_output_tokens } : {}),
-    ...(parsed.reasoning !== undefined ? { reasoning_effort: (parsed.reasoning as Record<string, unknown>).effort } : {}),
-    ...(parsed.text !== undefined ? { response_format: chatResponseFormat(object(parsed.text, "text").format) } : {}),
-    ...Object.fromEntries(["temperature", "top_p", "parallel_tool_calls", "store", "metadata", "user", "stream_options"].filter(key => parsed[key] !== undefined).map(key => [key, parsed[key]])),
+    ...options,
     ...(parsed.tool_choice !== undefined ? { tool_choice: chatToolChoice(parsed.tool_choice) } : {}),
     ...(tools.length > 0 ? { tools } : {}),
   });
@@ -357,6 +368,9 @@ function sse(name: string, sequence: number, data: Record<string, unknown>): str
 }
 
 export class ResponsesSse {
+  private reasoning = "";
+  private reasoningIndex = -1;
+  private readonly reasoningId = `rs_${randomId()}`;
   private finishReason: unknown;
   private usage: Record<string, unknown> | null = null;
   private sequence = 0;
@@ -386,6 +400,8 @@ export class ResponsesSse {
   constructor(
     private readonly model: string,
     private readonly toolKinds: ReadonlyMap<string, "function" | "custom"> = new Map(),
+    private readonly toolIdentity: (name: string) => FreeformToolIdentity = name => ({ name }),
+    private readonly hideReasoningSummary = false,
   ) {}
 
   created(): string {
@@ -435,6 +451,8 @@ export class ResponsesSse {
           finish_reason?: unknown;
           delta?: {
             content?: unknown;
+            reasoning?: unknown;
+            reasoning_content?: unknown;
             tool_calls?: Array<{
               index?: number;
               id?: string;
@@ -448,6 +466,16 @@ export class ResponsesSse {
     const usage = (parsed as { usage?: Record<string, unknown> }).usage;
     if (usage) this.usage = { input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 };
     let out = "";
+    const reasoning = choice?.delta?.reasoning ?? choice?.delta?.reasoning_content;
+    if (typeof reasoning === "string" && reasoning) {
+      if (this.reasoningIndex < 0) {
+        this.reasoningIndex = this.nextIndex++;
+        out += this.frame("response.output_item.added", { output_index: this.reasoningIndex, item: { type: "reasoning", id: this.reasoningId, summary: [], status: "in_progress" } });
+        if (!this.hideReasoningSummary) out += this.frame("response.reasoning_summary_part.added", { item_id: this.reasoningId, output_index: this.reasoningIndex, summary_index: 0, part: { type: "summary_text", text: "" } });
+      }
+      this.reasoning += reasoning;
+      if (!this.hideReasoningSummary) out += this.frame("response.reasoning_summary_text.delta", { item_id: this.reasoningId, output_index: this.reasoningIndex, summary_index: 0, delta: reasoning });
+    }
     const content = choice?.delta?.content;
     if (typeof content === "string" && content) {
       out += this.delta(content);
@@ -534,10 +562,12 @@ export class ResponsesSse {
       });
     }
     if (tool.started && tool.custom) {
-      const full = progressiveFreeformInput(tool.args, tool.name);
+      const identity = this.toolIdentity(tool.name);
+      const ownsGrammar = identity.namespace === undefined || identity.namespace === "functions";
+      const full = progressiveFreeformInput(tool.args, ownsGrammar ? identity.name : "");
       if (full !== null) {
         const holdPatch =
-          tool.name === "apply_patch" && mayBecomePatchEnvelope(full);
+          ownsGrammar && identity.name === "apply_patch" && mayBecomePatchEnvelope(full);
         if (
           !holdPatch &&
           full.startsWith(tool.inputEmitted) &&
@@ -649,7 +679,7 @@ export class ResponsesSse {
         return { frames, items, failed: true };
       }
       const args = tool.custom
-        ? repairFreeformToolInput(tool.args, tool.name)
+        ? repairFreeformToolInput(tool.args, this.toolIdentity(tool.name).name, this.toolIdentity(tool.name).namespace)
         : tool.args || "{}";
       const item = tool.custom
         ? {
@@ -710,11 +740,18 @@ export class ResponsesSse {
     const status = this.finishReason === "length" ? "incomplete" : "completed";
     const terminalEvent = status === "incomplete" ? "response.incomplete" : "response.completed";
     const textFrames = this.opened ? this.closeText() : "";
+    const reasoningItem = { type: "reasoning", id: this.reasoningId, status: "completed", summary: this.hideReasoningSummary ? [] : [{ type: "summary_text", text: this.reasoning }],
+      ...(this.hideReasoningSummary ? { content: [{ type: "reasoning_text", text: this.reasoning }] } : {}) };
+    const reasoningFrames = this.reasoningIndex < 0 ? "" :
+      (this.hideReasoningSummary ? "" : this.frame("response.reasoning_summary_text.done", { item_id: this.reasoningId, output_index: this.reasoningIndex, summary_index: 0, text: this.reasoning }) +
+      this.frame("response.reasoning_summary_part.done", { item_id: this.reasoningId, output_index: this.reasoningIndex, summary_index: 0, part: reasoningItem.summary[0] })) +
+      this.frame("response.output_item.done", { output_index: this.reasoningIndex, item: reasoningItem });
     const tools = this.closeTools();
     if (tools.failed) {
       return textFrames + tools.frames;
     }
     const output = [
+      ...(this.reasoningIndex >= 0 ? [reasoningItem] : []),
       ...(this.opened
         ? [
             {
@@ -728,7 +765,7 @@ export class ResponsesSse {
         : []),
       ...tools.items,
     ];
-    const indexOf = (item: { id: string }): number => item.id === this.itemId ? this.textIndex : [...this.tools.values()].find(tool => tool.itemId === item.id)?.outputIndex ?? 0;
+    const indexOf = (item: { id: string }): number => item.id === this.reasoningId ? this.reasoningIndex : item.id === this.itemId ? this.textIndex : [...this.tools.values()].find(tool => tool.itemId === item.id)?.outputIndex ?? 0;
     output.sort((left, right) => indexOf(left as { id: string }) - indexOf(right as { id: string }));
     if (output.length === 0) {
       return (
@@ -749,6 +786,7 @@ export class ResponsesSse {
       );
     }
     return (
+      reasoningFrames +
       textFrames +
       tools.frames +
       this.frame(terminalEvent, {

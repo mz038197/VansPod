@@ -61,10 +61,18 @@ MessagesAdapter 僅處理 Claude Code Messages ↔ Messages，保留既有上游
 
 共用介面及三個 adapter 位於 `src/adapters/`；`src/modelProxy.ts` 處理代理交付與錯誤，`src/adapterSettings.ts` 將非敏感偏好保存在 `.vanspod/settings.json`，與 Classroom Connection 分開。`src/classroomApp.ts` 在請求選路時固定當次 adapter，設定切換不更動已開始的請求。
 
-原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 的加密 reasoning、工具 namespace，不會靜默移除後重送。Chat 自訂工具將完整的 Lark／regex grammar 定義保留在 input schema 的描述中，作為模型指令，沿用 freeform／`apply_patch` 修復；這不代表 Chat 提供 Responses 原生 grammar 的受限解碼保證。
+Claude 的原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 傳給 Chat 的加密 reasoning，不會靜默移除後重送。
+
+Codex 的相容處理位於 `src/codexWire/`。兩條上游路徑都將 `additional_tools` 提升為頂層工具宣告。Chat 將工具 namespace 轉為可逆的扁平名稱；將客戶端 `client_metadata` 與模型選項分開，前者不送給 Chat，後者保留或轉換。明文 reasoning 保留為 Responses reasoning 資料，`summary: none` 隱藏摘要而保留下一輪所需文字。Responses 將自訂工具宣告、工具選擇、呼叫歷史及配對結果一起降為 Router 接受的 function 格式，保留 `call_id`；回程則依客戶端原始宣告還原 namespace、自訂工具類型與原始輸入，修復一般 function 包裝及原生 custom 輸入包裝。
+
+Chat 與 Responses 的自訂工具降級，都將完整的 Lark／regex grammar 定義保留在 input schema 的描述中，作為模型指令，沿用 freeform／`apply_patch` 修復；這不代表降級後仍提供 Responses 原生 grammar 的受限解碼保證。opencodex 僅作為程式行為參考，VansPod 不匯入或依賴該專案。
 
 驗證結果須與實作分開判讀；本機模擬及 Windows 打包測試不代表真實 Router 或模型已驗證。
 
 2026-10-11 驗證結果：`npm run typecheck` 通過；`npm test` 共 193 項全部通過；`npm run test:windows-exe` 在 Windows、Node.js v24.19.0 通過，涵蓋最新 EXE 的五條 JSON／SSE 路徑、adapter 偏好跨行程恢復及原有憑證生命週期。本次隔離環境已清理，真實使用者設定雜湊未改變。真實 Router／模型端到端驗證尚未執行。
 
 code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議，Spec 軸提出 5 項工具及截斷處理問題；修正與複查後兩軸均無未解決項目。首次 Windows 驗證在測試資料夾清理時失敗，後續增加清理重試與步驟診斷後完整通過；首次遺留的測試資料夾仍保留，手動清理曾被執行環境拒絕。
+
+2026-10-11 Codex 相容性修正後：`npm run typecheck`、`npm test`（220 項）及 `npm run test:windows-exe` 全部通過。Windows EXE 覆蓋完整客戶端 metadata／模型選項正文，以及自訂工具呼叫與結果的兩輪回送；隔離環境已清理，真實使用者設定雜湊未改變。另以合成腳本及工具結果，對真實課堂 Router 的 `vcr-auto` 驗證 Chat／Responses、JSON／SSE 與 Responses 兩輪往返。這驗證請求及回應格式，不代表已由 Codex 執行真實 MCP 連接器操作。
+
+本輪 code-review 的 Standards 軸提出 1 項遠端工具 grammar 保留問題，Spec 軸提出同一問題及 1 項工具識別歧義問題；補上 JSON／SSE 回歸測試、保留完整 namespace 身分並拒絕衝突宣告／歧義輸出後，兩軸複查均無剩餘項目。

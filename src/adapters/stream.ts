@@ -41,15 +41,23 @@ export function streamResponse(source: AsyncGenerator<string>, abortUpstream: ()
   }), { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" } });
 }
 
-export async function* nativeStream(response: Response, wire: "responses" | "messages"): AsyncGenerator<string> {
+export async function* nativeStream(response: Response, wire: "responses" | "messages", transform?: (data: JsonObject) => JsonObject[]): AsyncGenerator<string> {
   let completed = false;
+  let sequence = 0;
   for await (const frame of frames(response)) {
     if (frame.data !== "[DONE]") {
       const type = frame.data.type;
       if (type === "error" || type === "response.failed") throw new AdapterError("上游串流回報失敗。", 502);
       if (wire === "responses" ? type === "response.completed" || type === "response.incomplete" : type === "message_stop") completed = true;
     }
-    yield frame.raw;
+    if (transform && frame.data !== "[DONE]") {
+      for (const data of transform(frame.data)) yield event(stringEventType(data.type), { ...data, sequence_number: sequence++ });
+    } else yield frame.raw;
   }
   if (!completed) throw new AdapterError("上游串流中斷，未收到完成事件。", 502);
+}
+
+function stringEventType(type: unknown): string {
+  if (typeof type !== "string") throw new AdapterError("上游 SSE 缺少事件類型。", 502);
+  return type;
 }

@@ -5,11 +5,268 @@ import { once } from "node:events";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
 
+for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) test(`${adapter} preserves remote namespace grammar bytes (${stream})`, async () => {
+  for (const [name, input] of [["apply_patch", "*** Begin Patch ***\n*** Delete File: a\n*** End Patch ***"], ["exec", '```js\ntext("hello")\n```']]) {
+    const call = { type: "function_call", id: "f", call_id: "c", name, namespace: "remote", arguments: JSON.stringify({ input }), status: "completed" };
+    const reply = adapter === "responses" ? { status: "completed", output: [call] } : { choices: [{ message: { content: null, tool_calls: [{ id: "c", type: "function", function: { name: `remote__${name}`, arguments: call.arguments } }] }, finish_reason: "tool_calls" }] };
+    const wire = adapter === "responses" ? `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: reply })}\n\n` : `data: ${JSON.stringify({ choices: [{ delta: reply.choices![0].message, finish_reason: "tool_calls" }] })}\n\n`;
+    await withRouter(async routerBaseUrl => {
+      const response = await modelApiAdapter(adapter).send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
+        body: { input: "hello", stream, tools: [{ type: "namespace", name: "remote", tools: [{ type: "custom", name, format: { type: "text" } }] }] } });
+      const raw = await response.text();
+      const result = stream ? JSON.parse(raw.match(/event: response.completed\ndata: ([^\n]+)/)![1]).response : JSON.parse(raw);
+      assert.equal(result.output[0].input, input);
+      assert.equal(result.output[0].namespace, "remote");
+    }, stream ? wire : reply);
+  }
+});
+
+test("Responses rejects an ambiguous upstream custom tool identity", async () => {
+  await withRouter(async routerBaseUrl => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({ input: "hello", stream: false,
+      tools: ["a", "b"].map(name => ({ type: "namespace", name, tools: [{ type: "custom", name: "exec" }] })) }) }, routerBaseUrl);
+    assert.equal(response.status, 502);
+    assert.match(await response.text(), /namespace|識別/);
+  }, { status: "completed", output: [{ type: "function_call", name: "exec", call_id: "c", arguments: '{"input":"hello"}' }] });
+});
+
+test("Responses rejects conflicting declarations promoted from additional_tools before sending", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({
+      tools: [{ type: "custom", name: "exec", format: { type: "text" } }],
+      input: [{ type: "additional_tools", role: "developer", tools: [{ type: "function", name: "exec", parameters: { type: "object" } }] }],
+    }) }, routerBaseUrl);
+    assert.equal(response.status, 400); assert.match(await response.text(), /識別重複/);
+    assert.equal(calls.length, 0);
+  }, { status: "completed", output: [] });
+});
+
+for (const stream of [false, true]) test(`Codex Responses sends freeform call history back as paired function items (${stream})`, async () => {
+  const tool = { type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "grammar", syntax: "lark", definition: "start: /[\\s\\S]+/" } }] };
+  const upstreamCall = { type: "function_call", id: "f", call_id: "call_exec", name: "exec", namespace: "functions", arguments: JSON.stringify({ input: 'text("hello")' }), status: "completed" };
+  const reply = { status: "completed", output: [upstreamCall] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const options = { client: "codex" as const, model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal };
+    const first = await modelApiAdapter("responses").send({ ...options, body: { input: "hello", tools: [tool], stream } });
+    const raw = await first.text();
+    const output = stream ? JSON.parse(raw.match(/event: response.completed\ndata: ([^\n]+)/)![1]).response.output : JSON.parse(raw).output;
+    assert.equal(output[0].type, "custom_tool_call");
+    const history = { input: [...output, { type: "custom_tool_call_output", call_id: "call_exec", output: [{ type: "input_text", text: "hello" }] }], tools: [tool], stream, tool_choice: { type: "custom", namespace: "functions", name: "exec" } };
+    const original = structuredClone(history);
+    const second = await modelApiAdapter("responses").send({ ...options, body: history });
+    assert.equal(second.status, 200, await second.clone().text()); await second.text();
+    assert.deepEqual(calls[1].body.input, [
+      { type: "function_call", call_id: "call_exec", name: "exec", namespace: "functions", arguments: JSON.stringify({ input: 'text("hello")' }), status: "completed" },
+      { type: "function_call_output", call_id: "call_exec", output: [{ type: "input_text", text: "hello" }] },
+    ]);
+    assert.deepEqual(calls[1].body.tool_choice, { type: "function", namespace: "functions", name: "exec" });
+    const tools = calls[1].body.tools as Array<{ tools: Array<{ type: string; parameters: { properties: { input: { description: string } } } }> }>;
+    assert.equal(tools[0].tools[0].type, "function");
+    assert.match(tools[0].tools[0].parameters.properties.input.description, /start:/);
+    assert.deepEqual(history, original);
+  }, stream ? `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: reply })}\n\n` : reply);
+});
+
+for (const stream of [false, true]) test(`Codex Responses unwraps native custom tool input too (${stream})`, async () => {
+  const input = JSON.stringify({ code: 'text("hello")' });
+  const call = { type: "custom_tool_call", id: "f", call_id: "c", name: "exec", namespace: "functions", input, status: "completed" };
+  const result = { status: "completed", output: [call] };
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item: { ...call, input: "", status: "in_progress" } },
+    { type: "response.custom_tool_call_input.delta", item_id: "f", output_index: 0, delta: input },
+    { type: "response.custom_tool_call_input.done", item_id: "f", output_index: 0, input },
+    { type: "response.output_item.done", output_index: 0, item: call },
+    { type: "response.completed", response: result },
+  ];
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("responses").send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
+      body: { input: "hello", stream, tools: [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "text" } }] }] } });
+    const raw = await response.text();
+    const output = stream ? JSON.parse(raw.match(/event: response.completed\ndata: ([^\n]+)/)![1]).response.output : JSON.parse(raw).output;
+    assert.equal(output[0].input, 'text("hello")');
+    if (stream) {
+      const received = raw.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      assert.equal(received.filter(event => event.type === "response.custom_tool_call_input.delta").map(event => event.delta).join(""), 'text("hello")');
+    }
+  }, stream ? events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") : result);
+});
+
+test("Codex Chat honors summary none without losing plaintext reasoning on the next turn", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
+      body: { input: "hello", stream: false, reasoning: { effort: "medium", summary: "none" }, client_metadata: ["opaque"] } });
+    const result = await response.json() as { output: Array<Record<string, unknown>> };
+    assert.deepEqual(result.output[0].summary, []);
+    assert.deepEqual(result.output[0].content, [{ type: "reasoning_text", text: "plan" }]);
+    const next = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
+      body: { input: [...result.output, { role: "user", content: "next" }], stream: false } });
+    await next.text();
+    assert.match((calls[1].body.messages as Array<{ content: string }>)[0].content, /plan/);
+    assert.equal(calls[0].body.client_metadata, undefined);
+  }, { choices: [{ message: { content: "hello", reasoning: "plan" }, finish_reason: "stop" }] });
+});
+
+for (const stream of [false, true]) test(`Codex Chat accepts a complete client envelope without forwarding client metadata (${stream})`, async () => {
+  const metadata = { thread_id: "synthetic-thread", responses_lite: "true", future_client_field: { version: 2 } };
+  const body = { model: "client-model", instructions: "be brief", input: [{ type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "text" } }] }] }, { role: "user", content: "hello" }], stream,
+    client_metadata: metadata, prompt_cache_key: "synthetic-cache", store: false, include: ["reasoning.encrypted_content"], reasoning: { effort: "medium", summary: "auto" }, text: { verbosity: "low" } };
+  const original = structuredClone(body);
+  const reply = { choices: [{ message: { content: "hello", reasoning: "plan" }, finish_reason: "stop" }] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    await response.text();
+    assert.equal(calls[0].body.client_metadata, undefined);
+    assert.equal(calls[0].body.prompt_cache_key, body.prompt_cache_key);
+    assert.equal(calls[0].body.reasoning_effort, "medium");
+    assert.equal(calls[0].body.verbosity, "low");
+    assert.deepEqual(body, original);
+  }, stream ? `data: ${JSON.stringify({ choices: [{ delta: reply.choices[0].message, finish_reason: "stop" }] })}\n\n` : reply);
+});
+
+for (const stream of [false, true]) test(`Codex Chat restores namespaced freeform tools and accepts their next turn (${stream})`, async () => {
+  const call = { id: "call_exec", type: "function", function: { name: "functions__exec", arguments: JSON.stringify({ code: 'text("hello")' }) } };
+  const tool = { type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "text" } }] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const body = { stream, tools: [tool], input: "hello" };
+    const response = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal, body });
+    const raw = await response.text();
+    const output = stream ? JSON.parse(raw.match(/event: response.completed\ndata: ([^\n]+)/)![1]).response.output : JSON.parse(raw).output;
+    assert.equal(output[0].name, "exec"); assert.equal(output[0].namespace, "functions");
+    assert.equal(output[0].type, "custom_tool_call"); assert.equal(output[0].input, 'text("hello")');
+    const next = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal,
+      body: { stream, tools: [tool], input: [output[0], { type: "custom_tool_call_output", call_id: "call_exec", output: "hello" }] } });
+    await next.text();
+    const messages = calls[1].body.messages as Array<{ tool_calls: Array<{ function: { name: string } }> }>;
+    assert.equal(messages[0].tool_calls[0].function.name, "functions__exec");
+  }, stream ? `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ ...call, index: 0 }] }, finish_reason: "tool_calls" }] })}\n\n` : { choices: [{ message: { content: null, tool_calls: [call] }, finish_reason: "tool_calls" }] });
+});
+
+for (const stream of [false, true]) test(`Codex Chat preserves plaintext reasoning in Responses output (${stream})`, async () => {
+  const reply = stream ? [
+    { choices: [{ delta: { reasoning: "plan " } }] },
+    { choices: [{ delta: { reasoning: "briefly", content: "hello" }, finish_reason: "stop" }] },
+  ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") : { choices: [{ message: { reasoning: "plan briefly", content: "hello" }, finish_reason: "stop" }] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({ input: "hello", stream }) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const raw = await response.text();
+    const output = stream ? JSON.parse(raw.match(/event: response.completed\ndata: ([^\n]+)/)![1]).response.output : JSON.parse(raw).output;
+    assert.deepEqual(output[0].summary, [{ type: "summary_text", text: "plan briefly" }]);
+    assert.equal(output[1].content[0].text, "hello");
+    const next = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({ input: [...output, { role: "user", content: "next" }], stream }) }, routerBaseUrl);
+    assert.equal(next.status, 200);
+    await next.text();
+    assert.match((calls[1].body.messages as Array<{ content: string }>)[0].content, /plan briefly/);
+  }, reply);
+});
+
+for (const stream of [false, true]) test(`Codex Responses restores a declared freeform executor from function payload (${stream})`, async () => {
+  const code = 'text("hello")';
+  const call = { type: "function_call", id: "f", call_id: "call_exec", name: "exec", namespace: "functions", arguments: JSON.stringify({ code }), status: "completed" };
+  const output = { id: "r", status: "completed", output: [call] };
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "", status: "in_progress" } },
+    { type: "response.function_call_arguments.delta", item_id: "f", output_index: 0, delta: call.arguments.slice(0, 8) },
+    { type: "response.function_call_arguments.delta", item_id: "f", output_index: 0, delta: call.arguments.slice(8) },
+    { type: "response.function_call_arguments.done", item_id: "f", output_index: 0, arguments: call.arguments },
+    { type: "response.output_item.done", output_index: 0, item: call },
+    { type: "response.completed", response: output },
+  ];
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("responses").send({ client: "codex", model: "allowed", apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal,
+      body: { stream, input: "hello", tools: [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { type: "text" } }] }] } });
+    const expected = { type: "custom_tool_call", id: "f", call_id: "call_exec", name: "exec", namespace: "functions", input: code, status: "completed" };
+    if (!stream) assert.deepEqual((await response.json() as { output: unknown[] }).output, [expected]);
+    else {
+      const text = await response.text();
+      const received = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      assert.deepEqual(received.find(event => event.type === "response.output_item.done").item, expected);
+      assert.deepEqual(received.find(event => event.type === "response.completed").response.output, [expected]);
+      assert.equal(received.filter(event => event.type === "response.custom_tool_call_input.delta").map(event => event.delta).join(""), code);
+      assert.equal(received.find(event => event.type === "response.custom_tool_call_input.done").input, code);
+      assert.doesNotMatch(text, /response.function_call_arguments/);
+      assert.deepEqual(received.map(event => event.sequence_number), received.map((_, index) => index));
+    }
+  }, stream ? events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("") : output);
+});
+
+test("Codex Chat preserves cache routing and request metadata accepted by Chat", async () => {
+  const metadata = { prompt_cache_key: "synthetic-session", prompt_cache_retention: "in_memory", safety_identifier: "synthetic-user", service_tier: "auto" };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key",
+      body: JSON.stringify({ input: "hello", stream: false, include: ["reasoning.encrypted_content"], ...metadata }) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    for (const [key, value] of Object.entries(metadata)) assert.equal(calls[0].body[key], value);
+  }, { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+});
+
+for (const stream of [false, true]) test(`Codex Responses preserves executor namespace, type, arguments and tool results (${stream})`, async () => {
+  const tool = { type: "namespace", name: "functions", tools: [{ type: "function", name: "exec", parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] } }] };
+  const call = { type: "function_call", id: "f", call_id: "call_exec", name: "exec", namespace: "functions", arguments: JSON.stringify({ code: 'text("hello")' }), status: "completed" };
+  const output = { id: "r", status: "completed", output: [call] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const body = { stream, input: [{ type: "additional_tools", role: "developer", tools: [tool] }, { role: "user", content: "hello" }] };
+    const response = await modelApiAdapter("responses").send({ client: "codex", model: "allowed", body, apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal });
+    assert.deepEqual(calls[0].body.tools, [tool]);
+    if (stream) {
+      const text = await response.text();
+      const events = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+      assert.deepEqual(events[0].item, call);
+      assert.deepEqual(events[1].response, output);
+    } else assert.deepEqual(await response.json(), output);
+    const followup = { stream, tools: [tool], input: [call, { type: "function_call_output", call_id: call.call_id, output: "hello" }] };
+    const next = await modelApiAdapter("responses").send({ client: "codex", model: "allowed", body: followup, apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal });
+    await next.text();
+    assert.deepEqual(calls[1].body.input, followup.input);
+  }, stream ? `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: call })}\n\nevent: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: output })}\n\n` : output);
+});
+
+test("Codex Chat accepts the optional encrypted reasoning include selector", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key",
+      body: JSON.stringify({ input: "hello", stream: false, include: ["reasoning.encrypted_content"] }) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(calls[0].body.messages, [{ role: "user", content: "hello" }]);
+    assert.equal(calls[0].body.include, undefined);
+  }, { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+});
+
+for (const adapter of ["responses", "chat"] as const) test(`Codex ${adapter} promotes additional_tools without losing custom tools`, async () => {
+  const tool = { type: "custom", name: "apply_patch", format: { type: "text" } };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/responses", apiKey: "synthetic-key",
+      body: JSON.stringify({ stream: false, input: [{ type: "additional_tools", role: "developer", tools: [tool] }, { role: "user", content: "hello" }] }) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    if (adapter === "responses") {
+      const tools = calls[0].body.tools as Array<{ type: string; name: string; parameters: { properties: { input: { description: string } } } }>;
+      assert.equal(tools[0].type, "function"); assert.equal(tools[0].name, tool.name);
+      assert.match(tools[0].parameters.properties.input.description, /"type":"text"/);
+      assert.deepEqual(calls[0].body.input, [{ role: "user", content: "hello" }]);
+    } else {
+      const tools = calls[0].body.tools as Array<{ function: { name: string } }>;
+      assert.equal(tools[0].function.name, "apply_patch");
+      const body = await response.json() as { output: Array<{ type: string; input: string }> };
+      assert.equal(body.output[0].type, "custom_tool_call");
+      assert.equal(body.output[0].input, "hello");
+    }
+  }, adapter === "responses" ? { id: "r", status: "completed", output: [] } : { choices: [{ message: { content: null, tool_calls: [{ id: "call_patch", type: "function", function: { name: "apply_patch", arguments: '{"input":"hello"}' } }] }, finish_reason: "tool_calls" }] });
+});
+
 async function withRouter(run: (url: string, calls: Array<{ path: string; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }>) => Promise<void>, reply: unknown) {
   const calls: Array<{ path: string; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> = [];
   const server = http.createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     calls.push({ path: req.url ?? "", body: JSON.parse(raw), headers: req.headers });
+    if (req.url === "/v1/responses" && Array.isArray(calls.at(-1)!.body.input)) {
+      const index = (calls.at(-1)!.body.input as Array<{ type?: string }>).findIndex(item => item.type === "custom_tool_call" || item.type === "custom_tool_call_output");
+      if (index >= 0) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: `input[${index}]: unknown input item type: "custom_tool_call"` } })); return; }
+    }
+    if (req.url === "/v1/responses" && Array.isArray(calls.at(-1)!.body.input) && (calls.at(-1)!.body.input as Array<{ type?: string }>).some(item => item.type === "additional_tools")) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: 'input[0]: unknown input item type: "additional_tools"' } }));
+      return;
+    }
     if (typeof reply === "string") {
       res.setHeader("content-type", "text/event-stream");
       const bytes = Buffer.from(reply); for (let i = 0; i < bytes.length; i += 7) res.write(bytes.subarray(i, i + 7));
@@ -20,6 +277,39 @@ async function withRouter(run: (url: string, calls: Array<{ path: string; body: 
   try { const address = server.address(); assert.ok(address && typeof address !== "string"); await run(`http://127.0.0.1:${address.port}`, calls); }
   finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }
+
+test("Codex Responses merges inline tool groups with existing tools without mutating input", async () => {
+  const tools = [{ type: "function", name: "read", parameters: { type: "object" } }];
+  const extra = { type: "namespace", name: "files", tools: [{ type: "function", name: "write", parameters: { type: "object" } }] };
+  const body = { tools, include: ["reasoning.encrypted_content"], input: [
+    { type: "additional_tools", role: "developer", tools: [extra] },
+    { role: "user", content: "hello" },
+    { type: "additional_tools", role: "developer", tools: [] },
+  ] };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    await modelApiAdapter("responses").send({ client: "codex", model: "allowed", body, apiKey: "synthetic-key", routerBaseUrl, signal: new AbortController().signal });
+    assert.deepEqual(calls[0].body.tools, [...tools, extra]);
+    assert.deepEqual(calls[0].body.include, body.include);
+    assert.deepEqual(calls[0].body.input, [{ role: "user", content: "hello" }]);
+    assert.deepEqual(body, original);
+  }, { status: "completed", output: [] });
+});
+
+test("Codex still refuses unsupported includes and malformed inline tool catalogs before sending", async () => {
+  for (const adapter of ["chat", "responses"] as const) await withRouter(async (routerBaseUrl, calls) => {
+    const bodies = [
+      { input: [{ type: "additional_tools", role: "developer", tools: "invalid" }] },
+      { input: [{ type: "additional_tools", role: "developer", tools: [], extra: "keep me" }] },
+      ...(adapter === "chat" ? [{ input: "hello", include: ["message.output_text.logprobs"] }] : []),
+    ];
+    for (const body of bodies) {
+      const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+      assert.equal(response.status, 400);
+    }
+    assert.equal(calls.length, 0);
+  }, {});
+});
 
 test("Claude Chat stream carries text and split tool arguments before normal completion", async () => {
   const chunks = [

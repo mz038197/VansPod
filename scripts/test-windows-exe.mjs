@@ -44,19 +44,37 @@ export async function fakeRouter() {
       if (['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(pathname)) {
         const input = JSON.parse(await body(req));
         state.calls.at(-1).model = input.model;
+        state.calls.at(-1).hasClientMetadata = Object.hasOwn(input, 'client_metadata');
+        if (pathname === '/v1/responses' && Array.isArray(input.input) && input.input.some(item => item.type === 'additional_tools')) return reply(res, 400, { error: { message: 'input[0]: unknown input item type: "additional_tools"' } });
+        if (pathname === '/v1/responses' && Array.isArray(input.input)) {
+          const index = input.input.findIndex(item => item.type === 'custom_tool_call' || item.type === 'custom_tool_call_output');
+          if (index >= 0) return reply(res, 400, { error: { message: `input[${index}]: unknown input item type: "custom_tool_call"` } });
+          state.calls.at(-1).hasFunctionResult = input.input.some(item => item.type === 'function_call_output' && item.call_id === 'call_exec');
+        }
+        state.calls.at(-1).toolNames = (input.tools ?? []).map(tool => tool.function?.name ?? tool.name);
         if (input.model !== selected.model) return reply(res, 403, { error: 'synthetic denied model' });
         const wire = pathname.endsWith('/responses') ? 'responses' : pathname.endsWith('/messages') ? 'messages' : 'chat';
         const usage = { input_tokens: 2, output_tokens: 3 };
         const output = { id: 'synthetic-response', object: 'response', status: 'completed', model: input.model, output: [{ type: 'message', id: 'm', role: 'assistant', content: [{ type: 'output_text', text: 'synthetic success', annotations: [] }] }], usage };
+        const executor = wire === 'responses' && state.calls.at(-1).toolNames.includes('exec') ? { type: input.stream ? 'function_call' : 'custom_tool_call', id: 'f', call_id: 'call_exec', name: 'exec', ...(input.stream ? { arguments: JSON.stringify({ code: 'text("hello")' }) } : { input: JSON.stringify({ code: 'text("hello")' }) }), status: 'completed' } : undefined;
+        if (executor) output.output.push(executor);
         const message = { id: 'synthetic-message', type: 'message', role: 'assistant', model: input.model, content: [{ type: 'text', text: 'synthetic success' }], stop_reason: 'end_turn', stop_sequence: null, usage };
         if (input.stream) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-          if (wire === 'chat') res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'synthetic success' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
-          else if (wire === 'responses') res.end('event: response.completed\ndata: ' + JSON.stringify({ type: 'response.completed', response: output }) + '\n\n');
+          if (wire === 'chat') res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'synthetic success', ...(input.tools?.some(tool => tool.function?.name === 'exec') ? { reasoning: 'synthetic plan' } : {}) }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+          else if (wire === 'responses') {
+            if (executor) for (const event of [
+              { type: 'response.output_item.added', output_index: 1, item: { ...executor, arguments: '', status: 'in_progress' } },
+              { type: 'response.function_call_arguments.delta', item_id: 'f', output_index: 1, delta: executor.arguments },
+              { type: 'response.function_call_arguments.done', item_id: 'f', output_index: 1, arguments: executor.arguments },
+              { type: 'response.output_item.done', output_index: 1, item: executor },
+            ]) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+            res.end('event: response.completed\ndata: ' + JSON.stringify({ type: 'response.completed', response: output }) + '\n\n');
+          }
           else res.end('event: message_start\ndata: ' + JSON.stringify({ type: 'message_start', message: { ...message, content: [] } }) + '\n\nevent: content_block_delta\ndata: ' + JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'synthetic success' } }) + '\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n');
           return;
         }
-        return reply(res, 200, wire === 'responses' ? output : wire === 'messages' ? message : { id: 'synthetic-response', choices: [{ message: { role: 'assistant', content: 'synthetic success' }, finish_reason: 'stop' }] });
+        return reply(res, 200, wire === 'responses' ? output : wire === 'messages' ? message : { id: 'synthetic-response', choices: [{ message: { role: 'assistant', content: 'synthetic success', ...(input.tools?.some(tool => tool.function?.name === 'exec') ? { reasoning: 'synthetic plan' } : {}) }, finish_reason: 'stop' }] });
       }
       reply(res, 404, { error: 'synthetic not found' });
     } catch { reply(res, 500, { error: 'synthetic fixture error' }); }
@@ -241,12 +259,24 @@ export async function runLifecycle({ exe }) {
       await post(app, '/adapter', { client, adapter });
       for (const stream of [false, true]) {
         const endpoint = client === 'codex' ? '/v1/responses' : '/v1/messages';
-        const body = client === 'codex' ? { input: 'hello', stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
+        const body = client === 'codex' ? { input: [{ type: 'additional_tools', role: 'developer', tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'text' } }, { type: 'custom', name: 'exec', format: { type: 'text' } }] }, { role: 'user', content: 'hello' }], include: ['reasoning.encrypted_content'], prompt_cache_key: 'synthetic-cache', client_metadata: { thread_id: 'synthetic-thread', future_client_field: { version: 2 } }, reasoning: { effort: 'medium', summary: 'auto' }, text: { verbosity: 'low' }, stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
         const response = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model }), signal: AbortSignal.timeout(10000) });
         const text = await response.text();
         safeAssert(response.status === 200 && text.includes('synthetic success'), `Packaged ${client}/${adapter}/${stream} failed`);
         safeAssert(!text.includes(sessions.first.key), 'Adapter leaked Classroom key');
         safeAssert(router.state.calls.at(-1).pathname === (adapter === 'chat' ? '/v1/chat/completions' : '/v1/' + adapter), 'Wrong packaged upstream protocol');
+        if (client === 'codex') safeAssert(router.state.calls.at(-1).toolNames.includes('apply_patch'), 'Packaged adapter lost inline custom tool');
+        if (client === 'codex' && adapter === 'chat') safeAssert(text.includes('"type":"reasoning"') && text.includes('synthetic plan'), 'Packaged Chat lost plaintext reasoning');
+        if (client === 'codex') safeAssert(router.state.calls.at(-1).hasClientMetadata === (adapter === 'responses'), 'Packaged adapter misclassified client metadata');
+        if (client === 'codex' && adapter === 'responses') {
+          safeAssert(text.includes('"type":"custom_tool_call"') && text.includes('"input":"text(\\"hello\\")"'), 'Packaged Responses did not restore freeform executor');
+          safeAssert(!text.includes('response.function_call_arguments'), 'Packaged Responses leaked function arguments events for freeform executor');
+          const result = stream ? JSON.parse(text.match(/event: response.completed\ndata: ([^\n]+)/)[1]).response : JSON.parse(text);
+          const next = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model, input: [...body.input, ...result.output, { type: 'custom_tool_call_output', call_id: 'call_exec', output: 'hello' }] }), signal: AbortSignal.timeout(10000) });
+          safeAssert(next.status === 200, 'Packaged Responses rejected freeform history on the next turn');
+          await next.text();
+          safeAssert(router.state.calls.at(-1).hasFunctionResult, 'Packaged Responses lost the paired tool result');
+        }
         if (stream) safeAssert(text.includes(client === 'codex' ? 'response.completed' : 'message_stop'), 'Packaged adapter omitted terminal event');
       }
     }

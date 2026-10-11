@@ -1,7 +1,11 @@
 import { AdapterError, list, object, type JsonObject } from "./types";
 
-export function validateChatContent(message: JsonObject): void {
-  if (message.reasoning_content || message.reasoning || message.refusal || message.audio || message.annotations) throw new AdapterError("所選客戶端無法保留此 Chat 輸出。", 502);
+export function validateChatContent(message: JsonObject, allowPlaintextReasoning = false): void {
+  if (allowPlaintextReasoning) {
+    for (const key of ["reasoning", "reasoning_content"]) if (message[key] != null && typeof message[key] !== "string") throw new AdapterError("Chat reasoning 必須是文字。", 502);
+    if (message.reasoning && message.reasoning_content && message.reasoning !== message.reasoning_content) throw new AdapterError("Chat 回傳互相衝突的 reasoning 欄位。", 502);
+  }
+  if ((!allowPlaintextReasoning && (message.reasoning_content || message.reasoning)) || message.refusal || message.audio || (Array.isArray(message.annotations) ? message.annotations.length : message.annotations)) throw new AdapterError("所選客戶端無法保留此 Chat 輸出。", 502);
   if (message.function_call !== undefined) throw new AdapterError("無法保留舊版 Chat function_call 輸出。", 502);
   if (message.content !== undefined && message.content !== null && typeof message.content !== "string") throw new AdapterError("Chat 輸出 content 必須是文字。", 502);
 }
