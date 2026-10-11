@@ -10,4 +10,3 @@ export class StorageError extends Error {
     this.name = "StorageError";
   }
 }
-
