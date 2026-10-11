@@ -19,7 +19,7 @@ npm start
 
 共用 Adapter 介面下的三個實作負責請求、上游呼叫與回應轉換；所有程式都在 VansPod 內，不需要 opencodex 專案。支援多輪文字、圖片輸入、函式工具往返與串流／非串流；Chat 路徑沿用 Codex 自訂工具的文字包裝及 `apply_patch` 修復。
 
-跨協定不能對等保留的資料會明確報錯，例如 Claude 的 thinking／簽章、工具結果的 `is_error`、快取控制或服務端工具，以及 Codex 的加密 reasoning、工具 namespace 或自訂 grammar 約束。原協定直通可保留其原有資料；轉換失敗不會自動換 adapter 重送。使用者取消或客戶端斷線會中止本機上游請求，串流缺少完成事件會回報失敗。
+跨協定不能對等保留的資料會明確報錯，例如 Claude 的 thinking／簽章、工具結果的 `is_error`、快取控制或服務端工具，以及 Codex 的加密 reasoning 或工具 namespace。Chat 自訂工具將完整的 Lark／regex grammar 定義保留在 input schema 的描述中，作為模型指令；Chat 不提供 Responses 原生 grammar 的受限解碼保證。原協定直通可保留其原有資料；轉換失敗不會自動換 adapter 重送。使用者取消或客戶端斷線會中止本機上游請求，串流缺少完成事件會回報失敗。
 
 協定轉換參考官方 [Chat API](https://developers.openai.com/api/reference/resources/chat)、[Responses API](https://developers.openai.com/api/reference/resources/responses) 與 [Claude 串流事件](https://platform.claude.com/docs/en/build-with-claude/streaming)。
 

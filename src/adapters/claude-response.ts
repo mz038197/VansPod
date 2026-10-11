@@ -1,7 +1,12 @@
 import { AdapterError, list, object, string, type JsonObject } from "./types";
+import { ChatToolCalls, chatFinishReason, validateChatContent } from "./chat-output";
 
 export function responsesToClaude(body: JsonObject, model: string): JsonObject {
   if (body.status !== "completed" && body.status !== "incomplete") throw new AdapterError("Responses 未正常完成。", 502);
+  if (body.status === "incomplete") {
+    const reason = object(body.incomplete_details, "incomplete_details").reason;
+    if (reason !== "max_output_tokens") throw new AdapterError(`Responses 未完成，原因 ${String(reason)} 無法轉換為 Claude stop_reason。`, 502);
+  }
   const content: JsonObject[] = [];
   for (const value of list(body.output, "Responses output")) {
     const item = object(value, "output item");
@@ -23,16 +28,20 @@ export function responsesToClaude(body: JsonObject, model: string): JsonObject {
 export function chatToClaude(body: JsonObject, model: string): JsonObject {
   const choice = object(list(body.choices, "choices")[0], "choice");
   const message = object(choice.message, "Chat message");
-  if (message.reasoning_content || message.reasoning || message.refusal || message.audio) throw new AdapterError("Claude 無法保留此 Chat 輸出。", 502);
+  validateChatContent(message);
   const content: JsonObject[] = [];
   if (message.content !== null && message.content !== undefined) content.push({ type: "text", text: string(message.content, "Chat content") });
-  for (const value of message.tool_calls === undefined ? [] : list(message.tool_calls, "tool_calls")) {
+  const tools = new ChatToolCalls();
+  tools.add(message.tool_calls === undefined ? [] : list(message.tool_calls, "tool_calls").map((call, index) => ({ ...object(call, "tool call"), index })));
+  const calls = tools.completed();
+  if (choice.finish_reason === "tool_calls" && !calls.length) throw new AdapterError("上游工具呼叫缺少識別資訊。", 502);
+  for (const value of calls) {
     const call = object(value, "tool call"), fn = object(call.function, "tool function");
     let input: unknown; try { input = JSON.parse(string(fn.arguments, "arguments")); } catch { throw new AdapterError("上游工具參數不是有效 JSON。", 502); }
     content.push({ type: "tool_use", id: string(call.id, "tool id"), name: string(fn.name, "tool name"), input: object(input, "tool input") });
   }
   const usage = body.usage ? object(body.usage, "usage") : {};
-  if (!["stop", "tool_calls", "length"].includes(String(choice.finish_reason))) throw new AdapterError("Chat 結束原因無法轉換。", 502);
+  chatFinishReason(choice.finish_reason);
   return { id: body.id ?? "msg_vanspod", type: "message", role: "assistant", model, content, stop_reason: choice.finish_reason === "length" ? "max_tokens" : choice.finish_reason === "tool_calls" ? "tool_use" : "end_turn",
     stop_sequence: null, usage: { input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0 } };
 }

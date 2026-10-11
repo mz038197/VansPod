@@ -98,6 +98,52 @@ test("unrepresentable data fails before contacting Router and never changes adap
   }, {});
 });
 
+test("grammar-defined apply_patch retains its definition and freeform result through Chat", async () => {
+  const definition = 'start: "*** Begin Patch" /[\\s\\S]*/ "*** End Patch"';
+  const patch = "*** Begin Patch\n*** Add File: a.txt\n+hi\n*** End Patch";
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
+      body: { input: "make file", stream: false, tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition } }] } });
+    const tools = calls[0].body.tools as Array<{ function: { parameters: { properties: { input: { description: string } } } } }>;
+    const description = tools[0].function.parameters.properties.input.description;
+    assert.deepEqual(JSON.parse(description.slice(description.indexOf("{"))), { type: "grammar", syntax: "lark", definition });
+    const body = await response.json() as { output: Array<{ type: string; input: string }> };
+    assert.equal(body.output[0].type, "custom_tool_call"); assert.equal(body.output[0].input, patch);
+  }, { choices: [{ message: { content: null, tool_calls: [{ id: "call_patch", type: "function", function: { name: "apply_patch", arguments: JSON.stringify({ input: patch }) } }] }, finish_reason: "tool_calls" }] });
+});
+
+for (const client of ["codex", "claude"] as const) test(`${client} Chat waits for a complete tool name and rejects missing tool identity`, async () => {
+  const requestBody = client === "codex" ? { input: "hello", stream: true } : { messages: [{ role: "user", content: "hello" }], max_tokens: 100, stream: true };
+  const first = { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "rea", arguments: '{"path":' } }] } }] };
+  const last = { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "d", arguments: '"a"}' } }] }, finish_reason: "tool_calls" }] };
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("chat").send({ client, model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: requestBody });
+    const sse = await response.text(); assert.match(sse, /"name":"read"/); assert.doesNotMatch(sse, /"name":"rea"/);
+  }, [first, last].map(value => `data: ${JSON.stringify(value)}\n\n`).join(""));
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("chat").send({ client, model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: requestBody });
+    await assert.rejects(response.text(), /名稱|識別/);
+  }, `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { arguments: "{}" } }] }, finish_reason: "tool_calls" }] })}\n\n`);
+});
+
+for (const client of ["codex", "claude"] as const) test(`${client} Chat JSON refuses empty or unidentifiable tool turns and labels upstream shape failures`, async () => {
+  for (const reply of [
+    { choices: [{ message: { content: null }, finish_reason: "tool_calls" }] },
+    { choices: [{ message: { content: null, tool_calls: [{ id: "", function: { name: "", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+    { choices: "invalid" },
+  ]) await withRouter(async routerBaseUrl => {
+    const response = await sendRouter({ client, target: "router", model: "allowed", adapter: "chat", path: client === "codex" ? "/v1/responses" : "/v1/messages", apiKey: "synthetic-key", body: JSON.stringify(client === "codex" ? { input: "hello", stream: false } : { messages: [{ role: "user", content: "hello" }], max_tokens: 100, stream: false }) }, routerBaseUrl);
+    assert.equal(response.status, 502);
+  }, reply);
+});
+
+test("Claude Responses refuses to mislabel content-filter incomplete results as token limits", async () => {
+  await withRouter(async routerBaseUrl => {
+    const response = await sendRouter({ client: "claude", target: "router", model: "allowed", adapter: "responses", path: "/v1/messages", apiKey: "synthetic-key", body: JSON.stringify({ messages: [{ role: "user", content: "hello" }], max_tokens: 100 }) }, routerBaseUrl);
+    assert.equal(response.status, 502); assert.match(await response.text(), /content_filter/);
+  }, { id: "r", status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [] });
+});
+
 test("Chat streams with missing completion or malformed tool arguments cannot finish successfully", async () => {
   for (const client of ["codex", "claude"] as const) for (const delta of [
     { choices: [{ delta: { content: "partial" } }] },

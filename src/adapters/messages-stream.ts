@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AdapterError, object, type JsonObject } from "./types";
 import { event, frames } from "./stream";
+import { ChatToolCalls, chatFinishReason, validateChatContent } from "./chat-output";
 
 export class MessagesStream {
   private readonly blocks = new Map<string, { index: number; kind: "text" | "tool"; value: string; closed: boolean }>();
@@ -45,7 +46,7 @@ export class MessagesStream {
 
 export async function* chatToMessagesStream(response: Response, model: string): AsyncGenerator<string> {
   const output = new MessagesStream(model); yield output.start();
-  const tools = new Map<number, { id: string; name: string; args: string; emitted: number }>();
+  const tools = new ChatToolCalls();
   let finish: unknown;
   for await (const frame of frames(response)) {
     if (frame.data === "[DONE]") continue;
@@ -54,24 +55,18 @@ export async function* chatToMessagesStream(response: Response, model: string): 
     if (body.usage) { const usage = object(body.usage, "usage"); output.usage(usage.prompt_tokens, usage.completion_tokens); }
     for (const raw of (body.choices ?? []) as JsonObject[]) {
       const choice = object(raw, "choice"), delta = object(choice.delta ?? {}, "delta");
-      if (delta.reasoning_content || delta.reasoning || delta.refusal || delta.audio) throw new AdapterError("Claude 無法保留此 Chat 串流內容。", 502);
+      validateChatContent(delta);
       if (typeof delta.content === "string") yield output.text("text", delta.content);
-      for (const value of (delta.tool_calls ?? []) as JsonObject[]) {
-        const call = object(value, "tool call"), fn = object(call.function ?? {}, "tool function");
-        const index = Number(call.index ?? 0);
-        const tool = tools.get(index) ?? { id: "", name: "", args: "", emitted: 0 }; tools.set(index, tool);
-        if (typeof call.id === "string") { if (tool.id && tool.id !== call.id) throw new AdapterError("工具 ID 在串流中改變。", 502); tool.id = call.id; }
-        if (typeof fn.name === "string") tool.name += fn.name;
-        if (typeof fn.arguments === "string") tool.args += fn.arguments;
-        if (tool.id && tool.name) {
-          yield output.tool(`tool:${index}`, tool.id, tool.name);
-          if (tool.args.length > tool.emitted) { yield output.arguments(`tool:${index}`, tool.args.slice(tool.emitted)); tool.emitted = tool.args.length; }
-        }
-      }
+      if (delta.tool_calls !== undefined) tools.add(delta.tool_calls);
       if (choice.finish_reason != null) finish = choice.finish_reason;
     }
   }
-  if (!["stop", "tool_calls", "length"].includes(String(finish))) throw new AdapterError("Chat 串流中斷或結束原因無法轉換。", 502);
-  if ([...tools.values()].some(tool => !tool.id || !tool.name)) throw new AdapterError("上游工具呼叫缺少 ID 或名稱。", 502);
+  finish = chatFinishReason(finish);
+  const calls = tools.completed();
+  if (finish === "tool_calls" && !calls.length) throw new AdapterError("上游工具呼叫缺少識別資訊。", 502);
+  for (const call of calls) {
+    yield output.tool(`tool:${call.index}`, call.id, call.function.name);
+    yield output.arguments(`tool:${call.index}`, call.function.arguments);
+  }
   yield output.finish(finish === "tool_calls" ? "tool_use" : finish === "length" ? "max_tokens" : "end_turn");
 }

@@ -5,7 +5,8 @@ import { chatToClaude } from "./claude-response";
 import { chatToMessagesStream } from "./messages-stream";
 import { streamResponse } from "./stream";
 import { chatToResponsesStream } from "./chat-stream";
-import { upstreamRequest } from "./transport";
+import { jsonResponse, upstreamRequest } from "./transport";
+import { ChatToolCalls, chatFinishReason, validateChatContent } from "./chat-output";
 
 export class ChatAdapter implements ModelApiAdapter {
   readonly id = "chat";
@@ -18,20 +19,29 @@ export class ChatAdapter implements ModelApiAdapter {
       if (request.client === "claude") return streamResponse(chatToMessagesStream(response, request.model), abort);
       return streamResponse(chatToResponsesStream(response, request.model, toolKindsFromResponses(raw)), abort);
     }
-    const body = object(await response.json(), "Chat response");
-    if (request.client === "claude") return Response.json(chatToClaude(body, request.model));
-    const choice = object(list(body.choices, "choices")[0], "choice");
-    const message = object(choice.message, "message");
-    if (message.reasoning_content || message.reasoning || message.refusal || message.audio) throw new AdapterError("Responses 無法保留此 Chat 輸出。", 502);
-    if (!["stop", "tool_calls", "length"].includes(String(choice.finish_reason))) throw new AdapterError("Chat 結束原因無法轉換。", 502);
-    if (Array.isArray(message.tool_calls)) message.tool_calls = message.tool_calls.map((call, index) => ({ ...object(call, "tool call"), index }));
-    const sse = new ResponsesSse(request.model, toolKindsFromResponses(raw));
-    sse.pushChatChunk(`data: ${JSON.stringify({ choices: [{ delta: message, finish_reason: choice.finish_reason }], usage: body.usage })}\n\n`);
-    const frames = sse.finish();
-    const event = frames.match(/event: response.(?:completed|incomplete)\ndata: ([^\n]+)/);
-    if (!event) throw new AdapterError("Chat 回應無法轉換成 Responses。", 502);
-    const result = JSON.parse(event[1]).response;
-    if (body.usage) { const usage = object(body.usage, "usage"); result.usage = { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens }; }
-    return Response.json(result);
+    return jsonResponse(response, body => {
+      if (request.client === "claude") return chatToClaude(body, request.model);
+      const choice = object(list(body.choices, "choices")[0], "choice");
+      const message = object(choice.message, "message");
+      validateChatContent(message);
+      chatFinishReason(choice.finish_reason);
+      if (message.tool_calls !== undefined) {
+        const tools = new ChatToolCalls();
+        tools.add(list(message.tool_calls, "tool_calls").map((call, index) => ({ ...object(call, "tool call"), index })));
+        message.tool_calls = tools.completed(toolKindsFromResponses(raw));
+      }
+      if (choice.finish_reason === "tool_calls" && (!Array.isArray(message.tool_calls) || !message.tool_calls.length)) throw new AdapterError("上游工具呼叫缺少識別資訊。", 502);
+      const sse = new ResponsesSse(request.model, toolKindsFromResponses(raw));
+      sse.pushChatChunk(`data: ${JSON.stringify({ choices: [{ delta: message, finish_reason: choice.finish_reason }], usage: body.usage })}\n\n`);
+      const frames = sse.finish();
+      const event = frames.match(/event: response.(?:completed|incomplete)\ndata: ([^\n]+)/);
+      if (!event) throw new AdapterError("Chat 回應無法轉換成 Responses。", 502);
+      const result = JSON.parse(event[1]).response;
+      if (body.usage) {
+        const usage = object(body.usage, "usage");
+        result.usage = { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens };
+      }
+      return result;
+    });
   }
 }

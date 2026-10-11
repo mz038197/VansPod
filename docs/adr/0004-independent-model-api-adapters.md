@@ -61,6 +61,6 @@ MessagesAdapter 僅處理 Claude Code Messages ↔ Messages，保留既有上游
 
 共用介面及三個 adapter 位於 `src/adapters/`；`src/modelProxy.ts` 處理代理交付與錯誤，`src/adapterSettings.ts` 將非敏感偏好保存在 `.vanspod/settings.json`，與 Classroom Connection 分開。`src/classroomApp.ts` 在請求選路時固定當次 adapter，設定切換不更動已開始的請求。
 
-原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 的加密 reasoning、工具 namespace、自訂 grammar 約束，不會靜默移除後重送。此限制遵循上述無法正確表達就報錯的決策。
+原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 的加密 reasoning、工具 namespace，不會靜默移除後重送。Chat 自訂工具將完整的 Lark／regex grammar 定義保留在 input schema 的描述中，作為模型指令，沿用 freeform／`apply_patch` 修復；這不代表 Chat 提供 Responses 原生 grammar 的受限解碼保證。
 
 驗證結果須與實作分開判讀；本機模擬及 Windows 打包測試不代表真實 Router 或模型已驗證。

@@ -4,7 +4,7 @@ import { claudeToResponses } from "./claude-request";
 import { responsesToClaude } from "./claude-response";
 import { responsesToMessagesStream } from "./responses-stream";
 import { nativeStream, streamResponse } from "./stream";
-import { upstreamRequest } from "./transport";
+import { jsonResponse, upstreamRequest } from "./transport";
 
 export class ResponsesAdapter implements ModelApiAdapter {
   readonly id = "responses";
@@ -14,6 +14,6 @@ export class ResponsesAdapter implements ModelApiAdapter {
     if (!response.ok) return response;
     if (request.body.stream === true) return streamResponse(request.client === "codex" ? nativeStream(response, "responses") : responsesToMessagesStream(response, request.model), abort);
     if (request.client === "codex") return response;
-    return Response.json(responsesToClaude(object(await response.json(), "Responses response"), request.model));
+    return jsonResponse(response, body => responsesToClaude(body, request.model));
   }
 }

@@ -127,7 +127,7 @@ function chatTool(tool: unknown): ChatTool | undefined {
           ? {
               type: "object",
               properties: {
-                input: { type: "string", description: "The tool input." },
+                input: { type: "string", description: record.format ? `The tool input must follow this format definition: ${JSON.stringify(record.format)}` : "The tool input." },
               },
               required: ["input"],
             }
@@ -238,8 +238,12 @@ export function responsesToChatBody(raw: string, model: string): string {
     string(fn.name, "tool name");
     if (record.type === "custom" && record.format !== undefined) {
       const format = object(record.format, "custom format");
-      if (format.type !== "text") throw new AdapterError("Chat 無法原生保留自訂工具的 grammar 約束，請使用 Responses adapter。");
-      allowedFields(format, ["type"], "custom format");
+      if (format.type === "grammar") {
+        allowedFields(format, ["type", "syntax", "definition"], "custom grammar");
+        if (format.syntax !== "lark" && format.syntax !== "regex") throw new AdapterError("Chat 無法轉換此自訂 grammar syntax。");
+        string(format.definition, "grammar definition");
+      } else if (format.type === "text") allowedFields(format, ["type"], "custom format");
+      else throw new AdapterError("Chat 無法轉換此自訂工具格式。");
     }
   }
   const messages: ChatMessage[] = [];
