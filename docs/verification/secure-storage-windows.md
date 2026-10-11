@@ -8,7 +8,7 @@
 - 系統內建 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，版本 `5.1.26100.9444`。
 - 包含整合提交 `65925ea`，以及 #1 review 的資料驗證、模式寫入失敗補償與身分欄位共用 helper 修正。`npm test`：156／156 通過，無略過。
 - 真實 SEA 驗證完成 21 組情境，全部通過，包含實際 Copy Key 與原剪貼簿完整還原。
-- `npm run test:windows-exe` 先執行 `npm run dist`，再啟動真正的 `dist/classroom-app.exe`；加解密使用真實 DPAPI CurrentUser，沒有替代加密器。
+- `npm run test:windows-exe` 先執行 `npm run dist`，再啟動真正的 `dist/VansPod.exe`；加解密使用真實 DPAPI CurrentUser，沒有替代加密器。
 - 本次驗證 EXE 的 SHA-256：`ED50E817EA512F4C312B3AFEAA16D398071E38E31AB8120CED27A2F327D9C4FD`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
 
 在 Windows 安裝專案依賴後，可重跑：

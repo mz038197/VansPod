@@ -1,4 +1,6 @@
-# Classroom App
+# VansPod
+
+套件名稱為 `vanspod`。Windows 執行 `npm run dist` 後會產出 `dist/VansPod.exe`。
 
 本機課堂 app。規格是 [classroom-one-click-install#8](https://github.com/mz038197/classroom-one-click-install/issues/8)。
 

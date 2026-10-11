@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live as GitHub issues in mz038197/classroom-app. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub issues in mz038197/VansPod. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

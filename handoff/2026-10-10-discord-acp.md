@@ -1,17 +1,17 @@
-# Discord 連線用 TypeScript 寫進 classroom-app
+# Discord 連線用 TypeScript 寫進 VansPod
 
 > **2026-10-11 更新**：這是早期交接筆記，並非最新實作規格。後續 Q1～Q41 已定案的行為（Agent 安裝與選擇、Thread／Session、Queue、Private／Public、ACP Approval）請優先閱讀 [Discord Agent 設計決策](../docs/design/discord-agent.md)、[ADR-0002](../docs/adr/0002-local-discord-acp-agent.md) 與 [ADR-0003](../docs/adr/0003-discord-agent-access-and-approvals.md)。下方內容保留作為歷史背景；與新文件衝突時以新文件為準。尚未開始實作。
 
 日期：2026-10-10
 
-下一輪要做的事：在 classroom-app 裡加一段本機 Discord Gateway，讓學生貼自己的 bot token 和頻道 ID 後，討論串的話能交給這台電腦上的 ACP CLI。不要另編 OpenAB 的 Windows 執行檔，也不要把 OpenAB 原始碼併進來。
+下一輪要做的事：在 VansPod 裡加一段本機 Discord Gateway，讓學生貼自己的 bot token 和頻道 ID 後，討論串的話能交給這台電腦上的 ACP CLI。不要另編 OpenAB 的 Windows 執行檔，也不要把 OpenAB 原始碼併進來。
 
 ## 已拍板
 
-- 學生只安裝 classroom-app，同時有現有的課堂連線，以及自己的 Discord 機器人。
+- 學生只安裝 VansPod，同時有現有的課堂連線，以及自己的 Discord 機器人。
 - 每個學生用自己的 bot token。全班共用一顆 token 會在 Discord Gateway 上互相踢下線。
 - Token 和頻道 ID 留在學生電腦，不送到課堂 router。
-- Discord 方向是本機主動連出去。不要加 Cloudflare Tunnel、nginx，也不要對外開 classroom-app 的 `127.0.0.1:47821`。
+- Discord 方向是本機主動連出去。不要加 Cloudflare Tunnel、nginx，也不要對外開 VansPod 的 `127.0.0.1:47821`。
 - 連接埠不用跟現有頁面共用。Gateway 本身不需要聽一個公開 port。
 
 學生貼 token 之前仍要自己完成：在 Discord Developer Portal 建機器人、打開 Message Content Intent、把機器人邀請進伺服器。Token 裡沒有頻道，所以 UI 還要收頻道 ID。
@@ -30,9 +30,9 @@
 2. 允許的頻道裡，被 @ 才開新討論串。同一串裡的後續訊息不用再 @。
 3. 該討論串第一次要回覆時拉起一支 ACP CLI，之後沿用。
 4. 對那支行程送 `session/new` 與 `session/prompt`，把回覆貼回 Discord。
-5. classroom-app 負責從畫面收下 token、頻道 ID，並啟動這段連線。現有的 `spawn` 在 `src/start.ts`。課堂連線與 Codex、Claude、VS Code 設定仍走 `src/classroomApp.ts`，不要改那條路徑的語意。
+5. VansPod 負責從畫面收下 token、頻道 ID，並啟動這段連線。現有的 `spawn` 在 `src/start.ts`。課堂連線與 Codex、Claude、VS Code 設定仍走 `src/classroomApp.ts`，不要改那條路徑的語意。
 
-ACP CLI 用學生機器上已經裝好的程式。模型要打哪一台伺服器，沿用 classroom-app 已經寫進本機設定的 base URL，不要在 Discord 這段再寫一份。
+ACP CLI 用學生機器上已經裝好的程式。模型要打哪一台伺服器，沿用 VansPod 已經寫進本機設定的 base URL，不要在 Discord 這段再寫一份。
 
 ## 明確不做
 

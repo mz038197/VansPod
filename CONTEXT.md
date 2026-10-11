@@ -1,12 +1,12 @@
-# Classroom App
+# VansPod
 
-Classroom App 是學生使用的本機課堂入口。本檔只定義本專案的領域用語；沿用 `classroom-one-click-install/CONTEXT.md` 已有的名稱，但不沿用僅適用於 VS Code 擴充的儲存行為。加密技術與儲存格式屬於 ADR，不屬於領域詞彙。
+VansPod 是學生使用的本機課堂入口。本檔只定義本專案的領域用語；沿用 `classroom-one-click-install/CONTEXT.md` 已有的名稱，但不沿用僅適用於 VS Code 擴充的儲存行為。加密技術與儲存格式屬於 ADR，不屬於領域詞彙。
 
 ## Language
 
-**Classroom App**:
+**VansPod**:
 學生在本機完成課堂連線、開發環境與本課資源安裝，以及 Model Switch 的入口。它只支援凡思的 Nickname Redeem，不是 Router Portal，也不是 VS Code 課堂擴充。
-_Avoid_: Portal、Codex plugin、把 Classroom App 當成 Router 本身
+_Avoid_: Portal、Codex plugin、把 VansPod 當成 Router 本身
 
 **Nickname Redeem**:
 學生用 Invite Code 與 Classroom Nickname，向凡思 Router 兌換某個 Class Session 的 Classroom API Key。不等同 Google 登入。
@@ -17,15 +17,15 @@ Nickname Redeem 取得、屬於特定 Class Session 的課堂憑證；本機代�
 _Avoid_: OpenAI／Anthropic 上游 API Key、Google token、Invite Code、在畫面上顯示金鑰明文
 
 **Classroom Connection**:
-Classroom App 目前持有、指向一個 Class Session 的連線身分，包含 Classroom API Key 與恢復課堂辨識所需資訊。清除 Classroom Connection 不等於停止本機代理。
+VansPod 目前持有、指向一個 Class Session 的連線身分，包含 Classroom API Key 與恢復課堂辨識所需資訊。清除 Classroom Connection 不等於停止本機代理。
 _Avoid_: Router Portal session、僅指一把 API Key、把「清除連線」當成「停止代理」
 
 **Persistent Classroom Connection**:
-可跨 Classroom App 行程重新啟動恢復的 Classroom Connection；恢復後仍須依當時有效的 Session Model Allowlist 判定能否使用 Classroom 模式。
+可跨 VansPod 行程重新啟動恢復的 Classroom Connection；恢復後仍須依當時有效的 Session Model Allowlist 判定能否使用 Classroom 模式。
 _Avoid_: 把存有憑證當成已確認模型可用、永久有效的登入
 
 **Temporary Classroom Connection**:
-只在當次 Classroom App 行程期間有效的 Classroom Connection；重新啟動後不會自動恢復。
+只在當次 VansPod 行程期間有效的 Classroom Connection；重新啟動後不會自動恢復。
 _Avoid_: 未加密的磁碟連線、可以跨重啟恢復的連線
 
 **Class Label**:
@@ -33,7 +33,7 @@ _Avoid_: 未加密的磁碟連線、可以跨重啟恢復的連線
 _Avoid_: 在畫面上展示 API Key、只顯示學生暱稱而稱為課堂名稱
 
 **Session Model Allowlist**:
-老師為單一 Class Session 指定、由 Router 回傳並強制執行的可用模型清單。Classroom App 不以本機預設清單取代它。
+老師為單一 Class Session 指定、由 Router 回傳並強制執行的可用模型清單。VansPod 不以本機預設清單取代它。
 _Avoid_: Router Model Template 全集、App 內建模型表、把 Allowlist 塞進 Course Catalog
 
 **Model Switch**:

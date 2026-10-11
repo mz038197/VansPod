@@ -1,16 +1,18 @@
 # 使用跨平台 Secure Storage 保護 Classroom Connection
 
-Classroom App 原先把 Classroom API Key 明文存於本機 `connection.json`，任何能讀取該檔案的程式都可能直接取得金鑰。我們決定以跨平台的 Secure Storage 介面隔離憑證儲存，先實作 Windows DPAPI；目標是**防止單靠讀取持久化檔案就取得明文憑證**，而非阻止同一使用者權限下的惡意程式使用作業系統解密能力。
+VansPod 原先把 Classroom API Key 明文存於本機 `connection.json`，任何能讀取該檔案的程式都可能直接取得金鑰。我們決定以跨平台的 Secure Storage 介面隔離憑證儲存，先實作 Windows DPAPI；目標是**防止單靠讀取持久化檔案就取得明文憑證**，而非阻止同一使用者權限下的惡意程式使用作業系統解密能力。
 
 ## Decision
 
-- Classroom App 的核心依賴可替換的 Secure Storage 介面（`get / set / delete`），而非直接依賴 DPAPI。未來 Discord Bot Token 等敏感資料可沿用此介面，但這次只遷移 Classroom Connection。
+- VansPod 的核心依賴可替換的 Secure Storage 介面（`get / set / delete`），而非直接依賴 DPAPI。未來 Discord Bot Token 等敏感資料可沿用此介面，但這次只遷移 Classroom Connection。
 - Windows Adapter 採用 **DPAPI CurrentUser**。以 Windows 內建的 `powershell.exe` 呼叫 .NET `ProtectedData`，避免 Native Addon 對 Node.js SEA 單一 EXE 的打包負擔；敏感資料以 **stdin** 傳給子行程，不出現在命令列參數、暫存腳本、日誌或錯誤訊息中。
 - 持久化單位是同一筆受保護的 Classroom Connection 資料：Classroom API Key、Class Label 所需的課堂資料、暱稱與 Model Switch 選擇等必要狀態一起儲存；檔案只包含可辨識版本的加密封裝，不另外寫入明文金鑰或課堂身分資訊。保留學生手動複製 API Key 到剪貼簿的功能，但畫面不回顯金鑰。
 - macOS 與 Linux 的平台安全儲存 Adapter 留待後續實作。現階段僅提供 **Temporary Classroom Connection**（行程內記憶體），不以自訂 AES／寫死在程式裡的共用金鑰／明文檔案替代平台安全儲存。
 - 平台安全儲存暫時不可用時，允許新兌換的課堂連線僅在記憶體內使用，關閉行程即失效；正常的記憶體模式不額外顯示警告。這不授權讀取既有明文檔案作為 fallback。
 
 ## Legacy migration and failure handling
+
+持久化位置為使用者目錄的 `.vanspod/connection.json`。首次啟動會將舊 `%LOCALAPPDATA%/classroom-app/connection.json` 移至新位置；若新位置已有連線，以新位置為準並移除舊檔，避免清除後重新恢復舊課堂。加密方式維持 DPAPI CurrentUser。
 
 1. 啟動時若發現舊版明文 `connection.json`，先加密並驗證可解密，再安全地替換為加密封裝；成功後不得留下可正常存取的明文舊檔。
 2. **明文遷移失敗**時，刪除舊明文憑證並要求重新進行 Nickname Redeem（此決策取代先前「失敗保留舊檔」的想法）。若刪除失敗，停止使用該憑證並提示手動清除，不允許明文 fallback。一般檔案刪除不等於物理安全抹除。
@@ -20,7 +22,7 @@ Classroom App 原先把 Classroom API Key 明文存於本機 `connection.json`�
 
 ## Restart and router behavior
 
-- Classroom App 啟動時，若可恢復 Persistent Classroom Connection，就恢復 Classroom API Key、Class Label 與先前的 Model Switch 選擇，並重新取得 Course Catalog 及 Session Model Allowlist。
+- VansPod 啟動時，若可恢復 Persistent Classroom Connection，就恢復 Classroom API Key、Class Label 與先前的 Model Switch 選擇，並重新取得 Course Catalog 及 Session Model Allowlist。
 - Router 暫時連不上時，不刪除有效儲存的憑證。沒有可用的 Session Model Allowlist 就不能假裝 Classroom 模型可用；稍後允許重新載入。已在執行中的先前成功清單仍遵守原有的暫留規則。
 - Temporary Classroom Connection 不會跨行程恢復，也不得令下一次啟動意外恢復到更早的課堂。
 
