@@ -1,4 +1,5 @@
 import { createPlatformConnectionStorage } from "./platformStorage";
+import { readRuntimeOptions } from "./runtimeOptions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -23,7 +24,8 @@ import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody, ResponsesSse, responsesToChatBody, toolKindsFromResponses } from "./responsesChat";
 
-const port = 47821;
+const runtimeOptions = readRuntimeOptions(process.env);
+const port = runtimeOptions.port;
 const pageUrl = `http://127.0.0.1:${port}/`;
 const nodeRequire = createRequire(__filename);
 const responseSlot = new AsyncLocalStorage<{
@@ -131,6 +133,7 @@ function modelIdsInRouterOrder(payload: unknown): string[] {
 async function fetchSessionModels(apiKey: string): Promise<string[]> {
   const root = routerBaseUrl();
   const response = await fetch(`${root}/extension/chat-language-models`, {
+    signal: AbortSignal.timeout(5_000),
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -160,6 +163,7 @@ async function fetchCourseCatalog(
 ): Promise<{ course_catalog_yaml?: unknown }> {
   const root = routerBaseUrl();
   const response = await fetch(`${root}/extension/course-catalog`, {
+    signal: AbortSignal.timeout(5_000),
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -197,6 +201,7 @@ async function redeemNickname(body: {
   const response = await fetch(
     `${root}/extension/sessions/nickname-redeem`,
     {
+      signal: AbortSignal.timeout(5_000),
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -541,6 +546,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const routeFiles = createRouteFiles(routePaths());
   const app = new ClassroomApp({
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
@@ -561,7 +567,12 @@ async function main(): Promise<void> {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
     proxyBaseUrl: pageUrl.replace(/\/$/, ""),
-    routes: createRouteFiles(routePaths()),
+    routes: {
+      ...routeFiles,
+      setModelOptions: options => routeFiles.setModelOptions(options && {
+        ...options, restartCodex: runtimeOptions.restartClients && options.restartCodex,
+      }),
+    },
     copilot: {
       read: readCopilotProviders,
       write: writeCopilotProviders,
@@ -774,8 +785,8 @@ async function main(): Promise<void> {
       process.stderr.write("無法寫入 VCRouter。\n");
     });
     const home = pageUrl;
-    const tray = process.platform === "win32" ? openTray(home) : undefined;
-    openBrowser(home);
+    const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
+    if (runtimeOptions.desktop) openBrowser(home);
     const shutdown = () => {
       tray?.kill();
       server.close();
