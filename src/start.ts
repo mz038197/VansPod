@@ -51,6 +51,10 @@ function routePaths() {
 }
 
 function storageFile(): string {
+  return path.join(os.homedir(), ".vanspod", "connection.json");
+}
+
+function legacyStorageFile(): string {
   const root = process.env.LOCALAPPDATA || os.homedir();
   return path.join(root, "classroom-app", "connection.json");
 }
@@ -375,7 +379,7 @@ function trayScriptPath(): string {
   try {
     const sea = nodeRequire("node:sea") as SeaApi;
     if (sea.isSea()) {
-      const target = path.join(os.tmpdir(), "classroom-app-tray.ps1");
+      const target = path.join(os.tmpdir(), "vanspod-tray.ps1");
       writeFileSync(target, sea.getAsset("tray.ps1", "utf8"));
       return target;
     }
@@ -564,10 +568,10 @@ async function main(): Promise<void> {
     },
     files: {
       async write() {
-        throw new Error("Classroom App 不寫 MCP 設定");
+        throw new Error("VansPod 不寫 MCP 設定");
       },
     },
-    storage: createPlatformConnectionStorage(storageFile()),
+    storage: createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() }),
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
@@ -794,12 +798,12 @@ async function main(): Promise<void> {
       res.end("找不到頁面");
     } catch {
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Classroom App 暫時無法完成這個動作。");
+      res.end("VansPod 暫時無法完成這個動作。");
     }
   });
 
   server.on("error", () => {
-    process.stderr.write(`無法在 127.0.0.1:${port} 開啟 Classroom App。\n`);
+    process.stderr.write(`無法在 127.0.0.1:${port} 開啟 VansPod。\n`);
     process.exit(1);
   });
   server.listen(port, "127.0.0.1", () => {
@@ -816,7 +820,7 @@ async function main(): Promise<void> {
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
-    process.stdout.write(`Classroom App: ${home}\n`);
+    process.stdout.write(`VansPod: ${home}\n`);
   });
 }
 

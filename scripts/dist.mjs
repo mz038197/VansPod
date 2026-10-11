@@ -56,14 +56,14 @@ fs.rmSync(helloJs, { force: true });
 fs.rmSync(helloExe, { force: true });
 fs.rmSync(path.join(root, "dist", "sea-hello.blob"), { force: true });
 
-const exe = path.join(root, "dist", "classroom-app.exe");
+const exe = path.join(root, "dist", "VansPod.exe");
 buildSea({
   main: bundlePath,
   blob: path.join(root, "dist", "sea-prep.blob"),
   exe,
   assets: { "tray.ps1": path.join(root, "scripts", "tray.ps1") },
 });
-process.stdout.write(`Classroom App executable: ${exe}\n`);
+process.stdout.write(`VansPod executable: ${exe}\n`);
 
 function buildSea({ main, blob, exe, assets }) {
   const config = {

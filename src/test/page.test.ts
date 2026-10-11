@@ -26,7 +26,32 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
   };
 }
 
-describe("Classroom App page", () => {
+describe("VansPod page", () => {
+  it("keeps all connection feedback inside the connection card above its actions, without duplicates", () => {
+    const messages = [
+      { connected: true, canCopyKey: true, notice: "已複製 Classroom API Key。請勿分享給不信任的人。" },
+      { connected: true, canCopyKey: true, notice: "無法複製 Classroom API Key。請重新連線後再試。" },
+      { connected: true, canCopyKey: true, notice: "無法清除課堂連線。已保留原本連線。" },
+      { connected: false, canCopyKey: false, notice: "無法安全保存原有課堂連線。" },
+    ];
+    for (const state of messages) {
+      const html = renderPage(view({ ...state, connectionNotice: state.notice }));
+      const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
+      assert.ok(card.includes(state.notice));
+      assert.ok(card.indexOf('class="connection-feedback"') < card.indexOf('class="settings-actions"'));
+      assert.equal(html.split(state.notice).length - 1, 1);
+      assert.equal(html.includes(`<p class="notice">${state.notice}</p>`), false);
+    }
+    for (const state of [
+      { connectionError: "連線失敗，請再試一次。", detail: "" },
+      { detail: "課堂連線無法解密。請重新連線。" },
+    ]) {
+      const html = renderPage(view({ connected: false, canCopyKey: false, ...state }));
+      const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
+      assert.ok(card.includes(state.connectionError || state.detail));
+      assert.equal(html.split(state.connectionError || state.detail).length - 1, 1);
+    }
+  });
   it("submits the selected mode in place and preserves scroll and collapsed sections", async () => {
     let submit!: (event: unknown) => Promise<void>;
     let replaced = false;
@@ -86,7 +111,7 @@ describe("Classroom App page", () => {
   it("uses one appearance button and keeps the key off the page", () => {
     const html = renderPage(view({ mustRestart: ["codex", "claude"] }));
     assert.equal(html.includes('class="model-update"'), false);
-    assert.match(html, /凡思課堂安裝/);
+    assert.match(html, /VansPod/);
     assert.match(html, /data-appearance-toggle/);
     assert.match(html, /\[data-appearance="light"\]/);
     assert.match(html, /\[data-appearance="dark"\]/);

@@ -4,6 +4,7 @@ import {
 } from "./secureStorage";
 import { createWindowsSecureStorage, protectedFiles, StorageError, type WindowsStorageOptions } from "./windowsSecureStorage";
 import { createMigratingConnectionStorage } from "./legacyMigration";
+import { relocateConnectionStorage } from "./storageLocation";
 
 /** Read once; unsuccessful reads remain distinguishable until a successful new redeem. */
 export function createPersistentConnectionStorage(persistent: ConnectionStorage): ConnectionStorage {
@@ -59,7 +60,7 @@ export function createPersistentConnectionStorage(persistent: ConnectionStorage)
   };
 }
 
-export function createPlatformConnectionStorage(filePath: string, options: WindowsStorageOptions & { platform?: NodeJS.Platform } = {}): ConnectionStorage {
+export function createPlatformConnectionStorage(filePath: string, options: WindowsStorageOptions & { platform?: NodeJS.Platform; legacyFilePath?: string } = {}): ConnectionStorage {
   const windows = (options.platform ?? process.platform) === "win32";
   // Other platforms may inspect/delete the old file, but cannot decrypt or persist credentials.
   const unavailableProtector = {
@@ -69,5 +70,8 @@ export function createPlatformConnectionStorage(filePath: string, options: Windo
   const persistent = createConnectionStorage(createWindowsSecureStorage(filePath, {
     ...options, protector: windows ? options.protector : unavailableProtector,
   }));
-  return createPersistentConnectionStorage(createMigratingConnectionStorage(persistent, filePath, options.files ?? protectedFiles));
+  const migrating = createMigratingConnectionStorage(persistent, filePath, options.files ?? protectedFiles);
+  return createPersistentConnectionStorage(options.legacyFilePath
+    ? relocateConnectionStorage(migrating, filePath, options.legacyFilePath)
+    : migrating);
 }

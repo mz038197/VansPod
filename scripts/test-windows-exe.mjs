@@ -57,7 +57,7 @@ export async function fakeRouter() {
 export async function sandbox() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'classroom-sea-verify-'));
   const home = path.join(root, 'home'), roaming = path.join(root, 'roaming'), local = path.join(root, 'local'), temp = path.join(root, 'tmp');
-  const paths = { codex: path.join(home, '.codex/config.toml'), claude: path.join(home, '.claude/settings.json'), vscode: path.join(roaming, 'Code/User/settings.json'), copilot: path.join(roaming, 'Code/User/chatLanguageModels.json'), connection: path.join(local, 'classroom-app/connection.json') };
+  const paths = { codex: path.join(home, '.codex/config.toml'), claude: path.join(home, '.claude/settings.json'), vscode: path.join(roaming, 'Code/User/settings.json'), copilot: path.join(roaming, 'Code/User/chatLanguageModels.json'), connection: path.join(home, '.vanspod/connection.json') };
   const seeds = { codex: 'model = "personal-model"\npersonal_marker = "preserve-codex"\n', claude: JSON.stringify({ personal_marker: 'preserve-claude', env: { PERSONAL_ENV: 'preserve-env' } }), vscode: JSON.stringify({ 'editor.fontSize': 17, personal_marker: 'preserve-vscode' }), copilot: JSON.stringify([{ name: 'PersonalProvider', marker: 'preserve-provider', apiKey: 'synthetic-personal-only' }]) };
   for (const dir of [home, roaming, local, temp]) await fs.mkdir(dir, { recursive: true });
   for (const [name, data] of Object.entries(seeds)) { await fs.mkdir(path.dirname(paths[name]), { recursive: true }); await fs.writeFile(paths[name], data); }
@@ -93,7 +93,7 @@ async function startExe(exe, box, router, port, overrides = {}) {
         assertPrivateOutput(output);
         throw new Error('Isolated SEA process failed before readiness: ' + output.slice(0, 1000));
       }
-      try { const response = await fetch(url, { signal: AbortSignal.timeout(500) }); if (response.ok && output.includes(`Classroom App: ${url}/`)) return handle; } catch {}
+      try { const response = await fetch(url, { signal: AbortSignal.timeout(500) }); if (response.ok && output.includes(`VansPod: ${url}/`)) return handle; } catch {}
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Isolated SEA process readiness timeout');
@@ -359,4 +359,4 @@ export async function runLifecycle({ exe }) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const result = await runLifecycle({ exe: path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/classroom-app.exe') }); console.log(JSON.stringify(result, null, 2)); }
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const result = await runLifecycle({ exe: path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/VansPod.exe') }); console.log(JSON.stringify(result, null, 2)); }

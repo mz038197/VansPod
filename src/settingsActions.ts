@@ -39,7 +39,7 @@ export const settingsActionsScript = `
       message.className = "error settings-action-error";
       message.setAttribute("role", "alert");
       message.textContent = "操作未完成，請再試一次。";
-      card.appendChild(message);
+      (card.querySelector(".connection-feedback") || card.querySelector(".settings-content") || card).appendChild(message);
     } finally {
       buttons.forEach(function (button, index) { button.disabled = disabled[index]; });
       card.removeAttribute("aria-busy");

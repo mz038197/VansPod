@@ -3,7 +3,7 @@
 import type { ClassroomAppView } from "./classroomApp";
 import { classroomBlocks, renderPage } from "./page";
 
-const PRODUCT = "凡思課堂安裝";
+const PRODUCT = "VansPod";
 
 export const PROTOTYPE_VARIANTS = ["A", "B", "C", "D"] as const;
 export type PrototypeVariant = (typeof PROTOTYPE_VARIANTS)[number];

@@ -170,6 +170,7 @@ export type ClassroomAppView = {
   mustRestart?: MustRestartClient[];
   modelRestart?: MustRestartClient[];
   connectionError?: string;
+  connectionNotice?: string;
   connectionDraft?: { inviteCode: string; nickname: string };
 };
 
@@ -189,6 +190,7 @@ export class ClassroomApp {
   private sessionTitle: string | undefined;
   private detail = "";
   private connectionError: string | undefined;
+  private connectionNotice: string | undefined;
   private connectionDraft: { inviteCode: string; nickname: string } | undefined;
   private notice: string | undefined;
   private projectFolder: string | undefined;
@@ -238,6 +240,7 @@ export class ClassroomApp {
       tools: this.environmentTools(),
     };
     if (this.connectionError) view.connectionError = this.connectionError;
+    if (this.notice && this.notice === this.connectionNotice) view.connectionNotice = this.connectionNotice;
     if (this.connectionDraft && !this.connected) view.connectionDraft = { ...this.connectionDraft };
     if (this.classLabel) {
       view.classLabel = this.classLabel;
@@ -375,7 +378,7 @@ export class ClassroomApp {
       return;
     }
     if (!this.proxyRunning) {
-      throw new Error("VCRouter 目前無法使用。請先啟動 Classroom App。");
+      throw new Error("VCRouter 目前無法使用。請先啟動 VansPod。");
     }
     await this.deps.proxy.receive({ provider: "VCRouter" });
     return this.classroomUpstream("copilot");
@@ -392,7 +395,7 @@ export class ClassroomApp {
     if (!this.proxyRunning) {
       throw new Error(
         request.client === "copilot"
-          ? "VCRouter 目前無法使用。請先啟動 Classroom App。"
+          ? "VCRouter 目前無法使用。請先啟動 VansPod。"
           : "代理沒有在跑。",
       );
     }
@@ -584,14 +587,14 @@ export class ClassroomApp {
     }
     const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode };
     if (!isClassroomConnection(connection)) {
-      this.notice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
+      this.notice = this.connectionNotice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
       return;
     }
     this.hiddenKeys.add(connection.apiKey);
     try {
       await this.deps.storage.setConnection(connection, { allowTemporary: true });
     } catch {
-      this.notice = "無法安全保存或清除原有課堂連線，換堂未完成。請稍後再試。";
+      this.notice = this.connectionNotice = "無法安全保存或清除原有課堂連線，換堂未完成。請稍後再試。";
       return;
     }
     const desiredMode = this.mode;
@@ -611,7 +614,7 @@ export class ClassroomApp {
     try {
       await this.restoreModelOptions();
     } catch {
-      this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+      this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
       return;
     }
     await this.loadCatalog();
@@ -625,7 +628,7 @@ export class ClassroomApp {
         this.modelIds = [];
         this.forgetModelChoices();
         try { await this.restoreModelOptions(); } catch { /* Keep proxy routing safely Native. */ }
-        this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+        this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
       }
     }
   }
@@ -748,18 +751,19 @@ export class ClassroomApp {
   }
 
   private async copyKeyNow(): Promise<void> {
+    this.connectionError = undefined;
     try {
       const apiKey = this.connected ? (await this.deps.storage.getConnection())?.apiKey : undefined;
       if (!apiKey) {
-        this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
+        this.notice = this.connectionNotice = "無法複製 Classroom API Key。請重新連線後再試。";
         return;
       }
       await this.deps.clipboard.write(apiKey);
     } catch {
-      this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
+      this.notice = this.connectionNotice = "無法複製 Classroom API Key。請重新連線後再試。";
       return;
     }
-    this.notice = "已複製 Classroom API Key。請勿分享給不信任的人。";
+    this.notice = this.connectionNotice = "已複製 Classroom API Key。請勿分享給不信任的人。";
   }
 
   async copySnippet(snippetId: string): Promise<boolean> {
@@ -781,7 +785,7 @@ export class ClassroomApp {
     try {
       await this.deps.storage.clearConnection();
     } catch {
-      this.notice = "無法清除課堂連線。已保留原本連線，重新啟動後仍可能恢復。請稍後再試。";
+      this.notice = this.connectionNotice = "無法清除課堂連線。已保留原本連線，重新啟動後仍可能恢復。請稍後再試。";
       return;
     }
     this.applyConnectionIdentity(undefined);
@@ -797,7 +801,7 @@ export class ClassroomApp {
     try {
       await this.restoreModelOptions();
     } catch {
-      this.notice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
+      this.notice = this.connectionNotice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
     }
   }
 

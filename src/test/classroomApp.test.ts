@@ -572,7 +572,7 @@ describe("copy lesson snippets", () => {
   });
 });
 
-describe("Classroom App redeem", () => {
+describe("VansPod redeem", () => {
   it("does not redeem when the invite code is blank after trim", async () => {
     const { app, redeemCalls, modelKeys } = harness();
     await app.redeem("   ", "Ada");
@@ -605,7 +605,9 @@ describe("Classroom App redeem", () => {
     assert.equal(view.courseTitle, "Demo");
     assert.equal(view.sessionTitle, "Week 1");
     assert.equal(view.detail, "Classroom API Key 已設定。");
+    assert.equal(view.connectionNotice, view.notice);
     assert.equal(view.canCopyKey, true);
+    assert.equal(view.connectionNotice, view.notice);
     assert.equal(await storedKey(), KEY);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });

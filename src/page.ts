@@ -9,7 +9,7 @@ import {
   type LessonSnippet,
 } from "./courseCatalog";
 
-const PRODUCT = "凡思課堂安裝";
+const PRODUCT = "VansPod";
 const VERSION = `v${createRequire(__filename)("../package.json").version as string}`;
 
 const COPY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
@@ -67,16 +67,17 @@ function modeLine(view: ClassroomAppView): string {
 }
 
 function notices(view: ClassroomAppView): string {
-  const detail = view.detail ? `<p class="detail">${escapeHtml(view.detail)}</p>` : "";
-  const notice = view.notice ? `<p class="notice">${escapeHtml(view.notice)}</p>` : "";
+  const notice = view.notice && view.notice !== view.connectionNotice ? `<p class="notice">${escapeHtml(view.notice)}</p>` : "";
   const running = view.commandRunning ? `<p class="running">執行中</p>` : "";
   const klass = view.classLabel
     ? `<p class="class-label">${escapeHtml(view.classLabel)}</p>`
     : "";
-  return `${klass}${detail}${notice}${running}`;
+  return `${klass}${notice}${running}`;
 }
 
 function connectInner(view: ClassroomAppView): string {
+  const message = view.connectionError || view.connectionNotice || (view.detail !== "Classroom API Key 已設定。" ? view.detail : "");
+  const feedback = `<div class="connection-feedback">${message ? `<div class="${view.connectionError ? "connection-error" : "connection-message"}" role="${view.connectionError ? "alert" : "status"}"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 15v2"/></svg><p>${escapeHtml(message)}</p></div>` : ""}</div>`;
   if (view.canCopyKey) {
     const off = locked(view);
     return `<form method="post" action="/copy">
@@ -84,15 +85,12 @@ function connectInner(view: ClassroomAppView): string {
       </form>
       <form method="post" action="/clear">
         <button type="submit" class="quiet"${off}>清除連線</button>
-      </form>`;
+      </form>${feedback}`;
   }
-  const error = view.connectionError
-    ? `<div class="connection-error" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 15v2"/></svg><p>${escapeHtml(view.connectionError)}</p></div>`
-    : "";
   return `<form class="stack" method="post" action="/redeem">
       <label>邀請碼 <input name="invite_code" autocomplete="off" value="${escapeHtml(view.connectionDraft?.inviteCode ?? "")}"${locked(view)}></label>
       <label>課堂暱稱 <input name="nickname" autocomplete="off" value="${escapeHtml(view.connectionDraft?.nickname ?? "")}"${locked(view)}></label>
-      ${error}
+      ${feedback}
       <button type="submit" class="go"${locked(view)}>連線</button>
     </form>`;
 }
@@ -753,7 +751,7 @@ export function renderPage(view: ClassroomAppView): string {
   );
   html = html.replace(
     `<header class="bar">`,
-    `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><div class="brand"><div class="logo-badge"><img src="/brand-logo.png" alt=""></div><h1 class="gradient-text">凡思課堂安裝</h1></div></div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">`,
+    `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><div class="brand"><div class="logo-badge"><img src="/brand-logo.png" alt=""></div><h1 class="gradient-text">VansPod</h1></div></div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">`,
   );
   html = html.replace(
     `<button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
@@ -931,6 +929,11 @@ export function renderPage(view: ClassroomAppView): string {
     .connection-error { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 10px 12px; border-radius: 10px; background: light-dark(#fef2f2, #40272b); color: light-dark(#b91c1c, #fca5a5); font-size: 13px; line-height: 1.6; }
     .connection-error svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
     .connection-error p { min-width: 0; overflow-wrap: anywhere; }
+    .connection-feedback:empty { display: none; }
+    .connection-feedback { min-width: 0; width: 100%; }
+    .connection-message { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 10px 12px; border-radius: 10px; background: light-dark(#fff7ed, #3b3024); color: light-dark(#9a3412, #fed7aa); font-size: 13px; line-height: 1.6; }
+    .connection-message svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
+    .connection-message p { min-width: 0; overflow-wrap: anywhere; }
     .model-update { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 10px; background: light-dark(#f1f5f9, #2d333b); color: var(--muted); font-size: 12px; line-height: 1.6; }
     .model-update svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
     .environment-summary { font-weight: 600; }
