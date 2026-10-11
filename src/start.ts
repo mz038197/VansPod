@@ -102,7 +102,9 @@ async function writeCopilotProviders(doc: {
 
 function modelIdsInRouterOrder(payload: unknown): string[] {
   if (!Array.isArray(payload)) {
-    throw new Error("模型清單格式錯誤");
+    // A successfully received response without a list is authoritative unavailability,
+    // unlike a transport failure where an existing valid runtime list may be retained.
+    return [];
   }
   const ids: string[] = [];
   for (const provider of payload) {
