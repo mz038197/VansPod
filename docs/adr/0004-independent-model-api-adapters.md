@@ -2,14 +2,14 @@
 
 VansPod 目前將 Codex 的 Responses 請求轉成 Chat 請求送往 Router，Claude Code 則沿用 Messages 路徑。為增加 Responses 上游支援，我們決定在 VansPod 內維護 Model API Adapter，並由使用者為 Codex 與 Claude Code 分別手動選擇；VansPod 必須保持獨立，不依賴 opencodex 專案。
 
-**狀態：Q1～Q17 訪談已完成，設計已確認；使用者透過 implement skill 授權實作。** 記錄日期：2026-10-11。
+**狀態：Q1～Q17 訪談已完成，設計已確認並授權實作；功能及本機／Windows 打包驗證已完成。** 記錄日期：2026-10-11。
 
 ## Decision
 
 - VansPod 的建置、測試、打包與執行均不得依賴 opencodex；不匯入、連結或啟動該專案，也不要求它存在於開發或使用者電腦上。adapter 的實作與維護歸 VansPod 所有。
 - 抽象邊界以 Router 上游協定為主：提供共用的 Adapter 介面，由 ChatAdapter、ResponsesAdapter 與 MessagesAdapter 各自實作。代理入口辨識客戶端後，透過該介面交付請求；具體 adapter 負責請求轉換、上游呼叫與回應轉換。
 - ChatAdapter 內分別實作 Codex Responses ↔ Chat、Claude Code Messages ↔ Chat；ResponsesAdapter 內分別處理 Codex Responses ↔ Responses、Claude Code Messages ↔ Responses。Codex 與 Claude Code 共用上游 adapter 抽象，但各自的協定處理可以分開實作。
-- 共用 Adapter 介面定義操作契約，不要求先將兩種客戶端轉成一套共用中間訊息格式。介面的具體型別及串流生命週期仍待設計。
+- 共用 Adapter 介面定義操作契約，不要求先將兩種客戶端轉成一套共用中間訊息格式。
 - 保留 Codex 既有的 Responses ↔ Chat 轉換，增加 Responses 上游路徑：將 Codex 的 Responses 請求送往 Router `/v1/responses`，並回傳 Responses 串流。
 - Claude Code 保留既有 Messages 上游路徑，增加 Chat 與 Responses 選項；這需要在 VansPod 內處理 Messages 與所選上游協定之間的轉換。
 - Claude Code 既有 Messages 上游路徑由 MessagesAdapter 實作同一份 Adapter 介面，僅供 Claude Code 選用；本次不提供 Codex ↔ Messages 轉換。
@@ -64,3 +64,7 @@ MessagesAdapter 僅處理 Claude Code Messages ↔ Messages，保留既有上游
 原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 的加密 reasoning、工具 namespace，不會靜默移除後重送。Chat 自訂工具將完整的 Lark／regex grammar 定義保留在 input schema 的描述中，作為模型指令，沿用 freeform／`apply_patch` 修復；這不代表 Chat 提供 Responses 原生 grammar 的受限解碼保證。
 
 驗證結果須與實作分開判讀；本機模擬及 Windows 打包測試不代表真實 Router 或模型已驗證。
+
+2026-10-11 驗證結果：`npm run typecheck` 通過；`npm test` 共 193 項全部通過；`npm run test:windows-exe` 在 Windows、Node.js v24.19.0 通過，涵蓋最新 EXE 的五條 JSON／SSE 路徑、adapter 偏好跨行程恢復及原有憑證生命週期。本次隔離環境已清理，真實使用者設定雜湊未改變。真實 Router／模型端到端驗證尚未執行。
+
+code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議，Spec 軸提出 5 項工具及截斷處理問題；修正與複查後兩軸均無未解決項目。首次 Windows 驗證在測試資料夾清理時失敗，後續增加清理重試與步驟診斷後完整通過；首次遺留的測試資料夾仍保留，手動清理曾被執行環境拒絕。
