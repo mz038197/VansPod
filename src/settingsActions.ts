@@ -2,7 +2,7 @@ export const settingsActionsScript = `
   var settingsBusy = false;
   document.addEventListener("submit", async function (event) {
     var form = event.target;
-    if (!form?.matches?.('form[action="/redeem"], form[action="/copy"], form[action="/clear"], form[action="/project-folder"], form[action="/pick-folder"], form[action="/switch"], form[action="/reload"], form[action="/environment-check"], form[action="/environment"]')) return;
+    if (!form?.matches?.('form[action="/redeem"], form[action="/copy"], form[action="/clear"], form[action="/project-folder"], form[action="/pick-folder"], form[action="/switch"], form[action="/adapter"], form[action="/reload"], form[action="/environment-check"], form[action="/environment"]')) return;
     event.preventDefault();
     if (settingsBusy || installBusy || installOpening || document.querySelector(".confirm-dialog")) return;
     settingsBusy = true;

@@ -22,17 +22,19 @@ import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand } from "./commandRunner";
 import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
-import { decodeRequestBody, ResponsesSse, responsesToChatBody, toolKindsFromResponses } from "./responsesChat";
+import { decodeRequestBody } from "./responsesChat";
+import { createAdapterSettingsStorage } from "./adapterSettings";
+import { sendRouter, relayResponse } from "./modelProxy";
 
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
 const pageUrl = `http://127.0.0.1:${port}/`;
 const nodeRequire = createRequire(__filename);
 const responseSlot = new AsyncLocalStorage<{
-  status: number;
-  body: string;
-  stream?: (res: http.ServerResponse) => Promise<void>;
+  response?: Response;
 }>();
+const activeRequests = new Set<AbortController>();
+function abortRequests(): void { for (const controller of activeRequests) controller.abort(); }
 
 function routerBaseUrl(): string {
   return (
@@ -338,14 +340,16 @@ function readBody(req: http.IncomingMessage, max = 16_384): Promise<string> {
       chunks.push(chunk);
     });
     req.on("end", () => {
-      const bytes = Buffer.concat(chunks);
-      const encoding = req.headers["content-encoding"];
-      resolve(
-        decodeRequestBody(
+      try {
+        const bytes = Buffer.concat(chunks);
+        const encoding = req.headers["content-encoding"];
+        const decoded = decodeRequestBody(
           bytes,
           Array.isArray(encoding) ? encoding.join(",") : encoding,
-        ),
-      );
+        );
+        if (Buffer.byteLength(decoded, "utf8") > max) throw new Error("decoded body too large");
+        resolve(decoded);
+      } catch (error) { reject(error); }
     });
     req.on("error", reject);
   });
@@ -414,6 +418,7 @@ function createProxy() {
     },
     stop() {
       proxyAccepting = false;
+      abortRequests();
     },
     async receive(request: { provider: "VCRouter" }) {
       if (!proxyAccepting) {
@@ -479,7 +484,11 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
     return;
   }
   const slot = responseSlot.getStore();
-  const responses = upstream.path.includes("/responses");
+  if (!slot) return;
+  if (upstream.target === "router" && upstream.client !== "copilot") {
+    slot.response = await sendRouter(upstream, routerBaseUrl());
+    return;
+  }
   try {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -487,76 +496,26 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
     if (upstream.target === "router" && upstream.apiKey) {
       headers.Authorization = `Bearer ${upstream.apiKey}`;
     }
-    const body =
-      upstream.target === "router" && responses
-        ? responsesToChatBody(upstream.body ?? "", upstream.model)
-        : upstream.target === "router"
+    const body = upstream.target === "router"
           ? rewriteModel(upstream.body ?? "", upstream.model)
           : upstream.body;
-    if (upstream.target === "router" && responses && body) {
-      const parsed = JSON.parse(body) as { messages?: unknown[] };
-      if (!parsed.messages?.length) {
-        if (slot) {
-          slot.status = 400;
-          slot.body = "Responses 正文裡沒有可送出的文字。";
-        }
-        return;
-      }
-    }
-    const url =
-      upstream.target === "router" && responses
-        ? `${routerBaseUrl()}/v1/chat/completions`
-        : `${upstreamOrigin(upstream.target)}${upstream.path}`;
+    const url = `${upstreamOrigin(upstream.target)}${upstream.path}`;
     const response = await fetch(url, {
       method: upstream.method ?? "POST",
       headers,
       body,
+      signal: upstream.signal,
     });
-    if (responses && upstream.target === "router" && response.ok && response.body) {
-      const sse = new ResponsesSse(
-        upstream.model,
-        toolKindsFromResponses(upstream.body ?? ""),
-      );
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      if (slot) {
-        slot.status = 200;
-        slot.stream = async (res) => {
-          res.writeHead(200, {
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          });
-          res.write(sse.created());
-          while (true) {
-            const next = await reader.read();
-            if (next.done) {
-              break;
-            }
-            res.write(sse.pushChatChunk(decoder.decode(next.value, { stream: true })));
-          }
-          res.write(sse.finish());
-          res.end();
-        };
-      }
-      return;
-    }
-    const text = await response.text();
-    if (slot) {
-      slot.status = response.status;
-      slot.body = text;
-    }
+    slot.response = response;
   } catch {
-    if (slot) {
-      slot.status = 502;
-      slot.body = "上游沒有回應。";
-    }
+    slot.response = Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 });
   }
 }
 
 async function main(): Promise<void> {
   const routeFiles = createRouteFiles(routePaths());
   const app = new ClassroomApp({
+    adapterSettings: createAdapterSettingsStorage(path.join(os.homedir(), ".vanspod", "settings.json")),
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
     projectFiles: { readClassroomInstalls },
@@ -746,6 +705,15 @@ async function main(): Promise<void> {
         goHome(params);
         return;
       }
+      if (req.method === "POST" && pathname === "/adapter") {
+        const params = new URLSearchParams(await readBody(req));
+        const client = params.get("client");
+        if (client !== "codex" && client !== "claude") {
+          res.writeHead(400); res.end("無效的客戶端。"); return;
+        }
+        await app.setAdapter(client, params.get("adapter") ?? "");
+        goHome(params); return;
+      }
       if (req.method === "POST" && pathname === "/reload") {
         const params = new URLSearchParams(await readBody(req));
         await app.reloadCatalog();
@@ -757,29 +725,25 @@ async function main(): Promise<void> {
         (req.method === "POST" || req.method === "PUT") &&
         (pathname.startsWith("/v1/") || pathname.startsWith("/backend-api/"))
       ) {
-        const body = await readBody(req, 1_048_576);
-        const slot: {
-          status: number;
-          body: string;
-          stream?: (res: http.ServerResponse) => Promise<void>;
-        } = { status: 502, body: "上游沒有回應。" };
-        await responseSlot.run(slot, () =>
-          app.forward({
-            client: clientOf(req, pathname),
-            model: modelFromBody(body),
-            method: req.method,
-            path: pathname,
-            body,
-          }),
-        );
-        if (slot.stream) {
-          await slot.stream(res);
-          return;
+        const controller = new AbortController(); activeRequests.add(controller);
+        const aborted = () => controller.abort();
+        req.once("aborted", aborted);
+        const closed = () => { if (!res.writableFinished) controller.abort(); };
+        res.once("close", closed);
+        const client = clientOf(req, pathname);
+        try {
+          const body = await readBody(req, 20_971_520);
+          const slot: { response?: Response } = {};
+          const headers: Record<string, string> = {};
+          for (const name of ["anthropic-version", "anthropic-beta"]) {
+            const value = req.headers[name]; if (typeof value === "string") headers[name] = value;
+          }
+          await responseSlot.run(slot, () => app.forward({ client, model: modelFromBody(body), method: req.method, path: pathname, body, headers, signal: controller.signal }));
+          if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, client === "claude" ? "claude" : "codex", controller.signal);
+        } finally {
+          controller.abort(); activeRequests.delete(controller);
+          req.removeListener("aborted", aborted); res.removeListener("close", closed);
         }
-        res.writeHead(slot.status, {
-          "Content-Type": "application/json; charset=utf-8",
-        });
-        res.end(slot.body);
         return;
       }
       if (req.method === "POST" && pathname === "/stop") {
@@ -797,6 +761,8 @@ async function main(): Promise<void> {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("找不到頁面");
     } catch {
+      if (res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("VansPod 暫時無法完成這個動作。");
     }
@@ -814,6 +780,7 @@ async function main(): Promise<void> {
     const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
     if (runtimeOptions.desktop) openBrowser(home);
     const shutdown = () => {
+      abortRequests();
       tray?.kill();
       server.close();
       process.exit(0);

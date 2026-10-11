@@ -1,5 +1,7 @@
 import { isClassroomConnection, type ClassroomConnection, type ConnectionStorage } from "./secureStorage";
 import { StorageError } from "./storageErrors";
+import { defaultAdapters, isAdapterChoice, type AdapterSettings, type AdapterSettingsStorage } from "./adapterSettings";
+import type { AdapterClient, AdapterId } from "./adapters";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -44,6 +46,7 @@ export type CopilotDocument = {
 };
 
 export type ClassroomAppDeps = {
+  adapterSettings?: AdapterSettingsStorage;
   router: {
     redeemNickname(body: {
       invite_code: string;
@@ -113,6 +116,9 @@ export type ProxyClient = "codex" | "claude" | "copilot";
 export type UpstreamTarget = "router" | "chatgpt" | "claude.ai";
 
 export type UpstreamSend = {
+  adapter?: AdapterId;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
   client: ProxyClient;
   target: UpstreamTarget;
   model: string;
@@ -129,6 +135,8 @@ export type ForwardedRecord = {
 };
 
 export type ClientForward = {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
   client: ProxyClient;
   model: string;
   method?: string;
@@ -144,6 +152,8 @@ export type EnvironmentToolView = {
 };
 
 export type ClassroomAppView = {
+  adapters?: AdapterSettings;
+  adapterNotice?: string;
   connected: boolean;
   classLabel?: string;
   nickname?: string;
@@ -180,6 +190,8 @@ const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
 const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一個。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
+  private adapters = defaultAdapters();
+  private adapterNotice: string | undefined;
   private readonly hiddenKeys = new Set<string>();
   private initialization: Promise<void> | undefined;
   private connectionOperations: Promise<unknown> = Promise.resolve();
@@ -237,6 +249,8 @@ export class ClassroomApp {
       installAvailable: Boolean(this.projectFolder),
       commandRunning: this.commandRunning,
       mode: this.mode,
+      adapters: { ...this.adapters },
+      adapterNotice: this.adapterNotice,
       tools: this.environmentTools(),
     };
     if (this.connectionError) view.connectionError = this.connectionError;
@@ -436,7 +450,18 @@ export class ClassroomApp {
     if (!apiKey || !model) {
       return undefined;
     }
-    return { client, target: "router", model, apiKey };
+    return { client, target: "router", model, apiKey, ...(client === "copilot" ? {} : { adapter: this.adapters[client] }) };
+  }
+
+  async setAdapter(client: AdapterClient, id: string): Promise<void> {
+    if (!isAdapterChoice(client, id)) throw new Error(`無效的 ${client === "codex" ? "Codex" : "Claude Code"} adapter。`);
+    await this.serialConnectionOperation(async () => {
+      const next = { ...this.adapters, [client]: id } as AdapterSettings;
+      try { await this.deps.adapterSettings?.save(next); }
+      catch { this.adapterNotice = "無法儲存 adapter 選擇，已保留原本設定。"; return; }
+      this.adapters = next;
+      this.adapterNotice = undefined;
+    });
   }
 
   private classroomModel(
@@ -810,7 +835,13 @@ export class ClassroomApp {
   }
 
   private async startNow(): Promise<void> {
-    if (!this.initialization) this.initialization = this.restoreConnection();
+    if (!this.initialization) this.initialization = (async () => {
+      if (this.deps.adapterSettings) {
+        try { this.adapters = await this.deps.adapterSettings.load(); }
+        catch { this.adapterNotice = "無法讀取 adapter 設定，目前使用 Responses 預設值。"; }
+      }
+      await this.restoreConnection();
+    })();
     await this.initialization;
     const codex = await this.deps.routes.readCodex();
     const claude = await this.deps.routes.readClaudeTerminal();
@@ -1036,6 +1067,8 @@ function usableCatalogYaml(value: unknown): string | undefined {
 
 function withHttp(upstream: UpstreamSend, request: ClientForward): UpstreamSend {
   const next: UpstreamSend = { ...upstream };
+  if (request.headers) next.headers = request.headers;
+  if (request.signal) next.signal = request.signal;
   if (request.method !== undefined) {
     next.method = request.method;
   }

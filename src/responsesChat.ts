@@ -5,6 +5,7 @@ import {
   repairFreeformToolInput,
 } from "./codexWire/apply-patch-envelope";
 import { progressiveFreeformInput } from "./codexWire/progressive-freeform-input";
+import { AdapterError, allowedFields, object, list, string } from "./adapters/types";
 import {
   toolCallArgumentsCouldBeJson,
   toolCallArgumentsUsable,
@@ -12,7 +13,7 @@ import {
 
 type ChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | null | unknown[];
   tool_calls?: Array<{
     id: string;
     type: "function";
@@ -27,6 +28,7 @@ type ChatTool = {
     name: string;
     description?: string;
     parameters: unknown;
+    strict?: boolean;
   };
 };
 
@@ -71,9 +73,7 @@ export function toolKindsFromResponses(raw: string): Map<string, "function" | "c
   let parsed: Record<string, unknown> = {};
   try {
     const value: unknown = JSON.parse(raw);
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      parsed = value as Record<string, unknown>;
-    }
+    parsed = object(value, "Responses 正文");
   } catch {
     return kinds;
   }
@@ -118,6 +118,7 @@ function chatTool(tool: unknown): ChatTool | undefined {
     type: "function",
     function: {
       name,
+      ...(typeof fn.strict === "boolean" ? { strict: fn.strict } : {}),
       ...(typeof fn.description === "string"
         ? { description: fn.description }
         : {}),
@@ -133,6 +134,24 @@ function chatTool(tool: unknown): ChatTool | undefined {
           : fn.parameters ?? { type: "object", properties: {} },
     },
   };
+}
+
+function chatContent(content: unknown): string | unknown[] {
+  if (typeof content === "string") return content;
+  const parts = list(content, "Responses content").map(part => {
+    const value = object(part, "Responses content part");
+    if (value.type === "input_text" || value.type === "output_text") {
+      allowedFields(value, ["type", "text", "annotations"], "Responses text");
+      if (Array.isArray(value.annotations) && value.annotations.length) throw new AdapterError("Chat 無法保留文字 annotations。");
+      return { type: "text", text: string(value.text, "text") };
+    }
+    if (value.type === "input_image") {
+      allowedFields(value, ["type", "image_url", "detail"], "Responses image");
+      return { type: "image_url", image_url: { url: string(value.image_url, "image_url"), detail: value.detail ?? "auto" } };
+    }
+    throw new AdapterError(`Chat 無法轉換內容類型 ${String(value.type)}。`);
+  });
+  return parts.every(part => part.type === "text") ? parts.map(part => (part as { text: string }).text).join("") : parts;
 }
 
 function chatToolArguments(raw: string, custom: boolean): string {
@@ -197,11 +216,31 @@ export function responsesToChatBody(raw: string, model: string): string {
   let parsed: Record<string, unknown> = {};
   try {
     const value: unknown = JSON.parse(raw);
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      parsed = value as Record<string, unknown>;
-    }
+    parsed = object(value, "Responses 正文");
   } catch {
-    parsed = {};
+    throw new AdapterError("Responses 正文必須是 JSON 物件。");
+  }
+  allowedFields(parsed, ["model", "input", "instructions", "tools", "tool_choice", "stream", "max_output_tokens", "temperature", "top_p", "parallel_tool_calls", "reasoning", "store", "metadata", "user", "text", "stream_options"], "Responses → Chat");
+  if (parsed.reasoning !== undefined) {
+    const reasoning = object(parsed.reasoning, "reasoning");
+    allowedFields(reasoning, ["effort"], "Chat reasoning");
+  }
+  if (parsed.text !== undefined) {
+    const text = object(parsed.text, "text");
+    allowedFields(text, ["format"], "Chat text");
+  }
+  if (parsed.tools !== undefined) for (const tool of list(parsed.tools, "tools")) {
+    const record = object(tool, "tool");
+    if (record.type !== "function" && record.type !== "custom") throw new AdapterError(`Chat 無法轉換工具類型 ${String(record.type)}。`);
+    allowedFields(record, record.type === "custom" ? ["type", "name", "description", "format"] : ["type", "name", "description", "parameters", "strict", "function"], "Chat tool");
+    if (record.function) allowedFields(object(record.function, "function"), ["name", "description", "parameters", "strict"], "Chat function");
+    const fn = record.function ? object(record.function, "function") : record;
+    string(fn.name, "tool name");
+    if (record.type === "custom" && record.format !== undefined) {
+      const format = object(record.format, "custom format");
+      if (format.type !== "text") throw new AdapterError("Chat 無法原生保留自訂工具的 grammar 約束，請使用 Responses adapter。");
+      allowedFields(format, ["type"], "custom format");
+    }
   }
   const messages: ChatMessage[] = [];
   if (typeof parsed.instructions === "string" && parsed.instructions) {
@@ -212,12 +251,10 @@ export function responsesToChatBody(raw: string, model: string): string {
     messages.push({ role: "user", content: input });
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-      const record = item as Record<string, unknown>;
+      const record = object(item, "Responses input item");
       if (record.type === "input_text" || record.type === "output_text") {
-        const text = textFromContent(record.text ?? record.content);
+        allowedFields(record, ["type", "text"], "Responses text item");
+        const text = string(record.text, "text");
         if (text) {
           messages.push({
             role: record.type === "output_text" ? "assistant" : "user",
@@ -227,6 +264,8 @@ export function responsesToChatBody(raw: string, model: string): string {
         continue;
       }
       if (record.type === "function_call" || record.type === "custom_tool_call") {
+        allowedFields(record, ["type", "id", "status", "call_id", "name", "arguments", "input"], "Responses tool call");
+        if (!record.call_id || !record.name) throw new AdapterError("工具呼叫缺少 call_id 或 name。");
         pushFunctionCall(messages, record);
         continue;
       }
@@ -234,29 +273,33 @@ export function responsesToChatBody(raw: string, model: string): string {
         record.type === "function_call_output" ||
         record.type === "custom_tool_call_output"
       ) {
-        const id = typeof record.call_id === "string" ? record.call_id : "";
-        const output = textFromContent(record.output);
+        allowedFields(record, ["type", "id", "status", "call_id", "output"], "Responses tool output");
+        const id = string(record.call_id, "call_id");
+        const output = typeof record.output === "string" ? record.output : chatContent(record.output);
         if (id) {
           messages.push({ role: "tool", tool_call_id: id, content: output });
         }
         continue;
       }
       if (record.type !== "message" && typeof record.role !== "string") {
-        continue;
+        throw new AdapterError(`Chat 無法轉換輸入類型 ${String(record.type)}。`);
       }
+      if (!["assistant", "system", "developer", "user"].includes(String(record.role))) throw new AdapterError("Chat 無法轉換此 message role。");
+      allowedFields(record, ["type", "id", "status", "role", "content"], "Responses message");
       const role =
         record.role === "assistant"
           ? "assistant"
           : record.role === "system" || record.role === "developer"
             ? "system"
             : "user";
-      const content = textFromContent(record.content);
+      const content = chatContent(record.content);
       if (!content) {
         continue;
       }
       messages.push({ role, content });
     }
   }
+  else if (input !== undefined) throw new AdapterError("Responses input 必須是文字或陣列。");
   const tools = Array.isArray(parsed.tools)
     ? parsed.tools.flatMap((tool) => {
         const converted = chatTool(tool);
@@ -266,9 +309,35 @@ export function responsesToChatBody(raw: string, model: string): string {
   return JSON.stringify({
     model,
     messages,
-    stream: true,
+    stream: parsed.stream ?? true,
+    ...(parsed.max_output_tokens !== undefined ? { max_completion_tokens: parsed.max_output_tokens } : {}),
+    ...(parsed.reasoning !== undefined ? { reasoning_effort: (parsed.reasoning as Record<string, unknown>).effort } : {}),
+    ...(parsed.text !== undefined ? { response_format: chatResponseFormat(object(parsed.text, "text").format) } : {}),
+    ...Object.fromEntries(["temperature", "top_p", "parallel_tool_calls", "store", "metadata", "user", "stream_options"].filter(key => parsed[key] !== undefined).map(key => [key, parsed[key]])),
+    ...(parsed.tool_choice !== undefined ? { tool_choice: chatToolChoice(parsed.tool_choice) } : {}),
     ...(tools.length > 0 ? { tools } : {}),
   });
+}
+
+function chatToolChoice(value: unknown): unknown {
+  if (typeof value === "string" && ["auto", "none", "required"].includes(value)) return value;
+  const choice = object(value, "tool_choice");
+  allowedFields(choice, ["type", "name"], "Chat tool_choice");
+  if (choice.type === "function" || choice.type === "custom") return { type: "function", function: { name: string(choice.name, "tool_choice.name") } };
+  throw new AdapterError("Chat 無法轉換 tool_choice。");
+}
+
+function chatResponseFormat(value: unknown): unknown {
+  const format = object(value, "text.format");
+  if (format.type === "text" || format.type === "json_object") {
+    allowedFields(format, ["type"], "text.format"); return format;
+  }
+  if (format.type === "json_schema") {
+    allowedFields(format, ["type", "name", "description", "schema", "strict"], "text.format");
+    const { type, ...schema } = format;
+    return { type, json_schema: schema };
+  }
+  throw new AdapterError("Chat 無法轉換 text.format。");
 }
 
 function randomId(): string {
@@ -284,6 +353,8 @@ function sse(name: string, sequence: number, data: Record<string, unknown>): str
 }
 
 export class ResponsesSse {
+  private finishReason: unknown;
+  private usage: Record<string, unknown> | null = null;
   private sequence = 0;
   private opened = false;
   private textClosed = false;
@@ -357,6 +428,7 @@ export class ResponsesSse {
     const choice = (
       parsed as {
         choices?: Array<{
+          finish_reason?: unknown;
           delta?: {
             content?: unknown;
             tool_calls?: Array<{
@@ -368,6 +440,9 @@ export class ResponsesSse {
         }>;
       }
     ).choices?.[0];
+    if (choice?.finish_reason != null) this.finishReason = choice.finish_reason;
+    const usage = (parsed as { usage?: Record<string, unknown> }).usage;
+    if (usage) this.usage = { input_tokens: usage.prompt_tokens ?? 0, output_tokens: usage.completion_tokens ?? 0, total_tokens: usage.total_tokens ?? 0 };
     let out = "";
     const content = choice?.delta?.content;
     if (typeof content === "string" && content) {
@@ -628,6 +703,8 @@ export class ResponsesSse {
   }
 
   private completed(): string {
+    const status = this.finishReason === "length" ? "incomplete" : "completed";
+    const terminalEvent = status === "incomplete" ? "response.incomplete" : "response.completed";
     const textFrames = this.opened ? this.closeText() : "";
     const tools = this.closeTools();
     if (tools.failed) {
@@ -647,12 +724,14 @@ export class ResponsesSse {
         : []),
       ...tools.items,
     ];
+    const indexOf = (item: { id: string }): number => item.id === this.itemId ? this.textIndex : [...this.tools.values()].find(tool => tool.itemId === item.id)?.outputIndex ?? 0;
+    output.sort((left, right) => indexOf(left as { id: string }) - indexOf(right as { id: string }));
     if (output.length === 0) {
       return (
         this.ensureOpen() +
         this.closeText() +
-        this.frame("response.completed", {
-          response: this.snapshot("completed", [
+        this.frame(terminalEvent, {
+          response: this.snapshot(status, [
             {
               type: "message",
               id: this.itemId,
@@ -668,8 +747,8 @@ export class ResponsesSse {
     return (
       textFrames +
       tools.frames +
-      this.frame("response.completed", {
-        response: this.snapshot("completed", output),
+      this.frame(terminalEvent, {
+        response: this.snapshot(status, output),
       }) +
       "data: [DONE]\n\n"
     );
@@ -683,7 +762,8 @@ export class ResponsesSse {
       status,
       model: this.model,
       output,
-      usage: null,
+      usage: this.usage,
+      ...(status === "incomplete" ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
     };
   }
 

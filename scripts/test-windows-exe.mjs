@@ -41,11 +41,22 @@ export async function fakeRouter() {
         if (state.models === 'missing') return reply(res, 200, {});
         return reply(res, 200, state.models === 'empty' ? [] : [{ name: 'VCRouter', models: [{ id: selected.model }] }]);
       }
-      if (pathname === '/v1/chat/completions') {
+      if (['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(pathname)) {
         const input = JSON.parse(await body(req));
         state.calls.at(-1).model = input.model;
         if (input.model !== selected.model) return reply(res, 403, { error: 'synthetic denied model' });
-        return reply(res, 200, { id: 'synthetic-response', choices: [{ message: { role: 'assistant', content: 'synthetic success' } }] });
+        const wire = pathname.endsWith('/responses') ? 'responses' : pathname.endsWith('/messages') ? 'messages' : 'chat';
+        const usage = { input_tokens: 2, output_tokens: 3 };
+        const output = { id: 'synthetic-response', object: 'response', status: 'completed', model: input.model, output: [{ type: 'message', id: 'm', role: 'assistant', content: [{ type: 'output_text', text: 'synthetic success', annotations: [] }] }], usage };
+        const message = { id: 'synthetic-message', type: 'message', role: 'assistant', model: input.model, content: [{ type: 'text', text: 'synthetic success' }], stop_reason: 'end_turn', stop_sequence: null, usage };
+        if (input.stream) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          if (wire === 'chat') res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'synthetic success' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+          else if (wire === 'responses') res.end('event: response.completed\ndata: ' + JSON.stringify({ type: 'response.completed', response: output }) + '\n\n');
+          else res.end('event: message_start\ndata: ' + JSON.stringify({ type: 'message_start', message: { ...message, content: [] } }) + '\n\nevent: content_block_delta\ndata: ' + JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'synthetic success' } }) + '\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n');
+          return;
+        }
+        return reply(res, 200, wire === 'responses' ? output : wire === 'messages' ? message : { id: 'synthetic-response', choices: [{ message: { role: 'assistant', content: 'synthetic success' }, finish_reason: 'stop' }] });
       }
       reply(res, 404, { error: 'synthetic not found' });
     } catch { reply(res, 500, { error: 'synthetic fixture error' }); }
@@ -66,7 +77,7 @@ export async function sandbox() {
   return { root, paths, env, async cleanup() {
     const target = path.resolve(root), expected = path.resolve(os.tmpdir()) + path.sep;
     safeAssert(target.startsWith(expected) && path.basename(target).startsWith('classroom-sea-verify-'), 'Refusing unsafe sandbox deletion');
-    await fs.rm(target, { recursive: true, force: true });
+    await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   } };
 }
 
@@ -226,6 +237,22 @@ export async function runLifecycle({ exe }) {
     safeAssert(await proxy(app, 'synthetic-denied-model') === 200, 'Existing disallowed-model substitution behavior changed');
     safeAssert(router.state.calls.at(-1).model === sessions.first.model, 'Proxy forwarded an out-of-allowlist model');
     record('proxy: allowed model and substitution never forward denied model');
+    for (const client of ['codex', 'claude']) for (const adapter of client === 'codex' ? ['chat', 'responses'] : ['chat', 'responses', 'messages']) {
+      await post(app, '/adapter', { client, adapter });
+      for (const stream of [false, true]) {
+        const endpoint = client === 'codex' ? '/v1/responses' : '/v1/messages';
+        const body = client === 'codex' ? { input: 'hello', stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
+        const response = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model }), signal: AbortSignal.timeout(10000) });
+        const text = await response.text();
+        safeAssert(response.status === 200 && text.includes('synthetic success'), `Packaged ${client}/${adapter}/${stream} failed`);
+        safeAssert(!text.includes(sessions.first.key), 'Adapter leaked Classroom key');
+        safeAssert(router.state.calls.at(-1).pathname === (adapter === 'chat' ? '/v1/chat/completions' : '/v1/' + adapter), 'Wrong packaged upstream protocol');
+        if (stream) safeAssert(text.includes(client === 'codex' ? 'response.completed' : 'message_stop'), 'Packaged adapter omitted terminal event');
+      }
+    }
+    record('adapters: all five routes in JSON and SSE through packaged EXE');
+    await post(app, '/adapter', { client: 'codex', adapter: 'chat' });
+    await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
     const copied = await verifyCopy(app, box);
     if (copied === 'COPY_AND_RESTORE_OK') record('packaged Copy Key: all original clipboard formats/order/raw bytes restored and verified');
     else unverified.push('packaged Copy Key: clipboard backup helper ' + copied + '; original clipboard untouched');
@@ -234,6 +261,9 @@ export async function runLifecycle({ exe }) {
     else unverified.push('real command-line sampling observed no DPAPI child; controlled spawn boundary tests cover argv');
     await restart();
     assertSession(await page(app), 'first'); safeAssert(selectedMode(await page(app), 'classroom'), 'Stored Classroom mode did not restore');
+    const adaptersHtml = await page(app);
+    safeAssert(/value="chat" selected/.test(adaptersHtml) && /value="messages" selected/.test(adaptersHtml), 'Adapter preferences did not restore in packaged EXE');
+    record('adapters: independent preferences restored across packaged restart');
     safeAssert(await proxy(app) === 200, 'Restarted proxy did not restore the credential');
     record('same-account SEA restart: DPAPI key, Unicode class/session/nickname, Classroom mode');
     const beforeInvalidRedeem = await fs.readFile(box.paths.connection, 'utf8');
@@ -350,11 +380,12 @@ export async function runLifecycle({ exe }) {
     record('personal Codex/Claude/VS Code/Copilot preservation; no install commands; files/logs/pages scanned');
     return { platform: process.platform, node: process.version, results, unverified };
   } finally {
-    let cleanupFailed = false;
-    for (const cleanup of [() => lock?.finish(), () => stopMonitor?.(), () => app?.stop(), () => restoreAcl?.(), () => router.close(), () => box.cleanup(), () => restoreCheck()]) {
-      try { await cleanup(); } catch { cleanupFailed = true; }
+    const cleanupFailures = [];
+    const cleanups = { lock: () => lock?.finish(), monitor: () => stopMonitor?.(), app: () => app?.stop(), acl: () => restoreAcl?.(), router: () => router.close(), sandbox: () => box.cleanup(), personalSettings: () => restoreCheck() };
+    for (const [name, cleanup] of Object.entries(cleanups)) {
+      try { await cleanup(); } catch (error) { cleanupFailures.push(name + (typeof error?.code === 'string' ? ':' + error.code : '')); }
     }
-    if (cleanupFailed) throw new Error('Isolated verification cleanup did not complete successfully');
+    if (cleanupFailures.length) throw new Error('Isolated verification cleanup failed: ' + cleanupFailures.join(', '));
     record('real user configuration hashes unchanged; sandbox files and ACL fixture removed');
   }
 }

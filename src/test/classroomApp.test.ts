@@ -4,6 +4,7 @@ import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
 import type { ModelOptions } from "../routeFiles";
+import type { AdapterSettingsStorage } from "../adapterSettings";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -133,7 +134,7 @@ it("a request arriving during replacement uses the new key and new allowlist tog
   const forward = h.app.forward({ client: "codex", model: "old-only-model" });
   release();
   await Promise.all([redeem, forward]);
-  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "new-only-model", apiKey: KEY }]);
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "new-only-model", apiKey: KEY, adapter: "responses" }]);
 });
 
 it("an in-flight Router response does not block clear or authorize later requests", async () => {
@@ -240,7 +241,7 @@ it("refuses a session replacement when saving and deleting fail, keeping the usa
   await h.app.copyKey();
   assert.equal(h.clipboard(), "old-key");
   await h.app.forward({ client: "codex", model: "later" });
-  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "later", apiKey: "old-key" }]);
+  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "later", apiKey: "old-key", adapter: "responses" }]);
   assert.deepEqual(await disk.getConnection(), { ...old, mode: "classroom" });
 });
 
@@ -315,6 +316,7 @@ snippets:
 function harness(
   session?: { class_name?: string; name?: string },
   options?: {
+    adapterSettings?: AdapterSettingsStorage;
     storage?: ConnectionStorage;
     send?: (upstream: UpstreamSend) => Promise<void>;
     redeemError?: Error;
@@ -367,6 +369,7 @@ function harness(
   let modelOptions: ModelOptions | null = null;
   const resolvedSession = session ?? { class_name: "Demo", name: "Week 1" };
   const app = new ClassroomApp({
+    adapterSettings: options?.adapterSettings,
     router: {
       async redeemNickname(body) {
         redeemCalls.push(body);
@@ -570,6 +573,45 @@ describe("copy lesson snippets", () => {
     assert.equal(await app.copySnippet("stub"), false);
     assert.equal(app.view().catalog?.snippets?.[0].body, "print(1)\n");
   });
+});
+
+it("adapter selections default to Responses, remain independent, and survive redeem, clear, and restart", async () => {
+  let saved: { codex: "chat" | "responses"; claude: "chat" | "responses" | "messages" } = { codex: "responses", claude: "responses" };
+  const adapterSettings: AdapterSettingsStorage = { async load() { return { ...saved }; }, async save(next) { saved = { ...next }; } };
+  const h = harness(undefined, { adapterSettings });
+  await h.app.start();
+  assert.deepEqual(h.app.view().adapters, { codex: "responses", claude: "responses" });
+  await h.app.setAdapter("codex", "chat"); await h.app.setAdapter("claude", "messages");
+  await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom");
+  await h.app.forward({ client: "codex", model: "later" }); await h.app.forward({ client: "claude", model: "later" });
+  assert.equal(h.sent()[0].adapter, "chat"); assert.equal(h.sent()[1].adapter, "messages");
+  await h.app.setSwitch("native"); await h.app.forward({ client: "codex", model: "personal" });
+  assert.equal(h.sent()[2].adapter, undefined);
+  await h.app.clearConnection(); await h.app.redeem("NEW", "Next");
+  const restarted = harness(undefined, { adapterSettings }); await restarted.app.start();
+  assert.deepEqual(restarted.app.view().adapters, { codex: "chat", claude: "messages" });
+  await assert.rejects(restarted.app.setAdapter("codex", "messages"), /Codex/);
+});
+
+it("switching adapters leaves an ongoing send unchanged and applies to the next request", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const choices: string[] = [];
+  const h = harness(undefined, { async send(upstream) { choices.push(upstream.adapter ?? "native"); if (choices.length === 1) { entered(); await gate; } } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom");
+  const ongoing = h.app.forward({ client: "codex", model: "later" }); await started;
+  await h.app.setAdapter("codex", "chat");
+  await h.app.forward({ client: "codex", model: "later" }); release(); await ongoing;
+  assert.deepEqual(choices, ["responses", "chat"]);
+});
+
+it("failed adapter persistence keeps the old preference and shows a safe notice", async () => {
+  const h = harness(undefined, { adapterSettings: { async load() { return { codex: "responses", claude: "responses" }; }, async save() { throw new Error(KEY); } } });
+  await h.app.start(); await h.app.setAdapter("codex", "chat");
+  assert.deepEqual(h.app.view().adapters, { codex: "responses", claude: "responses" });
+  assert.match(h.app.view().adapterNotice ?? "", /無法儲存/);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
 });
 
 describe("VansPod redeem", () => {

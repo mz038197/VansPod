@@ -118,9 +118,20 @@ function modelInner(view: ClassroomAppView): string {
       <button type="submit" name="mode" value="classroom" class="${classroomOn.trim()}"${off}>Classroom</button>
       <button type="submit" name="mode" value="native" class="${nativeOn.trim()}"${off}>Native</button>
     </form>
+    ${adapterForms(view)}
     <form method="post" action="/reload">
       <button type="submit" class="quiet"${off}>重新載入</button>
     </form>`;
+}
+
+function adapterForms(view: ClassroomAppView): string {
+  const selected = view.adapters ?? { codex: "responses", claude: "responses" };
+  const forms = (["codex", "claude"] as const).map(client => {
+    const choices = client === "codex" ? ["responses", "chat"] : ["responses", "chat", "messages"];
+    const options = choices.map(id => `<option value="${id}"${selected[client] === id ? " selected" : ""}>${id === "responses" ? "Responses" : id === "chat" ? "Chat" : "Messages"}</option>`).join("");
+    return `<form class="stack" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><label>${clientLabel(client)} 上游 API <select name="adapter"${locked(view)}>${options}</select></label><button type="submit" class="quiet"${locked(view)}>儲存</button></form>`;
+  }).join("");
+  return forms + `<p class="hint">僅套用於 Classroom 模式的下一個請求。</p>` + (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
 
 function environmentInner(view: ClassroomAppView): string {
