@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
+import { settingsActionsScript } from "./settingsActions";
 import type { ClassroomAppView } from "./classroomApp";
 import {
   actionKindLabel,
@@ -35,7 +36,7 @@ function clientLabel(client: "codex" | "claude" | "vscode"): string {
 }
 
 function restartHtml(view: ClassroomAppView): string {
-  const clients = view.mustRestart ?? [];
+  const clients = view.modelRestart ?? [];
   const routes = clients.filter((client) => client !== "vscode");
   const parts: string[] = [];
   if (routes.length > 0) {
@@ -44,12 +45,12 @@ function restartHtml(view: ClassroomAppView): string {
       names.length === 1
         ? names[0]
         : `${names.slice(0, -1).join("、")} 與 ${names[names.length - 1]}`;
-    parts.push(`<p class="restart">請完全退出 ${escapeHtml(joined)}，再重新打開。</p>`);
+    parts.push(`<p>設定已更新，重新開啟 ${escapeHtml(joined)} 後生效。</p>`);
   }
   if (clients.includes("vscode")) {
-    parts.push(`<p class="restart">請完全退出 VS Code 再打開，不要只重載視窗。</p>`);
+    parts.push(`<p>設定已更新，請完全退出 VS Code 再打開，不要只重載視窗。</p>`);
   }
-  return parts.join("");
+  return parts.length ? `<div class="model-update" role="status"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v2"/></svg><div>${parts.join("")}</div></div>` : "";
 }
 
 function statusWord(view: ClassroomAppView): string {
@@ -85,9 +86,13 @@ function connectInner(view: ClassroomAppView): string {
         <button type="submit" class="quiet"${off}>清除連線</button>
       </form>`;
   }
+  const error = view.connectionError
+    ? `<div class="connection-error" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 15v2"/></svg><p>${escapeHtml(view.connectionError)}</p></div>`
+    : "";
   return `<form class="stack" method="post" action="/redeem">
-      <label>邀請碼 <input name="invite_code" autocomplete="off"${locked(view)}></label>
-      <label>課堂暱稱 <input name="nickname" autocomplete="off"${locked(view)}></label>
+      <label>邀請碼 <input name="invite_code" autocomplete="off" value="${escapeHtml(view.connectionDraft?.inviteCode ?? "")}"${locked(view)}></label>
+      <label>課堂暱稱 <input name="nickname" autocomplete="off" value="${escapeHtml(view.connectionDraft?.nickname ?? "")}"${locked(view)}></label>
+      ${error}
       <button type="submit" class="go"${locked(view)}>連線</button>
     </form>`;
 }
@@ -563,7 +568,7 @@ function basePage(view: ClassroomAppView): string {
 }
 
 function installActionCards(view: ClassroomAppView): string {
-  const off = view.commandRunning ? " disabled" : "";
+  const off = view.commandRunning || !view.projectFolder ? " disabled" : "";
   return (view.catalog?.actions ?? [])
     .map((action) => {
       const description = action.description
@@ -617,7 +622,10 @@ function splitCourseCards(html: string, view: ClassroomAppView): string {
     return `<article class="install-card snippet-card"><div class="install-top"><span data-kind="snippet" class="kind-tag">片段</span><strong>${escapeHtml(snippet.title)}</strong></div>${hint}<pre class="snippet-code">${escapeHtml(snippet.body)}</pre><div class="snippet-actions"><button type="button" data-copy-snippet="${escapeHtml(snippet.id)}">複製</button><span class="hint" data-snippet-copy-status role="status" aria-live="polite"></span></div></article>`;
   }).join("") || `<p class="empty">這堂課沒有片段。</p>`;
   const chevron = `<svg class="course-chevron" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>`;
-  const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
+  const folderRequired = !view.projectFolder && view.catalog?.actions.length
+    ? `<div class="install-requirement" role="status"><p>請先設定專案資料夾，再進行安裝。</p><form method="post" action="/pick-folder"><button type="submit" class="quiet"${locked(view)}>設定資料夾</button></form></div>`
+    : "";
+  const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${folderRequired}${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
   const snippets = `<section class="tile wide"><details class="course-section" data-course-section="snippets" open><summary class="tile-head"><h2>課程片段</h2>${chevron}</summary><div class="course-content">${snippetBody}</div></details></section>`;
   return html.replace(commandMatch[0], install).replace(courseMatch[0], snippets);
 }
@@ -670,6 +678,7 @@ function snippetCopyScript(): string {
 
 function courseSectionScript(): string {
   return `
+    function initializeCourseSections() {
     document.querySelectorAll("[data-course-section]").forEach(function (section) {
       var key = "vpod.course." + section.getAttribute("data-course-section") + ".collapsed";
       try { section.open = sessionStorage.getItem(key) !== "true"; } catch (error) {}
@@ -677,7 +686,61 @@ function courseSectionScript(): string {
         try { sessionStorage.setItem(key, String(!section.open)); } catch (error) {}
       });
     });
+    }
+    initializeCourseSections();
   `;
+}
+
+function organizeSettings(html: string, view: ClassroomAppView): string {
+  const cards: string[] = [];
+  const updated = html.replace(/<section class="tile"><div class="tile-head"><h2>(連線|資料夾|模型|環境)<\/h2>([\s\S]*?)<\/section>/g,
+    (_card, title: string, rest: string) => {
+      const headEnd = rest.indexOf("</div>") + 6;
+      const head = `<div class="tile-head"><h2>${title}</h2>${rest.slice(0, headEnd)}`;
+      let body = rest.slice(headEnd);
+      let actions = "";
+      let reminder = "";
+      const moveForm = (action: string) => {
+        body = body.replace(new RegExp(`<form[^>]*action="/${action}">[\\s\\S]*?</form>`), (form) => {
+          actions += form;
+          return "";
+        });
+      };
+      if (title === "連線") {
+        moveForm("clear");
+        if (!actions) {
+          body = body.replace('action="/redeem"', 'action="/redeem" id="settings-redeem"');
+          body = body.replace(/<button[\s\S]*?<\/button>/, (button) => {
+            actions = button.replace('<button ', '<button form="settings-redeem" ');
+            return "";
+          });
+        }
+      } else if (title === "資料夾") {
+        moveForm("pick-folder");
+      } else if (title === "模型") {
+        body = body.replace(/<div class="model-update"[\s\S]*?<\/div><\/div>/, (block) => {
+          reminder = block;
+          return "";
+        });
+        moveForm("switch");
+        moveForm("reload");
+      } else {
+        moveForm("environment-check");
+        body = body.replace('action="/environment"', 'action="/environment" id="settings-environment"');
+        body = body.replace(/<button[\s\S]*?<\/button>/, (button) => {
+          actions += button.replace('<button ', '<button form="settings-environment" ');
+          return "";
+        });
+        const missing = view.tools.filter((tool) => !tool.installed).length;
+        const summary = !view.tools.length ? "尚未檢查工具" : missing ? `尚缺 ${missing} 項工具` : "所有工具已安裝";
+        body = body.replace(/<div class="tools">([\s\S]*?)<\/div>/,
+          `<p class="environment-summary">${summary}</p><details class="environment-tools"><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
+      }
+      cards.push(`<section class="tile settings-card" data-setting="${title}">${head}<div class="settings-content">${body}</div>${reminder}<div class="settings-actions">${actions}</div></section>`);
+      return "";
+    });
+  if (cards.length !== 4) return html;
+  return updated.replace('<div class="modules">', `<div class="modules"><div class="settings-grid">${[cards[0], cards[2], cards[1], cards[3]].join("")}</div>`);
 }
 
 export function renderPage(view: ClassroomAppView): string {
@@ -694,7 +757,7 @@ export function renderPage(view: ClassroomAppView): string {
   );
   html = html.replace(
     `<button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
-    `<nav aria-label="選單"><button type="button" class="side-item" aria-current="page">教室設定</button></nav><button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
+    `<nav aria-label="選單"><button type="button" class="side-item" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 3-.6 2.3-2 .9-2.1-.6-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.6 2 .9.6 2.3h5l.6-2.3 2-.9 2.1.6 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.6-2-.9L14.5 3z"/><circle cx="12" cy="12" r="3"/></svg><span>教室設定</span></button></nav><button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
   );
   const folderTag = view.projectFolder
     ? `<span class="badge">已設定</span>`
@@ -749,16 +812,17 @@ export function renderPage(view: ClassroomAppView): string {
   }
   if (view.connected && view.canCopyKey) {
     const off = view.commandRunning ? " disabled" : "";
-    const welcome = view.nickname
-      ? `<p class="welcome">歡迎! ${escapeHtml(view.nickname)}</p>`
-      : "";
     const course = view.courseTitle
       ? `<p class="course-title">${escapeHtml(view.courseTitle)}</p>`
       : "";
-    const session = view.sessionTitle
-      ? `<p class="session-sub">${escapeHtml(view.sessionTitle)}</p>`
+    const meta = [view.sessionTitle, view.nickname]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => `<span>${escapeHtml(value)}</span>`)
+      .join('<span class="connection-separator" aria-hidden="true">·</span>');
+    const identity = course || meta
+      ? `<div class="connection-identity">${course}${meta ? `<p class="connection-meta">${meta}</p>` : ""}</div>`
       : "";
-    const block = `${welcome}${course}${session}<div class="key-row"><p>API KEY 已設定</p><form method="post" action="/copy"><button type="submit" class="copy-icon" aria-label="複製 Classroom API Key"${off}>${COPY_ICON}</button></form></div><form method="post" action="/clear"><button type="submit" class="stop"${off}>清除連線</button></form>`;
+    const block = `${identity}<div class="key-row"><p>API Key 已設定</p><form method="post" action="/copy"><button type="submit" class="connection-copy" aria-label="複製 Classroom API Key"${off}>${COPY_ICON}<span>複製</span></button></form></div><form method="post" action="/clear"><button type="submit" class="connection-clear"${off}>清除連線</button></form>`;
     html = html.replace(
       /<form method="post" action="\/copy">[\s\S]*?<\/form>\s*<form method="post" action="\/clear">[\s\S]*?<\/form>/,
       block,
@@ -771,7 +835,7 @@ export function renderPage(view: ClassroomAppView): string {
   }
   html = html.replaceAll(
     `<h1 class="gradient-text">${PRODUCT}</h1>`,
-    `<h1 class="brand-title">VPod</h1><span class="ver">${VERSION}</span>`,
+    `<h1 class="brand-title">VansPod</h1><span class="ver">${VERSION}</span>`,
   );
   html = html.replace(
     `<div class="modules">`,
@@ -780,6 +844,7 @@ export function renderPage(view: ClassroomAppView): string {
   if (view.catalog?.actions.length) {
     html = html.replace(/<table>[\s\S]*?<\/table>/, installActionCards(view));
   }
+  html = organizeSettings(html, view);
   html = splitCourseCards(html, view);
   const extra = `<style>
     .tile { border: 1px solid light-dark(#e6e6e6, #3d3d3d); }
@@ -791,7 +856,8 @@ export function renderPage(view: ClassroomAppView): string {
     .bar .brand-title, .mobile-top .brand-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0; line-height: 26px; color: light-dark(#0d0d0d, #ececec); background: none; -webkit-text-fill-color: currentColor; white-space: nowrap; }
     .brand .ver { align-self: center; flex: 0 0 auto; font-family: Consolas, "Cascadia Mono", monospace; font-size: 10px; line-height: 1.2; color: var(--muted); background: light-dark(#f4f4f4, #303030); border: 1px solid light-dark(#e6e6e6, #3d3d3d); padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
     .bar nav { display: flex; flex-direction: column; }
-    .side-item { align-self: stretch; justify-content: flex-start; min-height: 36px; padding: 8px 10px; border-radius: 8px; background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); color: var(--text); font-size: 13px; font-weight: 600; text-align: left; }
+    .side-item { display: flex; align-items: center; gap: 8px; align-self: stretch; justify-content: flex-start; min-height: 36px; padding: 8px 10px; border-radius: 8px; background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); color: var(--text); font-size: 13px; font-weight: 600; text-align: left; }
+    .side-item svg { width: 18px; height: 18px; flex-shrink: 0; }
     .bar [data-appearance-toggle] { margin-top: auto; align-self: flex-start; }
     .mobile-top, .drawer-scrim, .menu-toggle { display: none; }
     main { justify-self: center; width: min(52rem, 100%); }
@@ -815,10 +881,14 @@ export function renderPage(view: ClassroomAppView): string {
     .course-chevron { width: 20px; height: 20px; flex-shrink: 0; color: var(--muted); }
     .course-section[open] > summary .course-chevron { transform: rotate(90deg); }
     .course-content { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+    .install-requirement { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); font-size: 13px; }
     .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; background: light-dark(rgba(16, 163, 127, 0.10), rgba(78, 203, 157, 0.13)); color: light-dark(#0a7d5c, #4ecb9d); font-size: 12px; font-weight: 600; }
     .badge.off { background: light-dark(#f4f4f4, #303030); color: light-dark(#6e6e6e, #a6a6a6); }
-    .welcome { font-size: 1.15rem; font-weight: 700; }
-    .course-title { font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+    .connection-identity { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .course-title { font-size: 1.15rem; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
+    .connection-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .connection-meta > span { min-width: 0; overflow-wrap: anywhere; }
+    .connection-separator { opacity: 0.5; }
     .model-value { min-height: 2.75rem; border-radius: 10px; background: var(--input); padding: 0.55rem 0.8rem; display: flex; align-items: center; overflow-wrap: anywhere; }
     .tool em { color: var(--text); }
     .tool em.missing { color: var(--muted); }
@@ -850,13 +920,26 @@ export function renderPage(view: ClassroomAppView): string {
     @media (prefers-color-scheme: dark) {
       :root:not([data-appearance="light"]) { --bg: #212121; }
     }
-    form[action="/pick-folder"] { margin-top: auto; }
-    form[action="/reload"] { margin-top: auto; }
-    form[action="/environment"] { flex: 1; }
-    form[action="/environment"] > button { margin-top: auto; }
-    .session-sub { color: var(--muted); font-size: 0.85rem; }
+    .settings-grid { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .settings-card { gap: 16px; padding: 18px; }
+    .settings-card .tile-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .settings-content { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; }
+    .settings-content label { font-size: 13px; color: var(--muted); }
+    .settings-content input, .settings-content .model-value { color: var(--text); }
+    .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 53px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .settings-actions .modes { width: auto; }
+    .connection-error { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 10px 12px; border-radius: 10px; background: light-dark(#fef2f2, #40272b); color: light-dark(#b91c1c, #fca5a5); font-size: 13px; line-height: 1.6; }
+    .connection-error svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
+    .connection-error p { min-width: 0; overflow-wrap: anywhere; }
+    .model-update { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 10px; background: light-dark(#f1f5f9, #2d333b); color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .model-update svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; }
+    .environment-summary { font-weight: 600; }
+    .environment-tools > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    .environment-tools .tools { margin-top: 12px; }
+    @media (max-width: 40rem) { .settings-grid { grid-template-columns: 1fr; } }
     .key-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .copy-icon { width: 2.75rem; min-height: 2.75rem; padding: 0; display: grid; place-items: center; }
+    .key-row p { color: var(--muted); font-size: 13px; }
+    .key-row form { flex-shrink: 0; }
     .page-head { margin: 0.75rem 0 0.15rem; }
     .page-head h2 { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: 0; }
     .page-head p { margin-top: 4px; color: var(--muted); font-size: 14px; font-weight: 400; }
@@ -866,9 +949,13 @@ export function renderPage(view: ClassroomAppView): string {
     main .modes { border-radius: 999px; padding: 2px; background: light-dark(#f4f4f4, #303030); border: 1px solid light-dark(#e6e6e6, #3d3d3d); }
     main .modes button { background: transparent; color: var(--text); border-color: transparent; }
     main .modes button.on { background: var(--accent); color: var(--on-accent); }
-    main button.copy-icon { width: 34px; min-height: 34px; padding: 0; }
-    .copy-icon svg { width: 1.15rem; height: 1.15rem; }
+    main button.connection-copy { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; background: transparent; color: var(--muted); border-radius: 8px; }
+    .connection-copy svg { width: 16px; height: 16px; }
+    main button.connection-clear { padding: 6px 0; background: transparent; color: var(--muted); border-radius: 6px; font-size: 12px; font-weight: 400; }
+    main button.connection-copy:hover:not(:disabled) { background: var(--input); color: var(--text); }
+    main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
   </style>
-  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}</script>`;
+  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${settingsActionsScript}
+  </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }

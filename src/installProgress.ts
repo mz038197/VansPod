@@ -1,13 +1,50 @@
+
 export const installProgressScript = `
   var installBusy = false;
+  var installOpening = false;
+  function closeInstallDialog(target) {
+    target.closest(".confirm-dialog").remove();
+    installBusy = false;
+  }
   document.addEventListener("click", function (event) {
-    if (event.target && event.target.closest && event.target.closest("[data-install-dismiss]")) {
-      window.location.reload();
-    }
+    var button = event.target?.closest?.("[data-install-dismiss]");
+    if (button && !button.disabled) closeInstallDialog(button);
   });
   document.addEventListener("submit", async function (event) {
     var form = event.target;
-    if (!form || !form.matches || !form.matches('form[action="/confirm"]')) return;
+    if (form?.matches?.('form[action="/prepare"]')) {
+      event.preventDefault();
+      if (installOpening || installBusy || document.querySelector(".confirm-dialog")) return;
+      installOpening = true;
+      var button = form.querySelector("button");
+      var card = form.closest(".install-card");
+      var previousError = card?.querySelector(".install-open-error");
+      if (previousError) previousError.remove();
+      button.disabled = true;
+      try {
+        var prepared = await fetch(form.action, {
+          method: "POST",
+          headers: { "X-Classroom-Progress": "1" },
+          body: new URLSearchParams(new FormData(form)),
+        });
+        if (!prepared.ok) throw new Error("prepare failed");
+        var page = new DOMParser().parseFromString(await prepared.text(), "text/html");
+        var dialog = page.querySelector(".confirm-dialog");
+        if (!dialog) throw new Error("dialog unavailable");
+        document.body.appendChild(dialog);
+      } catch (error) {
+        var message = document.createElement("p");
+        message.className = "error install-open-error";
+        message.setAttribute("role", "alert");
+        message.textContent = "無法開啟安裝視窗，請確認專案資料夾已設定後再試。";
+        form.appendChild(message);
+      } finally {
+        button.disabled = false;
+        installOpening = false;
+      }
+      return;
+    }
+    if (!form || !form.matches || !form.matches('form[action="/confirm"], form[action="/cancel"]')) return;
     event.preventDefault();
     if (installBusy) return;
     installBusy = true;
@@ -19,6 +56,22 @@ export const installProgressScript = `
     var choices = panel.querySelector(".choices");
     var buttons = panel.querySelectorAll("button");
     buttons.forEach(function (button) { button.disabled = true; });
+    if (form.matches('form[action="/cancel"]')) {
+      try {
+        var canceled = await fetch(form.action, {
+          method: "POST",
+          headers: { "X-Classroom-Progress": "1" },
+          body: new URLSearchParams(new FormData(form)),
+        });
+        if (!canceled.ok) throw new Error("cancel failed");
+        closeInstallDialog(form);
+      } catch (error) {
+        status.textContent = "取消失敗，請再試一次。";
+        buttons.forEach(function (button) { button.disabled = false; });
+        installBusy = false;
+      }
+      return;
+    }
     panel.setAttribute("aria-busy", "true");
     title.textContent = "安裝中";
     status.textContent = "正在執行，請稍候…";
@@ -50,6 +103,17 @@ export const installProgressScript = `
       var result = await request;
       if (!result.ok) throw new Error("confirmation failed");
       var outcome = await result.json();
+      if (outcome.succeeded && Array.isArray(outcome.installedActionIds)) {
+        document.querySelectorAll('form[action="/prepare"] input[name="action_id"]').forEach(function (input) {
+          if (!outcome.installedActionIds.includes(input.value)) return;
+          var card = input.closest(".install-card");
+          if (!card || card.querySelector(".installed-tag")) return;
+          var tag = document.createElement("span");
+          tag.className = "badge installed-tag";
+          tag.textContent = "已安裝";
+          card.querySelector(".install-top").appendChild(tag);
+        });
+      }
       finished = true;
       clearTimeout(timer);
       panel.setAttribute("aria-busy", "false");

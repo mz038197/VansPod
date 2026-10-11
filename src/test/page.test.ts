@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
 import { renderPage } from "../page";
 import { renderPrototypePage } from "../pagePrototype";
+import vm from "node:vm";
+import { settingsActionsScript } from "../settingsActions";
 
 const KEY = "vcr_sk_nick";
 
@@ -25,8 +27,41 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
 }
 
 describe("Classroom App page", () => {
+  it("submits the selected mode in place and preserves scroll and collapsed sections", async () => {
+    let submit!: (event: unknown) => Promise<void>;
+    let replaced = false;
+    let requestBody = "";
+    const button = { disabled: false };
+    const oldDetails = [{ open: true }, { open: false }];
+    const newDetails = [{ open: false }, { open: true }];
+    const main = {
+      querySelectorAll(selector: string) { return selector === "button" ? [button] : replaced ? newDetails : oldDetails; },
+      replaceChildren() { replaced = true; },
+    };
+    const card = { querySelector: () => null, setAttribute() {}, removeAttribute() {} };
+    const form = { action: "/switch", matches: () => true, querySelector: () => null, closest: () => card };
+    const window = { scrollY: 240, scrollTo({ top }: { top: number }) { this.scrollY = top; } };
+    vm.runInNewContext(settingsActionsScript, {
+      document: { addEventListener(_event: string, handler: typeof submit) { submit = handler; }, querySelector: (selector: string) => selector === "main" ? main : null },
+      window, installBusy: false, installOpening: false,
+      initializeCourseSections() {},
+      FormData: class { *[Symbol.iterator]() {} }, URLSearchParams,
+      DOMParser: class { parseFromString() { return { querySelector: () => ({ childNodes: [] }) }; } },
+      fetch: async (_url: string, options: { body: URLSearchParams }) => {
+        requestBody = options.body.toString();
+        assert.equal(button.disabled, true);
+        return { ok: true, text: async () => "updated page" };
+      },
+    });
+    await submit({ target: form, submitter: { name: "mode", value: "classroom" }, preventDefault() {} });
+    assert.equal(requestBody, "mode=classroom");
+    assert.equal(replaced, true);
+    assert.equal(window.scrollY, 240);
+    assert.deepEqual(newDetails.map((detail) => detail.open), [true, false]);
+    assert.equal(button.disabled, false);
+  });
   it("shows the full VS Code restart notice when mustRestart includes vscode", () => {
-    const html = renderPage(view({ mustRestart: ["vscode"] }));
+    const html = renderPage(view({ modelRestart: ["vscode"] }));
     assert.equal(
       html.includes("請完全退出 VS Code 再打開，不要只重載視窗。"),
       true,
@@ -35,7 +70,7 @@ describe("Classroom App page", () => {
   });
 
   it("omits the VS Code restart notice when vscode is not in mustRestart", () => {
-    const html = renderPage(view({ mustRestart: ["codex"] }));
+    const html = renderPage(view({ modelRestart: ["codex"] }));
     assert.equal(html.includes("請完全退出 VS Code"), false);
     assert.equal(html.includes(KEY), false);
   });
@@ -49,7 +84,8 @@ describe("Classroom App page", () => {
   });
 
   it("uses one appearance button and keeps the key off the page", () => {
-    const html = renderPage(view());
+    const html = renderPage(view({ mustRestart: ["codex", "claude"] }));
+    assert.equal(html.includes('class="model-update"'), false);
     assert.match(html, /凡思課堂安裝/);
     assert.match(html, /data-appearance-toggle/);
     assert.match(html, /\[data-appearance="light"\]/);
@@ -60,7 +96,7 @@ describe("Classroom App page", () => {
 
   it("serves the D layout as the official page without the prototype bar", () => {
     const html = renderPage(view());
-    assert.match(html, /class="brand-title">VPod</);
+    assert.match(html, /class="brand-title">VansPod</);
     assert.match(html, /教室設定/);
     assert.match(html, /<h2>課程安裝<\/h2>/);
     assert.match(html, /<h2>課程片段<\/h2>/);
@@ -83,7 +119,7 @@ describe("Classroom App page", () => {
     const current = renderPrototypePage(view(), "D");
     assert.match(current, /D · 原本/);
     assert.match(current, /class="proto-bar"/);
-    assert.match(current, /class="brand-title">VPod/);
+    assert.match(current, /class="brand-title">VansPod/);
     assert.match(current, /name="prototype_variant" value="D"/);
     assert.equal(renderPage(view()).includes("proto-bar"), false);
     const official = renderPage(view());
@@ -173,10 +209,10 @@ describe("Classroom App page", () => {
       }));
     assert.match(onePicked, /class="go">確認安裝/);
     const classroom = renderPage(
-      view({ mode: "classroom", modelId: "gpt", mustRestart: ["codex"] }));
+      view({ mode: "classroom", modelId: "gpt", modelRestart: ["codex"] }));
     assert.match(classroom, /class="badge">課堂</);
     assert.match(classroom, /class="model-value">gpt</);
-    assert.match(classroom, /請完全退出 Codex，再重新打開。/);
+    assert.match(classroom, /設定已更新，重新開啟 Codex 後生效。/);
     assert.match(official, /\.restart \{ color: light-dark\(#9a4a08, #fbbf24\); \}/);
     assert.match(official, /:root:not\(\[data-appearance="light"\]\) \{ --bg: #212121; \}/);
     assert.match(official, /class="badge off">未設定</);
@@ -191,13 +227,13 @@ describe("Classroom App page", () => {
     assert.match(picked, /value="D:\\lesson"/);
     const bad = renderPage(view({ folderError: "這不是資料夾。" }));
     assert.match(bad, /這不是資料夾。/);
-    assert.match(official, /class="brand-title">VPod</);
+    assert.match(official, /class="brand-title">VansPod</);
     assert.match(official, /grid-template-columns: 232px/);
     assert.match(official, /translateX\(-100%\)/);
     assert.match(official, /class="tile-head"><h2>連線<\/h2><span class="badge">已連線<\/span>/);
     const offline = renderPage(view({ connected: false }));
     assert.match(offline, /class="badge off">未連線</);
-    assert.match(official, /class="copy-icon"/);
+    assert.match(official, /class="connection-copy"/);
     assert.equal(official.includes(">複製 Classroom API Key<"), false);
     const welcomed = renderPage(
       view({
@@ -207,10 +243,9 @@ describe("Classroom App page", () => {
         classLabel: "Jeff AI 素養課程 · 第一堂 : 先問，為什麼?",
         detail: "Classroom API Key 已設定。",
       }));
-    assert.match(welcomed, /class="welcome">歡迎! Jeff</);
+    assert.match(welcomed, /class="connection-meta"><span>第一堂 : 先問，為什麼\?<\/span><span class="connection-separator" aria-hidden="true">·<\/span><span>Jeff<\/span>/);
     assert.match(welcomed, /class="course-title">Jeff AI 素養課程</);
-    assert.match(welcomed, /class="session-sub">第一堂 : 先問，為什麼\?</);
-    assert.match(welcomed, /API KEY 已設定/);
+    assert.match(welcomed, /API Key 已設定/);
     assert.match(welcomed, /class="key-row"/);
     assert.match(welcomed, /清除連線/);
     assert.equal(welcomed.includes('<p class="class-label">'), false);

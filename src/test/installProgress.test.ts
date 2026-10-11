@@ -3,18 +3,23 @@ import { it } from "node:test";
 import vm from "node:vm";
 import { installProgressScript } from "../installProgress";
 
-function harness() {
+
+function harness(cancelOk = true) {
   let submit!: (event: unknown) => Promise<void>;
   let click!: (event: unknown) => void;
-  let complete!: (response: { ok: boolean; succeeded?: boolean; output?: string }) => void;
+  let complete!: (response: { ok: boolean; succeeded?: boolean; output?: string; installedActionIds?: string[] }) => void;
   let nextUpdate!: () => Promise<void>;
   let reloads = 0;
   let confirmations = 0;
+  let cancellations = 0;
+  let removals = 0;
+  let installedTag: { className?: string; textContent?: string } | undefined;
+  const dialog = { remove() { removals += 1; } };
   let latestOutput = "Downloading demo…\n";
   const title = { textContent: "確認安裝" };
   const status = { textContent: "" };
   const output = { textContent: "", hidden: true, scrollTop: 0, clientHeight: 100, scrollHeight: 100 };
-  const dismiss = { disabled: false, hidden: true };
+  const dismiss = { disabled: false, hidden: true, closest: () => dialog };
   const choices = { hidden: false };
   const buttons = [{ disabled: false }, { disabled: false }, dismiss];
   const panel = {
@@ -26,7 +31,7 @@ function harness() {
     querySelectorAll() { return buttons; },
     setAttribute() {},
   };
-  const form = { action: "/confirm", matches: () => true, closest: () => panel };
+  const form = { action: "/confirm", matches: (selector: string) => selector.includes('action="/confirm"'), closest: (selector: string) => selector === ".confirm-dialog" ? dialog : panel };
   const pending = new Promise<{ ok: boolean; json: () => Promise<unknown> }>((resolve) => {
     complete = (response) => resolve({ ...response, json: async () => response });
   });
@@ -34,12 +39,16 @@ function harness() {
     document: { addEventListener(event: string, handler: typeof submit) {
       if (event === "submit") submit = handler;
       if (event === "click") click = handler;
-    } },
+    },
+      querySelectorAll() { return [{ value: "demo", closest: () => ({ querySelector: (selector: string) => selector === ".installed-tag" ? installedTag : { appendChild(tag: typeof installedTag) { installedTag = tag; } } }) }]; },
+      createElement() { return {}; },
+    },
     window: { location: { reload() { reloads += 1; } } },
     FormData: class {},
     URLSearchParams: class {},
     fetch: async (url: string) => {
       if (url === "/confirm") { confirmations += 1; return pending; }
+      if (url === "/cancel") { cancellations += 1; return { ok: cancelOk }; }
       return { ok: true, json: async () => ({ running: true, output: latestOutput }) };
     },
     setTimeout(update: typeof nextUpdate) { nextUpdate = update; return 1; },
@@ -47,12 +56,46 @@ function harness() {
   });
   return {
     submit: () => submit({ target: form, preventDefault() {} }),
+    cancel: () => submit({ target: { ...form, action: "/cancel", matches: (selector: string) => selector.includes('action="/cancel"') }, preventDefault() {} }),
     complete, title, status, output, buttons, dismiss, choices,
     acknowledge: () => click({ target: { closest: () => dismiss } }),
     update: async (value: string) => { latestOutput = value; await nextUpdate(); },
-    counts: () => ({ confirmations, reloads }),
+    counts: () => ({ confirmations, reloads, cancellations, removals }),
+    installedTag: () => installedTag,
   };
 }
+
+it("opens an installation dialog in place without reloading or losing pending input", async () => {
+  let submit!: (event: unknown) => Promise<void>;
+  let dialog: object | undefined;
+  let requests = 0;
+  let reloads = 0;
+  const button = { disabled: false };
+  const expectedDialog = {};
+  const form = {
+    action: "/prepare",
+    matches: (selector: string) => selector.includes('action="/prepare"'),
+    querySelector: () => button,
+    closest: () => ({ querySelector: () => null }),
+  };
+  vm.runInNewContext(installProgressScript, {
+    document: {
+      addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; },
+      querySelector: () => dialog,
+      body: { appendChild(value: object) { dialog = value; } },
+    },
+    window: { location: { reload() { reloads += 1; } } },
+    FormData: class {}, URLSearchParams: class {},
+    DOMParser: class { parseFromString() { return { querySelector: () => expectedDialog }; } },
+    fetch: async () => { requests += 1; return { ok: true, text: async () => "dialog markup" }; },
+  });
+  await submit({ target: form, preventDefault() {} });
+  assert.equal(dialog, expectedDialog);
+  assert.equal(button.disabled, false);
+  assert.equal(reloads, 0);
+  await submit({ target: form, preventDefault() {} });
+  assert.equal(requests, 1);
+});
 
 it("updates output and holds a successful result until the student acknowledges it", async () => {
   const ui = harness();
@@ -67,7 +110,7 @@ it("updates output and holds a successful result until the student acknowledges 
   assert.equal(ui.output.textContent, "Downloading demo…\nInstalling…\n");
   await ui.submit();
   assert.equal(ui.counts().confirmations, 1);
-  ui.complete({ ok: true, succeeded: true, output: "Installed 1 package\n" });
+  ui.complete({ ok: true, succeeded: true, output: "Installed 1 package\n", installedActionIds: ["demo"] });
   await request;
   assert.equal(ui.title.textContent, "安裝成功");
   assert.equal(ui.output.textContent, "Installed 1 package\n");
@@ -75,8 +118,10 @@ it("updates output and holds a successful result until the student acknowledges 
   assert.equal(ui.choices.hidden, true);
   assert.equal(ui.dismiss.hidden, false);
   assert.equal(ui.dismiss.disabled, false);
+  assert.equal(ui.installedTag()?.textContent, "已安裝");
   ui.acknowledge();
-  assert.equal(ui.counts().reloads, 1);
+  assert.equal(ui.counts().reloads, 0);
+  assert.equal(ui.counts().removals, 1);
 });
 
 it("holds a failed installation result until the student acknowledges it", async () => {
@@ -92,7 +137,27 @@ it("holds a failed installation result until the student acknowledges it", async
   await ui.submit();
   assert.equal(ui.counts().confirmations, 1);
   ui.acknowledge();
-  assert.equal(ui.counts().reloads, 1);
+  assert.equal(ui.counts().reloads, 0);
+  assert.equal(ui.counts().removals, 1);
+});
+
+it("cancels on the server and closes only the dialog without reloading the page", async () => {
+  const ui = harness();
+  await ui.cancel();
+  assert.equal(ui.counts().cancellations, 1);
+  assert.equal(ui.counts().confirmations, 0);
+  assert.equal(ui.counts().removals, 1);
+  assert.equal(ui.counts().reloads, 0);
+});
+
+it("keeps the dialog open and allows another cancellation attempt if cancellation fails", async () => {
+  const ui = harness(false);
+  await ui.cancel();
+  assert.equal(ui.counts().removals, 0);
+  assert.match(ui.status.textContent, /取消失敗/);
+  assert.ok(ui.buttons.every((button) => !button.disabled));
+  await ui.cancel();
+  assert.equal(ui.counts().cancellations, 2);
 });
 
 it("keeps the result warning visible if confirmation fails without allowing a duplicate installation", async () => {

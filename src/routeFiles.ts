@@ -101,6 +101,44 @@ export type ModelOptions = {
 export function createRouteFiles(paths: RouteFilePaths) {
   let backup: ModelBackup | undefined;
   return {
+    async setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void> {
+      const routeBackup = path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json");
+      const text = await readText(paths.codex);
+      const current = readRootTomlString(text, "openai_base_url");
+      const managed = (value: string | undefined) => {
+        if (!value) return false;
+        try {
+          return new URL(value).origin === new URL(proxyBaseUrl).origin;
+        } catch {
+          return false;
+        }
+      };
+      const raw = await readOptional(routeBackup);
+      let saved: { baseUrl: string | null } | undefined;
+      if (raw !== undefined) {
+        const parsed = JSON.parse(raw) as { baseUrl?: unknown };
+        if (!parsed || (parsed.baseUrl !== null && typeof parsed.baseUrl !== "string")) {
+          throw new Error("Invalid Codex route backup");
+        }
+        saved = { baseUrl: parsed.baseUrl };
+      }
+      let next: string;
+      if (classroom) {
+        if (!saved) {
+          saved = { baseUrl: managed(current) ? null : current ?? null };
+          await writeText(routeBackup, `${JSON.stringify(saved)}\n`);
+        }
+        const url = proxyBaseUrl.endsWith("/v1") ? proxyBaseUrl : `${proxyBaseUrl}/v1`;
+        next = upsertRootTomlString(text, "openai_base_url", url);
+      } else {
+        if (!saved && !managed(current)) return;
+        next = saved?.baseUrl && !managed(saved.baseUrl)
+          ? upsertRootTomlString(text, "openai_base_url", saved.baseUrl)
+          : removeRootTomlKey(text, "openai_base_url");
+      }
+      if (next !== text) await writeText(paths.codex, next);
+      if (!classroom) await fs.rm(routeBackup, { force: true });
+    },
     async readCodex(): Promise<Record<string, unknown>> {
       const url = readRootTomlString(await readText(paths.codex), "openai_base_url");
       return url === undefined ? {} : { openai_base_url: url };

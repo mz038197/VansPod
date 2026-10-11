@@ -82,6 +82,7 @@ export type ClassroomAppDeps = {
   stopProcess(): void;
   proxyBaseUrl: string;
   routes: {
+    setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
     readCodex(): Promise<Record<string, unknown>>;
     writeCodex(doc: Record<string, unknown>): Promise<void>;
     readClaudeTerminal(): Promise<Record<string, unknown>>;
@@ -169,6 +170,9 @@ export type ClassroomAppView = {
   tools: EnvironmentToolView[];
   environmentNotice?: string;
   mustRestart?: MustRestartClient[];
+  modelRestart?: MustRestartClient[];
+  connectionError?: string;
+  connectionDraft?: { inviteCode: string; nickname: string };
 };
 
 const LOCAL_LIST_NOTE = "這是本機清單。";
@@ -183,6 +187,8 @@ export class ClassroomApp {
   private courseTitle: string | undefined;
   private sessionTitle: string | undefined;
   private detail = "";
+  private connectionError: string | undefined;
+  private connectionDraft: { inviteCode: string; nickname: string } | undefined;
   private notice: string | undefined;
   private projectFolder: string | undefined;
   private folderError: string | undefined;
@@ -207,6 +213,7 @@ export class ClassroomApp {
   private environmentNotice: string | undefined;
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
+  private modelRestart: MustRestartClient[] = [];
   private routeRestartNoted = false;
   private sending = new Map<ProxyClient, string>();
   private modelNotice = new Set<ProxyClient>();
@@ -223,6 +230,8 @@ export class ClassroomApp {
       mode: this.mode,
       tools: this.environmentTools(),
     };
+    if (this.connectionError) view.connectionError = this.connectionError;
+    if (this.connectionDraft && !this.connected) view.connectionDraft = { ...this.connectionDraft };
     if (this.classLabel) {
       view.classLabel = this.classLabel;
     }
@@ -273,6 +282,7 @@ export class ClassroomApp {
     if (this.mustRestart.length > 0) {
       view.mustRestart = [...this.mustRestart];
     }
+    if (this.modelRestart.length > 0) view.modelRestart = [...this.modelRestart];
     return view;
   }
 
@@ -459,11 +469,13 @@ export class ClassroomApp {
       proxyBaseUrl: this.deps.proxyBaseUrl,
       restartCodex: true,
     };
+    await this.deps.routes.setCodexRoute(true, this.deps.proxyBaseUrl);
     await this.deps.routes.setModelOptions(options);
   }
 
   private async restoreModelOptions(): Promise<void> {
     await this.deps.routes.setModelOptions(null);
+    await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
   }
 
   prepare(actionId: string): void {
@@ -525,8 +537,11 @@ export class ClassroomApp {
   async redeem(inviteCode: string, nickname: string): Promise<void> {
     const invite = inviteCode.trim();
     const name = nickname.trim();
+    this.connectionError = undefined;
+    this.connectionDraft = { inviteCode, nickname };
     if (!invite || !name) {
-      this.detail = "請先輸入邀請碼與課堂暱稱，再按「連線」。";
+      this.connectionError = "請先輸入邀請碼與課堂暱稱，再按「連線」。";
+      if (!this.connected) this.detail = "";
       this.notice = undefined;
       return;
     }
@@ -538,12 +553,14 @@ export class ClassroomApp {
       });
     } catch {
       if (!this.connected) {
-        this.detail = "兌換失敗。請檢查邀請碼與課堂暱稱。";
+        this.connectionError = "連線失敗，請確認邀請碼與課堂暱稱後再試。";
+        this.detail = "";
         this.notice = undefined;
       }
       return;
     }
     await this.deps.storage.setApiKey(redeemed.api_key);
+    this.connectionDraft = undefined;
     const label = [redeemed.session.class_name, redeemed.session.name]
       .filter(Boolean)
       .join(" · ");
@@ -575,10 +592,12 @@ export class ClassroomApp {
   }
 
   async setSwitch(mode: ModelSwitchMode): Promise<void> {
+    const previousMode = this.mode;
     if (mode === "native") {
       this.mode = "native";
       this.forgetModelChoices();
       await this.restoreModelOptions();
+      if (previousMode !== this.mode) this.modelRestart = ["codex", "claude"];
       return;
     }
     const apiKey = await this.deps.storage.getApiKey();
@@ -594,6 +613,7 @@ export class ClassroomApp {
       this.forgetModelChoices();
     }
     await this.publishModelOptions();
+    if (entering) this.modelRestart = ["codex", "claude"];
   }
 
   async reloadCatalog(): Promise<void> {
@@ -605,7 +625,10 @@ export class ClassroomApp {
     if (!apiKey) {
       return;
     }
+    const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     await this.loadModels(apiKey);
+    const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
+    if (previous !== current) this.modelRestart = ["codex", "claude"];
   }
 
   private async loadModels(apiKey: string): Promise<void> {
@@ -671,6 +694,8 @@ export class ClassroomApp {
   async clearConnection(): Promise<void> {
     await this.deps.storage.clearApiKey();
     this.connected = false;
+    this.connectionError = undefined;
+    this.connectionDraft = undefined;
     this.classLabel = undefined;
     this.nickname = undefined;
     this.courseTitle = undefined;
@@ -696,10 +721,6 @@ export class ClassroomApp {
       claude.ANTHROPIC_BASE_URL,
       ...anthropicBaseValues(vsCode[VS_CODE_ENV]),
     ]);
-    await this.deps.routes.writeCodex({
-      ...codex,
-      openai_base_url: codexBaseUrl(url),
-    });
     await this.deps.routes.writeClaudeTerminal({
       ...claude,
       ANTHROPIC_BASE_URL: url,
@@ -737,10 +758,8 @@ export class ClassroomApp {
   async stop(): Promise<void> {
     this.proxyRunning = false;
     this.deps.proxy.stop();
-    const codex = await this.deps.routes.readCodex();
     const claude = await this.deps.routes.readClaudeTerminal();
     const vsCode = await this.deps.routes.readVsCodeClaude();
-    await this.deps.routes.writeCodex(withoutKey(codex, "openai_base_url"));
     await this.deps.routes.writeClaudeTerminal(
       withoutKey(claude, "ANTHROPIC_BASE_URL"),
     );
@@ -827,10 +846,6 @@ function hostnameOf(value: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function codexBaseUrl(proxyBaseUrl: string): string {
-  return proxyBaseUrl.endsWith("/v1") ? proxyBaseUrl : `${proxyBaseUrl}/v1`;
 }
 
 function sameProxy(value: string, proxyBaseUrl: string): boolean {

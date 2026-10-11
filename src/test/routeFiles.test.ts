@@ -18,6 +18,49 @@ async function tempRoutes() {
 }
 
 describe("route files", () => {
+  it("restores the personal Codex URL across process restarts and preserves other config edits", async () => {
+    for (const personalUrl of [undefined, "https://personal.example/v1"]) {
+      const { root, routes, paths } = await tempRoutes();
+      try {
+        await fs.writeFile(paths.codex, `# personal settings\nmodel = "personal"\n${personalUrl ? `openai_base_url = "${personalUrl}"\n` : ""}[mcp]\nserver = "keep"\n`);
+        await routes.setCodexRoute(false, PROXY);
+        assert.equal((await routes.readCodex()).openai_base_url, personalUrl);
+        await routes.setCodexRoute(true, PROXY);
+        assert.equal((await routes.readCodex()).openai_base_url, `${PROXY}/v1`);
+        const reopened = createRouteFiles(paths);
+        // Repeated classroom setup must not replace the original backup with the proxy URL.
+        await reopened.setCodexRoute(true, PROXY);
+        await fs.appendFile(paths.codex, 'new_setting = "keep-too"\n');
+        await reopened.setCodexRoute(false, PROXY);
+        assert.equal((await reopened.readCodex()).openai_base_url, personalUrl);
+        const restored = await fs.readFile(paths.codex, "utf8");
+        assert.match(restored, /# personal settings/);
+        assert.match(restored, /model = "personal"/);
+        assert.match(restored, /server = "keep"/);
+        assert.match(restored, /new_setting = "keep-too"/);
+        await reopened.setCodexRoute(true, PROXY);
+        await reopened.setCodexRoute(false, PROXY);
+        assert.equal((await reopened.readCodex()).openai_base_url, personalUrl);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("cleans a legacy local proxy URL without a backup when restoring personal mode", async () => {
+    const { root, routes, paths } = await tempRoutes();
+    try {
+      for (const legacy of [PROXY, `${PROXY}/v1`]) {
+        await fs.writeFile(paths.codex, `openai_base_url = "${legacy}"\nmodel = "personal"\n`);
+        await routes.setCodexRoute(false, PROXY);
+        assert.equal((await routes.readCodex()).openai_base_url, undefined);
+        assert.match(await fs.readFile(paths.codex, "utf8"), /model = "personal"/);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("changes only the Codex route line", async () => {
     const { routes, paths } = await tempRoutes();
     const original = [

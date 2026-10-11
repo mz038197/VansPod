@@ -598,6 +598,11 @@ async function main(): Promise<void> {
     const parsed = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
     const pathname = parsed.pathname;
     const goHome = (params?: URLSearchParams) => {
+      if (req.headers["x-classroom-settings"] === "1") {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(renderPage(app.view()));
+        return;
+      }
       const variant = params?.get("prototype_variant") ?? "";
       if (process.env.NODE_ENV !== "production" && isPrototypeVariant(variant)) {
         redirect(res, `/?variant=${variant}`);
@@ -667,6 +672,12 @@ async function main(): Promise<void> {
       if (req.method === "POST" && pathname === "/prepare") {
         const params = new URLSearchParams(await readBody(req));
         app.prepare(params.get("action_id") ?? "");
+        if (req.headers["x-classroom-progress"] === "1") {
+          const view = app.view();
+          res.writeHead(view.pendingCommand ? 200 : 409, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+          res.end(renderPage(view));
+          return;
+        }
         goHome(params);
         return;
       }
@@ -676,7 +687,7 @@ async function main(): Promise<void> {
         if (req.headers["x-classroom-progress"] === "1") {
           const view = app.view();
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-          res.end(JSON.stringify({ succeeded: view.commandSucceeded, output: view.commandOutput ?? "" }));
+          res.end(JSON.stringify({ succeeded: view.commandSucceeded, output: view.commandOutput ?? "", installedActionIds: view.installedActionIds ?? [] }));
           return;
         }
         goHome(params);
@@ -685,6 +696,12 @@ async function main(): Promise<void> {
       if (req.method === "POST" && pathname === "/cancel") {
         const params = new URLSearchParams(await readBody(req));
         app.cancel();
+        if (req.headers["x-classroom-progress"] === "1") {
+          const canceled = !app.view().pendingCommand;
+          res.writeHead(canceled ? 200 : 409, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ canceled }));
+          return;
+        }
         goHome(params);
         return;
       }

@@ -71,6 +71,7 @@ function harness(
     vsCode: { ...(options?.vsCode ?? {}) },
   };
   const routeWrites = { codex: 0, claudeTerminal: 0, vsCode: 0 };
+  let codexRouteBackup: { url?: unknown } | undefined;
   const resolvedSession = session ?? { class_name: "Demo", name: "Week 1" };
   const app = new ClassroomApp({
     router: {
@@ -170,6 +171,20 @@ function harness(
     },
     proxyBaseUrl: PROXY,
     routes: {
+      async setCodexRoute(classroom, proxyBaseUrl) {
+        const current = docs.codex.openai_base_url;
+        const managed = current === proxyBaseUrl || current === `${proxyBaseUrl}/v1`;
+        if (classroom) {
+          codexRouteBackup ??= { url: managed ? undefined : current };
+          docs.codex.openai_base_url = `${proxyBaseUrl}/v1`;
+        } else {
+          if (!codexRouteBackup && !managed) return;
+          if (codexRouteBackup?.url !== undefined) docs.codex.openai_base_url = codexRouteBackup.url;
+          else delete docs.codex.openai_base_url;
+          codexRouteBackup = undefined;
+        }
+        routeWrites.codex += 1;
+      },
       async readCodex() {
         return docs.codex;
       },
@@ -313,9 +328,10 @@ describe("Classroom App redeem", () => {
   });
 
   it("stays disconnected when redeem fails and does not keep the key", async () => {
-    const { app, redeemCalls, storedKey } = harness(undefined, {
+    const options: { redeemError?: Error } = {
       redeemError: new Error(`router said ${KEY}`),
-    });
+    };
+    const { app, redeemCalls, storedKey } = harness(undefined, options);
     await app.redeem("ABC12345", "Ada");
     assert.equal(redeemCalls.length, 1);
     assert.equal(app.view().connected, false);
@@ -323,7 +339,23 @@ describe("Classroom App redeem", () => {
     assert.equal(app.view().classLabel, undefined);
     assert.equal(storedKey(), undefined);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
-    assert.equal(app.view().detail, "兌換失敗。請檢查邀請碼與課堂暱稱。");
+    assert.equal(app.view().detail, "");
+    assert.equal(app.view().connectionError, "連線失敗，請確認邀請碼與課堂暱稱後再試。");
+    assert.deepEqual(app.view().connectionDraft, { inviteCode: "ABC12345", nickname: "Ada" });
+    const html = renderPage(app.view());
+    const card = html.match(/<section class="tile settings-card" data-setting="連線">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    assert.match(card, /class="connection-error" role="alert"/);
+    assert.match(card, /value="ABC12345"/);
+    assert.match(card, /value="Ada"/);
+    assert.equal(card.indexOf('name="nickname"') < card.indexOf('class="connection-error"'), true);
+    assert.equal(card.indexOf('class="connection-error"') < card.indexOf('class="settings-actions"'), true);
+    assert.equal(html.split(app.view().connectionError!).length - 1, 1);
+    options.redeemError = undefined;
+    await app.redeem("ABC12345", "Ada");
+    assert.equal(app.view().connected, true);
+    assert.equal(app.view().connectionError, undefined);
+    assert.equal(app.view().connectionDraft, undefined);
+    assert.equal(renderPage(app.view()).includes('class="connection-error"'), false);
   });
 });
 
@@ -415,6 +447,17 @@ describe("Clear Classroom Connection", () => {
 });
 
 describe("Model Switch", () => {
+  it("shows a model reminder only after a successful change, not startup or an unavailable switch", async () => {
+    const { app } = harness();
+    await app.start();
+    assert.equal(app.view().modelRestart, undefined);
+    await app.setSwitch("classroom");
+    assert.equal(app.view().modelRestart, undefined);
+    await app.redeem("ABC12345", "Ada");
+    assert.equal(app.view().modelRestart, undefined);
+    await app.setSwitch("classroom");
+    assert.deepEqual(app.view().modelRestart, ["codex", "claude"]);
+  });
   it("uses one mode for both Codex and Claude Code, selecting the first returned id", async () => {
     const { app, modelKeys } = harness();
     await app.redeem("ABC12345", "Ada");
@@ -1011,12 +1054,17 @@ actions:
 });
 
 describe("route addresses", () => {
-  it("points Codex openai_base_url at the proxy and keeps trust and mcp", async () => {
+  it("keeps Codex on its personal route at startup and switches routes with the model mode", async () => {
     const { app, docs } = harness(undefined, {
       codex: { trust: "always", mcp: { server: "local" }, model: "kept" },
     });
     await app.start();
+    assert.equal(docs.codex.openai_base_url, undefined);
+    await app.redeem("ABC12345", "Ada");
+    await app.setSwitch("classroom");
     assert.equal(docs.codex.openai_base_url, `${PROXY}/v1`);
+    await app.setSwitch("native");
+    assert.equal(docs.codex.openai_base_url, undefined);
     assert.equal(docs.codex.trust, "always");
     assert.deepEqual(docs.codex.mcp, { server: "local" });
     assert.equal(docs.codex.model, "kept");
@@ -1092,7 +1140,7 @@ describe("route addresses", () => {
     assert.equal(viewText.includes("secret"), false);
     assert.equal(viewText.includes("vcr_sk"), false);
     assert.equal(viewText.includes(KEY), false);
-    assert.equal(docs.codex.openai_base_url, `${PROXY}/v1`);
+    assert.equal(docs.codex.openai_base_url, previous);
     assert.equal(docs.codex.trust, "always");
   });
 
@@ -1103,22 +1151,24 @@ describe("route addresses", () => {
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("changes only upstream mode and modelId while the proxy is running", async () => {
-    const { app, routeWrites } = harness();
+  it("restores a custom personal Codex route while the proxy remains running", async () => {
+    const { app, docs, routeWrites } = harness(undefined, { codex: { openai_base_url: "https://personal.example/v1" } });
     await app.redeem("ABC12345", "Ada");
     await app.start();
     const writes = { ...routeWrites };
     await app.setSwitch("classroom");
+    assert.equal(docs.codex.openai_base_url, `${PROXY}/v1`);
     assert.equal(app.view().mode, "classroom");
     assert.equal(app.view().modelId, "second-looking-but-first");
     await app.setSwitch("native");
     assert.equal(app.view().mode, "native");
     assert.equal(app.view().modelId, undefined);
-    assert.deepEqual(routeWrites, writes);
+    assert.equal(docs.codex.openai_base_url, "https://personal.example/v1");
+    assert.deepEqual(routeWrites, { ...writes, codex: writes.codex + 2 });
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("removes the route overrides when the proxy stops and does not restore the old address", async () => {
+  it("preserves the personal Codex address when stopping and removes Claude route overrides", async () => {
     const previous = "https://user:secret@old.example/v1?key=vcr_sk_secret";
     const { app, docs, proxyStops } = harness(undefined, {
       codex: {
@@ -1142,7 +1192,7 @@ describe("route addresses", () => {
     await app.start();
     await app.stop();
     assert.equal(proxyStops(), 1);
-    assert.equal(Object.hasOwn(docs.codex, "openai_base_url"), false);
+    assert.equal(docs.codex.openai_base_url, previous);
     assert.equal(docs.codex.trust, "always");
     assert.deepEqual(docs.codex.mcp, { server: "local" });
     assert.equal(Object.hasOwn(docs.claudeTerminal, "ANTHROPIC_BASE_URL"), false);
@@ -1153,10 +1203,10 @@ describe("route addresses", () => {
     ]);
     assert.equal(docs.vsCode["editor.fontSize"], 14);
     const written = JSON.stringify(docs);
-    assert.equal(written.includes(previous), false);
-    assert.equal(written.includes("old.example"), false);
+    assert.equal(written.includes(previous), true);
+    assert.equal(written.includes("old.example"), true);
     assert.equal(written.includes("claude.example"), false);
-    assert.equal(written.includes("secret"), false);
+    assert.equal(written.includes("secret"), true);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
@@ -1300,14 +1350,22 @@ describe("confirm one catalog command", () => {
 
   it("prepare puts that action's full command on the view and does not run it", async () => {
     const { app, runCalls } = harness();
-    await app.setProjectFolder("D:\\lesson");
     await app.redeem("ABC12345", "Ada");
+    app.prepare("demo");
+    assert.equal(app.view().pendingCommand, undefined);
+    const blocked = renderPage(app.view());
+    assert.match(blocked, /請先設定專案資料夾，再進行安裝。/);
+    assert.match(blocked, /<button type="submit" disabled>安裝<\/button>/);
+    await app.setProjectFolder("D:\\lesson");
     app.prepare("demo");
     const view = app.view();
     assert.equal(view.pendingCommand, "uv add demo");
     assert.equal(view.commandRunning, false);
     assert.equal(runCalls.length, 0);
     assert.equal(JSON.stringify(view).includes(KEY), false);
+    const ready = renderPage(view);
+    assert.match(ready, /class="confirm-dialog"/);
+    assert.equal(ready.includes("請先設定專案資料夾，再進行安裝。"), false);
   });
 
   it("confirm runs the pending command", async () => {
@@ -1713,7 +1771,7 @@ describe("close window", () => {
     app.closeWindow();
     assert.equal(proxyStops(), 0);
     assert.deepEqual(routeWrites, writes);
-    assert.equal(docs.codex.openai_base_url, `${PROXY}/v1`);
+    assert.equal(docs.codex.openai_base_url, undefined);
     assert.equal(docs.codex.trust, "always");
     assert.deepEqual(docs.codex.mcp, { server: "local" });
     assert.equal(docs.claudeTerminal.ANTHROPIC_BASE_URL, PROXY);
