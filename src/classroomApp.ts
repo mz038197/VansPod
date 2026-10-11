@@ -177,6 +177,7 @@ const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private readonly hiddenKeys = new Set<string>();
   private initialization: Promise<void> | undefined;
+  private connectionOperations: Promise<unknown> = Promise.resolve();
   private connected = false;
   private classLabel: string | undefined;
   private nickname: string | undefined;
@@ -212,6 +213,12 @@ export class ClassroomApp {
   private modelNotice = new Set<ProxyClient>();
 
   constructor(private readonly deps: ClassroomAppDeps) {}
+
+  private serialConnectionOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.connectionOperations.then(operation, operation);
+    this.connectionOperations = next.catch(() => {});
+    return next;
+  }
 
   view(): ClassroomAppView {
     const view: ClassroomAppView = {
@@ -349,6 +356,11 @@ export class ClassroomApp {
   }
 
   async copilotRequest(selection: string): Promise<void> {
+    const upstream = await this.serialConnectionOperation(() => this.copilotUpstream(selection));
+    if (upstream) await this.deps.send(upstream);
+  }
+
+  private async copilotUpstream(selection: string): Promise<UpstreamSend | undefined> {
     if (selection !== "VCRouter") {
       return;
     }
@@ -356,14 +368,17 @@ export class ClassroomApp {
       throw new Error("VCRouter 目前無法使用。請先啟動 Classroom App。");
     }
     await this.deps.proxy.receive({ provider: "VCRouter" });
-    const upstream = await this.classroomUpstream("copilot");
-    if (!upstream) {
-      return;
-    }
-    await this.deps.send(upstream);
+    return this.classroomUpstream("copilot");
   }
 
   async forward(request: ClientForward): Promise<ForwardedRecord> {
+    // Only select a coherent connection and permissions under the lock; streaming stays concurrent.
+    const upstream = await this.serialConnectionOperation(() => this.forwardUpstream(request));
+    await this.deps.send(withHttp(upstream, request));
+    return forwardedRecord(upstream);
+  }
+
+  private async forwardUpstream(request: ClientForward): Promise<UpstreamSend> {
     if (!this.proxyRunning) {
       throw new Error(
         request.client === "copilot"
@@ -377,16 +392,14 @@ export class ClassroomApp {
       if (!upstream) {
         throw new Error("沒有上課模型。");
       }
-      await this.deps.send(withHttp(upstream, request));
-      return forwardedRecord(upstream);
+      return upstream;
     }
     if (this.mode === "classroom") {
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
       }
-      await this.deps.send(withHttp(upstream, request));
-      return forwardedRecord(upstream);
+      return upstream;
     }
     const target: UpstreamTarget =
       request.client === "codex" ? "chatgpt" : "claude.ai";
@@ -395,8 +408,7 @@ export class ClassroomApp {
       target,
       model: request.model,
     };
-    await this.deps.send(withHttp(upstream, request));
-    return forwardedRecord(upstream);
+    return upstream;
   }
 
   private async classroomUpstream(
@@ -527,6 +539,10 @@ export class ClassroomApp {
   }
 
   async redeem(inviteCode: string, nickname: string): Promise<void> {
+    return this.serialConnectionOperation(() => this.redeemNow(inviteCode, nickname));
+  }
+
+  private async redeemNow(inviteCode: string, nickname: string): Promise<void> {
     const invite = inviteCode.trim();
     const name = nickname.trim();
     if (!invite || !name) {
@@ -547,10 +563,26 @@ export class ClassroomApp {
       }
       return;
     }
-    await this.deps.storage.setConnection({
-      version: 1, apiKey: redeemed.api_key, session: redeemed.session, nickname: name, mode: this.mode,
-    }, { allowTemporary: true });
     this.hiddenKeys.add(redeemed.api_key);
+    try {
+      await this.deps.storage.setConnection({
+        version: 1, apiKey: redeemed.api_key, session: redeemed.session, nickname: name, mode: this.mode,
+      }, { allowTemporary: true });
+    } catch {
+      this.notice = "無法安全保存或清除原有課堂連線，換堂未完成。請稍後再試。";
+      return;
+    }
+    const desiredMode = this.mode;
+    // A committed new session must never inherit permissions or resources from the old one.
+    this.mode = "native";
+    this.modelIds = [];
+    this.forgetModelChoices();
+    this.catalog = undefined;
+    this.catalogError = undefined;
+    this.remoteCatalogHeld = false;
+    this.pendingCommand = undefined;
+    this.pendingActionId = undefined;
+    await this.restoreModelOptions();
     const label = [redeemed.session.class_name, redeemed.session.name]
       .filter(Boolean)
       .join(" · ");
@@ -563,9 +595,17 @@ export class ClassroomApp {
     this.notice = undefined;
     await this.loadCatalog();
     await this.loadModels(redeemed.api_key);
+    if (desiredMode === "classroom" && this.modelIds.length > 0) {
+      this.mode = "classroom";
+      await this.publishModelOptions();
+    }
   }
 
   async setProjectFolder(folder: string): Promise<void> {
+    return this.serialConnectionOperation(() => this.setProjectFolderNow(folder));
+  }
+
+  private async setProjectFolderNow(folder: string): Promise<void> {
     if (this.commandRunning) {
       return;
     }
@@ -582,6 +622,10 @@ export class ClassroomApp {
   }
 
   async setSwitch(mode: ModelSwitchMode): Promise<void> {
+    return this.serialConnectionOperation(() => this.setSwitchNow(mode));
+  }
+
+  private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
     if (mode === "native") {
       if (!await this.saveMode("native")) return;
       this.mode = "native";
@@ -617,10 +661,14 @@ export class ClassroomApp {
   }
 
   async reloadCatalog(): Promise<void> {
-    await this.loadCatalog();
+    return this.serialConnectionOperation(() => this.loadCatalog());
   }
 
   async reloadAllowlist(): Promise<void> {
+    return this.serialConnectionOperation(() => this.reloadAllowlistNow());
+  }
+
+  private async reloadAllowlistNow(): Promise<void> {
     const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       return;
@@ -663,6 +711,10 @@ export class ClassroomApp {
   }
 
   async copyKey(): Promise<void> {
+    return this.serialConnectionOperation(() => this.copyKeyNow());
+  }
+
+  private async copyKeyNow(): Promise<void> {
     const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
@@ -689,6 +741,10 @@ export class ClassroomApp {
   }
 
   async clearConnection(): Promise<void> {
+    return this.serialConnectionOperation(() => this.clearConnectionNow());
+  }
+
+  private async clearConnectionNow(): Promise<void> {
     await this.deps.storage.clearConnection();
     this.connected = false;
     this.classLabel = undefined;
@@ -707,6 +763,10 @@ export class ClassroomApp {
   }
 
   async start(): Promise<void> {
+    return this.serialConnectionOperation(() => this.startNow());
+  }
+
+  private async startNow(): Promise<void> {
     if (!this.initialization) this.initialization = this.restoreConnection();
     await this.initialization;
     const codex = await this.deps.routes.readCodex();
@@ -781,6 +841,10 @@ export class ClassroomApp {
   }
 
   async stop(): Promise<void> {
+    return this.serialConnectionOperation(() => this.stopNow());
+  }
+
+  private async stopNow(): Promise<void> {
     this.proxyRunning = false;
     this.deps.proxy.stop();
     const codex = await this.deps.routes.readCodex();
