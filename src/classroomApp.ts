@@ -585,7 +585,6 @@ export class ClassroomApp {
     this.remoteCatalogHeld = false;
     this.pendingCommand = undefined;
     this.pendingActionId = undefined;
-    await this.restoreModelOptions();
     const label = [redeemed.session.class_name, redeemed.session.name]
       .filter(Boolean)
       .join(" · ");
@@ -596,11 +595,26 @@ export class ClassroomApp {
     this.connected = true;
     this.detail = "Classroom API Key 已設定。";
     this.notice = undefined;
+    // Storage is committed: publish its identity before any client-file operation can fail.
+    try {
+      await this.restoreModelOptions();
+    } catch {
+      this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+      return;
+    }
     await this.loadCatalog();
     await this.loadModels(redeemed.api_key);
     if (desiredMode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
-      await this.publishModelOptions();
+      try {
+        await this.publishModelOptions();
+      } catch {
+        this.mode = "native";
+        this.modelIds = [];
+        this.forgetModelChoices();
+        try { await this.restoreModelOptions(); } catch { /* Keep proxy routing safely Native. */ }
+        this.notice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
+      }
     }
   }
 

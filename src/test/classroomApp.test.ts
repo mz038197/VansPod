@@ -25,6 +25,60 @@ function persistentStorageFake(): ConnectionStorage {
   };
 }
 
+it("a committed replacement keeps the new identity and key when Native route restoration fails", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "native" });
+  let failRoutes = false;
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    async setModelOptions() { if (failRoutes) throw new Error(`route failed ${KEY}`); },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  failRoutes = true;
+  await assert.doesNotReject(h.app.redeem("NEW", "New student"));
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().nickname, "New student");
+  assert.equal(h.app.view().mode, "native");
+  assert.equal(h.app.view().catalog, undefined);
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+  await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  const restarted = harness(undefined, { storage: createPersistentConnectionStorage(disk) });
+  await restarted.app.start();
+  assert.equal(restarted.app.view().nickname, "New student");
+  await restarted.app.copyKey();
+  assert.equal(restarted.clipboard(), KEY);
+});
+
+it("a new session stays safely Native when publishing its Classroom model options fails", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
+  let failPublish = false;
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    async setModelOptions(value) { if (failPublish && value) throw new Error(KEY); },
+  });
+  await h.app.start();
+  await h.app.setSwitch("classroom");
+  failPublish = true;
+  await assert.doesNotReject(h.app.redeem("NEW", "New student"));
+  assert.equal(h.app.view().classLabel, "Demo · Week 1");
+  assert.equal(h.app.view().nickname, "New student");
+  assert.equal(h.app.view().mode, "native");
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /old-key|vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+  await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /沒有上課模型/);
+  await h.app.copyKey();
+  assert.equal(h.clipboard(), KEY);
+});
+
 it("clear during startup waits for restoration and leaves both memory and persistent storage empty", async () => {
   const disk = persistentStorageFake();
   await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
