@@ -2494,3 +2494,80 @@ it("an authoritative missing allowlist revokes prior Classroom models without er
   await h.app.forward({ client: "claude", model: "allowed" });
   assert.equal(h.sent().at(-1)?.target, "router");
 });
+
+
+it("malformed Router metadata preserves the current persistent connection before any save", async () => {
+  const original = { version: 1 as const, apiKey: "old-key", session: { class_name: "Old" }, nickname: "Old student", mode: "classroom" as const };
+  let saves = 0;
+  const h = harness(JSON.parse('{"class_name":42}'), { storage: {
+    async getConnection() { return structuredClone(original); },
+    async setConnection() { saves++; return { persistence: "persistent" }; },
+    async clearConnection() { throw new Error("must retain original"); },
+  } });
+  await h.app.start();
+  const before = h.app.view();
+  await h.app.redeem("NEW", "New student");
+  assert.equal(saves, 0);
+  assert.equal(h.app.view().classLabel, before.classLabel);
+  assert.equal(h.app.view().nickname, "Old student");
+  assert.equal(h.app.view().mode, "classroom");
+  assert.match(h.app.view().notice ?? "", /資料格式/);
+  await h.app.copyKey(); assert.equal(h.clipboard(), "old-key");
+  await h.app.forward({ client: "copilot", model: "later" });
+  assert.equal(h.sent()[0]?.apiKey, "old-key");
+});
+
+
+it("failed Classroom model publication restores Native routes and persists the safe mode", async () => {
+  const disk = persistentStorageFake();
+  let fail = false, restorations = 0;
+  const h = harness(undefined, { storage: disk, async setModelOptions(value) {
+    if (fail && value) throw new Error(KEY);
+    if (fail && !value) restorations++;
+  } });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  fail = true;
+  await assert.doesNotReject(h.app.setSwitch("classroom"));
+  assert.equal(h.app.view().mode, "native");
+  assert.equal((await disk.getConnection())?.mode, "native");
+  assert.equal(restorations, 1);
+  assert.match(h.app.view().notice ?? "", /模型設定/);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.sent()[0]?.target, "chatgpt");
+});
+
+
+it("failed route and mode compensation reports partial failure while routing Native", async () => {
+  const disk = persistentStorageFake();
+  let failing = false;
+  const h = harness(undefined, { storage: {
+    getConnection: () => disk.getConnection(), clearConnection: () => disk.clearConnection(),
+    async setConnection(value) {
+      if (failing && value.mode === "native") throw new Error(KEY);
+      return disk.setConnection(value);
+    },
+  }, async setModelOptions() { if (failing) throw new Error(KEY); } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student");
+  failing = true;
+  await assert.doesNotReject(h.app.setSwitch("classroom"));
+  assert.equal(h.app.view().mode, "native");
+  assert.equal((await disk.getConnection())?.mode, "classroom");
+  assert.match(h.app.view().notice ?? "", /部分客戶端設定無法恢復/);
+  assert.match(h.app.view().notice ?? "", /重新啟動仍可能恢復 Classroom/);
+  assert.doesNotMatch(renderPage(h.app.view()), /vcr_sk_nick/);
+  await h.app.forward({ client: "codex", model: "later" }); assert.equal(h.sent()[0]?.target, "chatgpt");
+});
+
+it("Native route restoration failure is controlled and retains the safely committed Native mode", async () => {
+  const disk = persistentStorageFake(); let failing = false;
+  const h = harness(undefined, { storage: disk, async setModelOptions(value) { if (failing && !value) throw new Error(KEY); } });
+  await h.app.start(); await h.app.redeem("DEMO", "Student"); await h.app.setSwitch("classroom");
+  failing = true;
+  await assert.doesNotReject(h.app.setSwitch("native"));
+  assert.equal(h.app.view().mode, "native"); assert.equal((await disk.getConnection())?.mode, "native");
+  assert.match(h.app.view().notice ?? "", /部分客戶端設定無法恢復/);
+  assert.doesNotMatch(h.app.view().notice ?? "", /vcr_sk_nick|重新啟動仍可能恢復 Classroom/);
+  await h.app.forward({ client: "codex", model: "later" }); assert.equal(h.sent()[0]?.target, "chatgpt");
+});

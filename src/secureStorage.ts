@@ -50,7 +50,7 @@ export function createConnectionStorage(storage: SecureStorage): ConnectionStora
       return value;
     },
     async setConnection(connection) {
-      if (!isClassroomConnection(connection)) throw new StorageError("unavailable");
+      if (!isClassroomConnection(connection)) throw new StorageError("invalid");
       return storage.set(CONNECTION_KEY, JSON.stringify(connection));
     },
     async clearConnection() { await storage.delete(CONNECTION_KEY); },

@@ -154,7 +154,12 @@ function isRedeemResult(value: unknown): value is NicknameRedeemResult {
     typeof record.api_key === "string" &&
     record.api_key.length > 0 &&
     !!record.session &&
-    typeof record.session === "object"
+    typeof record.session === "object" &&
+    !Array.isArray(record.session) &&
+    ["class_name", "name", "invite_code", "expires_at"].every(field => {
+      const item = (record.session as Record<string, unknown>)[field];
+      return item === undefined || typeof item === "string";
+    })
   );
 }
 
