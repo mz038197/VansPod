@@ -407,10 +407,12 @@ for (const [id, client, reply] of [
 test("unrepresentable data fails before contacting Router and never changes adapters", async () => {
   await withRouter(async (routerBaseUrl, calls) => {
     for (const [client, body] of [
-      ["codex", { input: [{ type: "reasoning", encrypted_content: "opaque" }] }],
+      ["codex", { input: [{ type: "local_shell_call", call_id: "call_1", action: { type: "exec", command: ["ls"] } }] }],
+      ["codex", { input: [{ type: "tool_search_output", role: "assistant", content: "x", call_id: "call_1", tools: [] }] }],
+      ["codex", { input: [{ type: "message", role: "user", content: [{ type: "input_file", file_id: "file_1" }] }] }],
       ["codex", { input: "hello", tools: [{ type: "web_search" }] }],
       ["codex", { input: [{ type: "function_call", call_id: "call_1", name: "read", arguments: "{}", namespace: "files" }] }],
-      ["codex", { input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello", extra: "must not vanish" }] }] }],
+      ["codex", { input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello", annotations: [{ type: "url_citation" }] }] }] }],
       ["claude", { messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "secret", signature: "signed" }] }], max_tokens: 100 }],
     ] as const) {
       const response = await sendRouter({ client, target: "router", model: "allowed", adapter: "chat", path: client === "codex" ? "/v1/responses" : "/v1/messages", body: JSON.stringify(body), apiKey: "synthetic-key" }, routerBaseUrl);
@@ -642,6 +644,151 @@ for (const adapter of ["chat", "responses"] as const) test(`Codex ${adapter} sen
     if (adapter === "chat") assert.match(guidance, /functions__exec/);
     assert.deepEqual(body.instructions, "ORIGINAL RULES");
   }, adapter === "chat" ? { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] } : { object: "response", status: "completed", output: [] });
+});
+
+for (const stream of [false, true]) test(`Chat accepts Codex private message metadata without forwarding it (${stream})`, async () => {
+  const body = { stream, input: [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }], internal_chat_message_metadata_passthrough: { turn_id: "synthetic" } },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }], internal_chat_message_metadata_passthrough: { turn_id: "synthetic" } },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "again" }], future_message_extension: undefined },
+  ] };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const reply = await response.text();
+    assert.ok(stream ? reply.includes("event: response.completed") : JSON.parse(reply).status === "completed");
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /internal_chat_message_metadata_passthrough|synthetic/);
+    assert.deepEqual((calls[0].body.messages as { role: string }[]).map(message => message.role), ["user", "assistant", "user"]);
+    assert.deepEqual(body, original);
+  }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+for (const stream of [false, true]) test(`Chat skips opaque encrypted reasoning and replays readable reasoning (${stream})`, async () => {
+  const body = { stream, include: ["reasoning.encrypted_content"], input: [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+    { type: "reasoning", id: "rs_1", summary: [], content: null, encrypted_content: "gAAAA-synthetic-opaque" },
+    { type: "reasoning", id: "rs_2", encrypted_content: "gAAAA-synthetic-opaque" },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "hi" }] },
+    { type: "reasoning", id: "rs_3", summary: [{ type: "summary_text", text: "plan" }], encrypted_content: "gAAAA-synthetic-opaque" },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "again" }] },
+  ] };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const reply = await response.text();
+    assert.ok(stream ? reply.includes("event: response.completed") : JSON.parse(reply).status === "completed");
+    assert.deepEqual(calls[0].body.messages, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
+      { role: "user", content: "again" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /gAAAA|final_answer/);
+    assert.deepEqual(body, original);
+  }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+for (const stream of [false, true]) test(`Chat reads Codex input items by projection and ignores unknown item fields (${stream})`, async () => {
+  const future = { future_item_extension: { version: 3 } };
+  const body = { stream, tools: [{ type: "function", name: "read", parameters: { type: "object" } }], input: [
+    { type: "message", role: "user", end_turn: true, content: [{ type: "input_text", text: "hello" }], ...future },
+    { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }], signature: "synthetic", ...future },
+    { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: "{}", extra_content: { google: {} }, ...future },
+    { type: "function_call_output", call_id: "call_1", name: "read", output: "done", ...future },
+    { type: "input_text", text: "again", ...future },
+  ] };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const reply = await response.text();
+    assert.ok(stream ? reply.includes("event: response.completed") : JSON.parse(reply).status === "completed");
+    assert.deepEqual((calls[0].body.messages as unknown[]).slice(-5), [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content: "done" },
+      { role: "user", content: "again" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(calls[0].body.messages), /future_item_extension|synthetic|extra_content|end_turn/);
+    assert.deepEqual(body, original);
+  }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+test("Chat carries tool result images in a following user message, keeping tool content text-only", async () => {
+  const image = "data:image/png;base64,aGVsbG8=";
+  const call = (id: string) => ({ type: "function_call", call_id: id, name: "view_image", arguments: "{}" });
+  const body = { stream: false, tools: [{ type: "function", name: "view_image", parameters: { type: "object" } }], input: [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "看圖" }] },
+    call("call_1"), call("call_2"),
+    { type: "function_call_output", call_id: "call_1", output: [{ type: "input_image", image_url: image, detail: "high" }] },
+    { type: "function_call_output", call_id: "call_2", output: [{ type: "input_text", text: "attached" }, { type: "input_image", image_url: image }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "然後呢" }] },
+    call("call_3"),
+    { type: "function_call_output", call_id: "call_3", output: [{ type: "input_image", image_url: image, detail: "original" }] },
+  ] };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    const note = { type: "text", text: "[VansPod] image output from the preceding tool result(s):" };
+    assert.deepEqual((calls[0].body.messages as Array<{ role: string }>).filter(message => message.role !== "system" && message.role !== "assistant"), [
+      { role: "user", content: "看圖" },
+      { role: "tool", tool_call_id: "call_1", content: "[image]" },
+      { role: "tool", tool_call_id: "call_2", content: "attached" },
+      { role: "user", content: [note, { type: "image_url", image_url: { url: image, detail: "high" } }, { type: "image_url", image_url: { url: image, detail: "auto" } }] },
+      { role: "user", content: "然後呢" },
+      { role: "tool", tool_call_id: "call_3", content: "[image]" },
+      { role: "user", content: [note, { type: "image_url", image_url: { url: image, detail: "high" } }] },
+    ]);
+  }, { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+test("Codex built-in web search gets a clear classroom refusal and never reaches Router", async () => {
+  for (const adapter of ["chat", "responses"] as const) await withRouter(async (routerBaseUrl, calls) => {
+    const search = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/alpha/search", apiKey: "synthetic-key", body: JSON.stringify({ queries: ["weather"] }) }, routerBaseUrl);
+    assert.equal(search.status, 400);
+    const message = (await search.json() as { error: { message: string } }).error.message;
+    assert.match(message, /課堂模式不支援 Codex 內建的網路搜尋/);
+    assert.match(message, /Do not retry/);
+    const other = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/responses/compact", apiKey: "synthetic-key", body: "{}" }, routerBaseUrl);
+    assert.equal(other.status, 400);
+    assert.match((await other.json() as { error: { message: string } }).error.message, /尚未支援所選 adapter：\/v1\/responses\/compact/);
+    assert.equal(calls.length, 0);
+  }, {});
+});
+
+test("Chat keeps a compacted or extended Codex history usable instead of rejecting it", async () => {
+  const body = { stream: false, tools: [{ type: "function", name: "read", parameters: { type: "object" } }], input: [
+    { type: "compaction", encrypted_content: "gAAAA-synthetic-opaque" },
+    { type: "context_compaction" },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello", future_part_extension: 1 }, { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=", file_id: null, future: 1 }] },
+    { type: "reasoning", summary: [{ type: "summary_text", text: "plan", future_part_extension: 1 }] },
+    { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "x" } },
+    { type: "future_item_type", payload: { any: "thing" } },
+    { type: "future_item_type", role: "assistant", content: [{ type: "output_text", text: "future" }] },
+    { type: "agent_message", author: "worker", content: [{ type: "input_text", text: "done" }] },
+    { type: "agent_message", author: "worker" },
+    { type: "function_call", call_id: "call_1", name: "read", arguments: "{}" },
+    { type: "function_call_output", call_id: "call_1", output: [{ type: "input_text", text: "ok" }, { type: "encrypted_content", encrypted_content: "gAAAA-synthetic-opaque" }] },
+  ] };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual((calls[0].body.messages as Array<{ role: string }>).filter(message => message.role !== "system"), [
+      { role: "user", content: "[earlier conversation was compacted; the summary is stored in a format this model cannot read]" },
+      { role: "user", content: [{ type: "text", text: "hello" }, { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } }] },
+      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
+      { role: "user", content: "done" },
+      { role: "user", content: "(sub-agent message received)" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content: "ok[encrypted content omitted]" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /gAAAA|future|web_search/);
+    assert.deepEqual(body, original);
+  }, { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
 });
 
 for (const stream of [false, true]) test(`Chat accepts Codex reasoning context while preserving effort and source data (${stream})`, async () => {

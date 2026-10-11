@@ -143,19 +143,23 @@ function chatTool(tool: unknown): ChatTool | undefined {
   };
 }
 
-function chatContent(content: unknown): string | unknown[] {
+// Content parts are read by projection, as opencodex does: unknown fields on a
+// known part are dropped. Part types Chat cannot carry still fail, so a file,
+// audio or video attachment never vanishes silently.
+function chatContent(content: unknown, toolOutput = false): string | unknown[] {
   if (typeof content === "string") return content;
   const parts = list(content, "Responses content").map(part => {
     const value = object(part, "Responses content part");
     if (value.type === "input_text" || value.type === "output_text") {
-      allowedFields(value, ["type", "text", "annotations"], "Responses text");
       if (Array.isArray(value.annotations) && value.annotations.length) throw new AdapterError("Chat 無法保留文字 annotations。");
       return { type: "text", text: string(value.text, "text") };
     }
     if (value.type === "input_image") {
-      allowedFields(value, ["type", "image_url", "detail"], "Responses image");
-      return { type: "image_url", image_url: { url: string(value.image_url, "image_url"), detail: value.detail ?? "auto" } };
+      return { type: "image_url", image_url: { url: string(value.image_url, "image_url"), detail: value.detail === "original" ? "high" : value.detail ?? "auto" } };
     }
+    // codex-rs FunctionCallOutputContentItem::EncryptedContent is opaque to a
+    // routed model; say so instead of failing the whole turn.
+    if (toolOutput && value.type === "encrypted_content") return { type: "text", text: "[encrypted content omitted]" };
     throw new AdapterError(`Chat 無法轉換內容類型 ${String(value.type)}。`);
   });
   return parts.every(part => part.type === "text") ? parts.map(part => (part as { text: string }).text).join("") : parts;
@@ -219,6 +223,33 @@ function pushFunctionCall(
   }
   messages.push({ role: "assistant", content: null, tool_calls: [call] });
 }
+
+const COMPACTION_ITEM_TYPES: ReadonlySet<string> = new Set(["compaction", "compaction_summary", "context_compaction"]);
+const OPAQUE_COMPACTION_NOTE = "[earlier conversation was compacted; the summary is stored in a format this model cannot read]";
+const UNPAIRABLE_ITEM_TYPES: ReadonlySet<string> = new Set(["local_shell_call", "tool_search_call", "tool_search_output"]);
+
+// Chat tool messages are text-only, so an image returned by a tool (such as
+// Codex view_image) cannot ride in role:"tool" content. As opencodex does, keep
+// the text in the tool message and carry the images in a user message placed
+// after the run of tool results they belong to.
+function liftToolResultImages(messages: ChatMessage[]): void {
+  let pending: unknown[] = [];
+  for (let index = 0; index <= messages.length; index++) {
+    const message = messages[index];
+    if (message?.role === "tool") {
+      if (!Array.isArray(message.content)) continue;
+      const parts = message.content as Array<{ type: string; text?: string }>;
+      const images = parts.filter(part => part.type === "image_url");
+      pending.push(...images);
+      message.content = parts.filter(part => part.type === "text").map(part => part.text).join("") || "[image]".repeat(images.length);
+      continue;
+    }
+    if (!pending.length) continue;
+    messages.splice(index, 0, { role: "user", content: [{ type: "text", text: "[VansPod] image output from the preceding tool result(s):" }, ...pending] });
+    pending = [];
+  }
+}
+
 export function responsesToChatBody(raw: string, model: string): string {
   let parsed: Record<string, unknown> = {};
   try {
@@ -256,18 +287,22 @@ export function responsesToChatBody(raw: string, model: string): string {
   if (typeof input === "string") {
     messages.push({ role: "user", content: input });
   } else if (Array.isArray(input)) {
+    // Match opencodex's Responses parser: each input item is read by projection.
+    // Only the fields Chat can express are taken; unknown item-level fields
+    // (ids, status, phase, client metadata, future extensions) neither reach
+    // Chat nor reject the turn. Content parts are projected the same way.
     for (const item of input) {
       const record = object(item, "Responses input item");
       if (record.type === "reasoning") {
-        allowedFields(record, ["type", "id", "status", "summary", "content"], "Chat reasoning item");
-        const summary = list(record.summary, "reasoning summary").map(value => {
+        // Readable summary/content text is replayed. Native encrypted_content is
+        // opaque to a Chat upstream: an encrypted-only item is skipped and no
+        // plaintext is invented from it.
+        const summary = (record.summary == null ? [] : list(record.summary, "reasoning summary")).map(value => {
           const part = object(value, "reasoning summary part");
-          allowedFields(part, ["type", "text"], "reasoning summary part");
           if (part.type !== "summary_text") throw new AdapterError("Chat 無法轉換此 reasoning summary 類型。");
           return string(part.text, "reasoning summary text");
-        }).join("") + (record.content === undefined ? "" : list(record.content, "reasoning content").map(value => {
+        }).join("") + (record.content == null ? "" : list(record.content, "reasoning content").map(value => {
           const part = object(value, "reasoning content part");
-          allowedFields(part, ["type", "text"], "reasoning content part");
           if (part.type !== "reasoning_text") throw new AdapterError("Chat 無法轉換此 reasoning content 類型。");
           return string(part.text, "reasoning text");
         }).join(""));
@@ -275,7 +310,6 @@ export function responsesToChatBody(raw: string, model: string): string {
         continue;
       }
       if (record.type === "input_text" || record.type === "output_text") {
-        allowedFields(record, ["type", "text"], "Responses text item");
         const text = string(record.text, "text");
         if (text) {
           messages.push({
@@ -286,7 +320,6 @@ export function responsesToChatBody(raw: string, model: string): string {
         continue;
       }
       if (record.type === "function_call" || record.type === "custom_tool_call") {
-        allowedFields(record, ["type", "id", "status", "call_id", "name", "arguments", "input"], "Responses tool call");
         if (!record.call_id || !record.name) throw new AdapterError("工具呼叫缺少 call_id 或 name。");
         pushFunctionCall(messages, record);
         continue;
@@ -295,19 +328,38 @@ export function responsesToChatBody(raw: string, model: string): string {
         record.type === "function_call_output" ||
         record.type === "custom_tool_call_output"
       ) {
-        allowedFields(record, ["type", "id", "status", "call_id", "output"], "Responses tool output");
         const id = string(record.call_id, "call_id");
-        const output = typeof record.output === "string" ? record.output : chatContent(record.output);
+        const output = typeof record.output === "string" ? record.output : chatContent(record.output, true);
         if (id) {
           messages.push({ role: "tool", tool_call_id: id, content: output });
         }
         continue;
       }
-      if (record.type !== "message" && typeof record.role !== "string") {
-        throw new AdapterError(`Chat 無法轉換輸入類型 ${String(record.type)}。`);
+      if (COMPACTION_ITEM_TYPES.has(String(record.type))) {
+        // A stored summary from an earlier compaction. Its encrypted_content can
+        // only be read by the backend that minted it, so the model is told the
+        // earlier conversation was compacted. A context_compaction without a
+        // payload is a pure marker: the summary follows as its own user message.
+        if (record.type === "context_compaction" && typeof record.encrypted_content !== "string") continue;
+        messages.push({ role: "user", content: OPAQUE_COMPACTION_NOTE });
+        continue;
+      }
+      if (record.type === "agent_message") {
+        // External input delivered to the parent agent; keep it as a user turn.
+        const content = record.content == null ? "" : chatContent(record.content);
+        messages.push({ role: "user", content: content.length ? content : "(sub-agent message received)" });
+        continue;
+      }
+      // A typeless item with a role is a message, as in opencodex. The type, not
+      // an incidental role field, decides everything else.
+      if (record.type === undefined ? typeof record.role !== "string" : record.type !== "message") {
+        // These would leave a tool call or result Chat cannot pair up.
+        if (record.type === undefined || UNPAIRABLE_ITEM_TYPES.has(String(record.type))) throw new AdapterError(`Chat 無法轉換輸入類型 ${String(record.type)}。`);
+        // Anything else (web_search_call, future item types) has no Chat form and
+        // is skipped, as opencodex does, so one item cannot block every later turn.
+        continue;
       }
       if (!["assistant", "system", "developer", "user"].includes(String(record.role))) throw new AdapterError("Chat 無法轉換此 message role。");
-      allowedFields(record, ["type", "id", "status", "role", "content"], "Responses message");
       const role =
         record.role === "assistant"
           ? "assistant"
@@ -322,6 +374,7 @@ export function responsesToChatBody(raw: string, model: string): string {
     }
   }
   else if (input !== undefined) throw new AdapterError("Responses input 必須是文字或陣列。");
+  liftToolResultImages(messages);
   const tools = Array.isArray(parsed.tools)
     ? parsed.tools.flatMap((tool) => {
         const converted = chatTool(tool);

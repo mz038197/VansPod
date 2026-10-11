@@ -21,7 +21,7 @@ VansPod 目前將 Codex 的 Responses 請求轉成 Chat 請求送往 Router，Cl
 - 所選上游協定不支援或請求失敗時，顯示失敗與原因，不自動切換其他 adapter 重送。
 - 五條支援路徑均須涵蓋多輪文字、工具呼叫與工具結果回傳，以及串流／非串流回應；保留 Codex 既有自訂工具與 `apply_patch` 相容處理。
 - 第一版支援 Codex 與 Claude Code 的圖片輸入，轉為上游協定接受的格式；此範圍不包含圖片生成、音訊或影片。
-- 請求中的工具、內容或推理資料若無法由所選 adapter 正確表達，須明確報錯並說明原因，不得靜默刪除後繼續送出；能正確保留的內容應保留。
+- 請求中的工具、內容或推理資料若無法由所選 adapter 正確表達，須明確報錯並說明原因，不得靜默刪除後繼續送出（Codex → Chat 的輸入歷史自 2026-10-11 起有明列的例外，見文末記錄）；能正確保留的內容應保留。
 - 使用者取消、客戶端斷線或 VansPod 停止時，中止對應的上游請求並釋放串流資源。本機中止不保證上游立即停止計費；已回傳部分內容後發生錯誤，須回報失敗，不得標記為正常完成。
 
 ## Verification
@@ -61,7 +61,7 @@ MessagesAdapter 僅處理 Claude Code Messages ↔ Messages，保留既有上游
 
 共用介面及三個 adapter 位於 `src/adapters/`；`src/modelProxy.ts` 處理代理交付與錯誤，`src/adapterSettings.ts` 將非敏感偏好保存在 `.vanspod/settings.json`，與 Classroom Connection 分開。`src/classroomApp.ts` 在請求選路時固定當次 adapter，設定切換不更動已開始的請求。
 
-Claude 的原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，或 Codex 傳給 Chat 的加密 reasoning，不會靜默移除後重送。
+Claude 的原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，不會靜默移除後重送。例外見下方 2026-10-11 與 2026-10-12 的 Codex → Chat 輸入歷史記錄。
 
 Codex 的相容處理位於 `src/codexWire/`。兩條上游路徑都將 `additional_tools` 提升為頂層工具宣告。Chat 將工具 namespace 轉為可逆的扁平名稱；依受支援的模型選項建立正文，不對整份客戶端正文套用頂層欄位白名單。`client_metadata`、`access_programs` 與未知客戶端頂層擴充不送給 Chat，也不阻擋請求；已知且無法保留的請求語意，以及工具、內容與推理資料，仍明確驗證。明文 reasoning 保留為 Responses reasoning 資料，`summary: none` 隱藏摘要而保留下一輪所需文字。Responses 移除已確認的 Codex 私有 `access_programs`，保留其他未知上游擴充欄位；將自訂工具宣告、工具選擇、呼叫歷史及配對結果一起降為 Router 接受的 function 格式，保留 `call_id`；回程則依客戶端原始宣告還原 namespace、自訂工具類型與原始輸入，修復一般 function 包裝及原生 custom 輸入包裝。
 
@@ -86,3 +86,15 @@ code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議
 2026-10-11 reasoning.context 相容修正：Chat 的 reasoning 設定改依 opencodex reasoningConfigSchema/parser 選取 effort、summary，不再對整個設定物件套用白名單；context 與未知 reasoning 設定擴充不轉送給 Chat，也不阻擋請求。這不是將 context 內容映射成模型指令；原始請求不修改，input 的推理歷史、加密資料及 summary 設定仍依既有支援範圍驗證。回歸測試由相同的「Chat reasoning 無法轉換欄位 context」400 轉為 JSON／SSE 完成；Windows EXE 測試正文加入相同欄位。
 
 此修正驗證：完整 232 項測試、型別檢查及帶 reasoning.context 的 Windows EXE JSON／SSE 與生命週期測試全部通過；真實使用者設定雜湊未改變。直接執行本機 opencodex reasoningConfigSchema，以同一合成設定確認只保留 effort/summary。規範與需求兩軸審查無剩餘項目；尚未取得使用者實際 context 值，也未在本輪驗證真實課堂模型／MCP 操作。
+
+2026-10-11 Codex → Chat 輸入歷史相容修正：對照 opencodex 的 Responses parser（`src/responses/schema.ts`、`parser.ts`）。message 項目的 `phase` 與 `internal_chat_message_metadata_passthrough` 屬於客戶端 metadata，不轉送給 Chat，也不阻擋請求。reasoning 項目接受 `encrypted_content`，`summary` 改為選填：明文 summary／content 照舊回放；原生加密內容對 Chat 上游不透明，只帶加密內容的項目直接略過，不產生訊息，也不由密文推導明文。這是對「加密 reasoning 必須報錯」原決策的調整，原因是在 Responses 上游或 Native 產生的歷史，切到 Chat 後會讓每一輪都被 400 擋下。VansPod 不解 opencodex 自有的 ocxr1 信封；內容區塊的未知欄位仍明確報錯。
+
+同日後續調整（使用者決定；其中「仍明確報錯」的範圍已由 2026-10-12 的記錄再放寬）：Codex → Chat 的輸入項目改為與 opencodex 相同的「只取用認得的欄位」。message、reasoning、工具呼叫、工具結果及裸文字項目不再套用項目層級欄位白名單；未知的項目層級欄位不轉送給 Chat，也不阻擋請求。這在項目層級放寬了「無法表達就報錯」原則。仍明確報錯的範圍：未知的項目類型與 message role、內容區塊與 reasoning summary／content 區塊的未知欄位或類型、工具宣告、tool_choice、`additional_tools` 及已知無法保留的頂層請求語意。Responses 上游路徑與 Claude 路徑不變。
+
+2026-10-11 工具結果圖片修正：Codex → Chat 原本把工具結果裡的圖片（例如 `view_image`）直接放進 `role: "tool"` 訊息的 content 陣列。Chat 的 tool 訊息只接受文字，模型看不到圖片而反覆重讀。比照 opencodex `openai-chat/messages.ts`：tool 訊息只保留文字（沒有文字時為 `[image]`），圖片改放在該批工具結果之後的一則 user 訊息。完整 245 項測試通過；尚未以真實課堂 Router／模型驗證迴圈已消失。
+
+2026-10-11 真實 Router 圖片驗證（`vcr-auto`，同一張 JPEG、非串流）：經 VansPod 的 Responses adapter，使用者附圖與工具結果附圖模型都能正確描述；經 Chat adapter 兩者都回答看不到圖片。直接呼叫 Router `/v1/chat/completions` 測試 `image_url` 物件（有無 `detail`）、字串形式、圖片在前、Anthropic image 區塊及遠端 https 圖片，全部看不到，且 `prompt_tokens` 固定約 52，與有無圖片無關；串流回應帶有 `system_fingerprint: fp_ollama`。結論：VansPod 送出的 Chat 圖片格式正確，圖片是在 Router 的 Chat 路徑被丟棄。Chat 的工具結果圖片搬移與 `detail: original → high` 兩項修正仍保留，但在 Router 修正前無法讓 Chat 看圖。
+
+2026-10-12 Codex → Chat 輸入歷史再對齊 opencodex（使用者決定）：未知的輸入項目類型（含 `web_search_call`）改為略過；`compaction`／`compaction_summary`／`context_compaction` 轉成一則 user 訊息，內容為固定說明，因為密文只有產生它的後端能解讀，沒有 payload 的 `context_compaction` 只是標記而略過；`agent_message` 轉成 user 訊息；內容區塊與 reasoning summary／content 區塊的未知欄位剝除；工具結果裡的 `encrypted_content` 區塊換成文字 `[encrypted content omitted]`。已知代價：壓縮前的脈絡與搜尋結果模型實際上看不到，對話可以繼續但不會有錯誤提示。仍明確報錯：`input_file`／`input_audio`／`input_video` 等 Chat 無法承載的內容類型、非空的文字 annotations、`local_shell_call`／`tool_search_call`／`tool_search_output`（會留下 Chat 無法配對的工具呼叫或結果）、未知的 message role、工具宣告與 `additional_tools`。reasoning 的位置與格式、非 JSON arguments 的包裝方式維持 VansPod 原有行為。完整 246 項測試通過；Windows EXE 與真實 Router 未重跑。
+
+2026-10-12 Codex 內建網路搜尋：Codex 的 `web__run` 對模型 base URL 發出 `POST /v1/alpha/search`（依 opencodex 的處理推斷，尚未在 VansPod 實際攔到請求確認）。課堂 Router 沒有搜尋後端，VansPod 也不轉給個人 ChatGPT，因此課堂模式維持不支援，但改回明確的 400 訊息，告知模型不要重試；其他不支援的路徑則在訊息中附上實際路徑。由 Router 提供搜尋端點、或轉給學生自己的 ChatGPT，是尚未決定的後續選項。

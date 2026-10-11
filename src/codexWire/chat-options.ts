@@ -13,8 +13,8 @@ export function codexChatOptions(body: JsonObject, responseFormat: (value: unkno
   if (body.background != null && body.background !== false) throw new AdapterError("Chat 無法轉換背景執行請求。");
   if (body.truncation != null && body.truncation !== "disabled") throw new AdapterError("Chat 無法保留自動截斷 input 的設定。");
   if (body.include !== undefined) for (const include of list(body.include, "include")) {
-    // Chat has no encrypted reasoning to include; this requests optional output,
-    // unlike encrypted_content in input, which must still fail rather than vanish.
+    // Chat has no encrypted reasoning to include; this only requests optional
+    // output. Replayed encrypted_content in input is skipped as opaque.
     if (include !== "reasoning.encrypted_content") throw new AdapterError(`Chat 無法轉換 include 選項 ${String(include)}。`);
   }
   const fields: JsonObject = Object.fromEntries(DIRECT_FIELDS.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
@@ -22,8 +22,8 @@ export function codexChatOptions(body: JsonObject, responseFormat: (value: unkno
   if (body.reasoning !== undefined) {
     const reasoning = object(body.reasoning, "reasoning");
     // Match opencodex's reasoning-config projection: context and future
-    // config extensions are not Chat options. Input reasoning is validated
-    // separately, so this does not drop replayed reasoning or encrypted data.
+    // config extensions are not Chat options. Input reasoning items are
+    // handled separately when the input history is converted.
     if (reasoning.summary != null && !["auto", "concise", "detailed", "none"].includes(String(reasoning.summary))) throw new AdapterError("Chat 無法轉換此 reasoning summary 設定。");
     if (reasoning.effort !== undefined) fields.reasoning_effort = reasoning.effort === "ultra" ? "max" : reasoning.effort;
   }
