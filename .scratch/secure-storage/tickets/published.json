@@ -1,0 +1,51 @@
+[
+  {
+    "index": 1,
+    "number": 2,
+    "id": 5797389976,
+    "url": "https://github.com/mz038197/classroom-app/issues/2",
+    "title": "透過 Secure Storage 管理 Temporary Classroom Connection"
+  },
+  {
+    "index": 2,
+    "number": 3,
+    "id": 5797390249,
+    "url": "https://github.com/mz038197/classroom-app/issues/3",
+    "title": "Windows 安全保存並恢復 Classroom Connection"
+  },
+  {
+    "index": 3,
+    "number": 4,
+    "id": 5797390562,
+    "url": "https://github.com/mz038197/classroom-app/issues/4",
+    "title": "啟動時安全遷移舊版明文憑證"
+  },
+  {
+    "index": 4,
+    "number": 5,
+    "id": 5797390859,
+    "url": "https://github.com/mz038197/classroom-app/issues/5",
+    "title": "恢復 Model Switch 並依 Allowlist 決定可用狀態"
+  },
+  {
+    "index": 5,
+    "number": 6,
+    "id": 5797391189,
+    "url": "https://github.com/mz038197/classroom-app/issues/6",
+    "title": "安全換堂並保持當次與重啟後的連線一致"
+  },
+  {
+    "index": 6,
+    "number": 7,
+    "id": 5797391533,
+    "url": "https://github.com/mz038197/classroom-app/issues/7",
+    "title": "完整清除 Classroom Connection 並呈現清除失敗"
+  },
+  {
+    "index": 7,
+    "number": 8,
+    "id": 5797391839,
+    "url": "https://github.com/mz038197/classroom-app/issues/8",
+    "title": "驗證打包 Windows EXE 的完整連線生命週期"
+  }
+]
