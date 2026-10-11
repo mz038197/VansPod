@@ -44,6 +44,7 @@ export async function fakeRouter() {
       if (['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(pathname)) {
         const input = JSON.parse(await body(req));
         state.calls.at(-1).model = input.model;
+        if (Object.hasOwn(input, 'access_programs')) return reply(res, 400, { error: { message: 'Unknown parameter access_programs' } });
         state.calls.at(-1).hasClientMetadata = Object.hasOwn(input, 'client_metadata');
         if (pathname === '/v1/responses' && Array.isArray(input.input) && input.input.some(item => item.type === 'additional_tools')) return reply(res, 400, { error: { message: 'input[0]: unknown input item type: "additional_tools"' } });
         if (pathname === '/v1/responses' && Array.isArray(input.input)) {
@@ -259,7 +260,7 @@ export async function runLifecycle({ exe }) {
       await post(app, '/adapter', { client, adapter });
       for (const stream of [false, true]) {
         const endpoint = client === 'codex' ? '/v1/responses' : '/v1/messages';
-        const body = client === 'codex' ? { input: [{ type: 'additional_tools', role: 'developer', tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'text' } }, { type: 'custom', name: 'exec', format: { type: 'text' } }] }, { role: 'user', content: 'hello' }], include: ['reasoning.encrypted_content'], prompt_cache_key: 'synthetic-cache', client_metadata: { thread_id: 'synthetic-thread', future_client_field: { version: 2 } }, reasoning: { effort: 'medium', summary: 'auto' }, text: { verbosity: 'low' }, stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
+        const body = client === 'codex' ? { input: [{ type: 'additional_tools', role: 'developer', tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'text' } }, { type: 'custom', name: 'exec', format: { type: 'text' } }] }, { role: 'user', content: 'hello' }], include: ['reasoning.encrypted_content'], prompt_cache_key: 'synthetic-cache', client_metadata: { thread_id: 'synthetic-thread', future_client_field: { version: 2 } }, access_programs: { cyber: ['standard'] }, future_client_extension: { version: 3 }, reasoning: { effort: 'medium', summary: 'auto' }, text: { verbosity: 'low' }, stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
         const response = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model }), signal: AbortSignal.timeout(10000) });
         const text = await response.text();
         safeAssert(response.status === 200 && text.includes('synthetic success'), `Packaged ${client}/${adapter}/${stream} failed`);

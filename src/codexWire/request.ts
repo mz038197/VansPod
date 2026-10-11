@@ -22,6 +22,9 @@ export function normalizeCodexRequest(body: JsonObject): JsonObject {
 /** Router's Responses input accepts function history, so lower freeform tools
  * consistently across declarations, selectors, calls and paired results. */
 export function codexResponsesUpstreamBody(body: JsonObject): JsonObject {
+  // This Codex private account selector is not part of the Router's Responses
+  // contract. Other unknown fields remain intact for upstream extensions.
+  const { access_programs: _accessPrograms, ...publicBody } = body;
   const tool = (value: unknown): JsonObject => {
     const record = object(value, "tool");
     if (record.type === "namespace") return { ...record, tools: list(record.tools, "namespace tools").map(tool) };
@@ -38,7 +41,7 @@ export function codexResponsesUpstreamBody(body: JsonObject): JsonObject {
     if (record.type === "allowed_tools") return { ...record, tools: list(record.tools, "allowed tools").map(choice) };
     return record;
   };
-  return { ...body,
+  return { ...publicBody,
     ...(body.tools === undefined ? {} : { tools: list(body.tools, "tools").map(tool) }),
     ...(body.tool_choice === undefined ? {} : { tool_choice: choice(body.tool_choice) }),
     ...(Array.isArray(body.input) ? { input: body.input.map(value => {

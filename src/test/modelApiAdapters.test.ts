@@ -5,6 +5,38 @@ import { once } from "node:events";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
 
+test("Chat rejects known unsupported model semantics before contacting Router", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    for (const fields of [{ prompt: { id: "pmpt_required", variables: { topic: "synthetic" } } }, { top_logprobs: 4 }, { logprobs: true }]) {
+      const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({ input: "hello", ...fields }) }, routerBaseUrl);
+      assert.equal(response.status, 400);
+      assert.match(await response.text(), /請求語意/);
+    }
+    assert.equal(calls.length, 0);
+  }, { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+for (const stream of [false, true]) test(`Chat projects model options without rejecting Codex access programs or future envelope extensions (${stream})`, async () => {
+  const body = { input: "hello", stream, access_programs: { cyber: ["standard"] }, client_metadata: { thread_id: "synthetic" }, future_client_extension: { version: 3 }, temperature: 0.2 };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200, await response.clone().text()); await response.text();
+    assert.deepEqual(calls[0].body, { model: "allowed", messages: [{ role: "user", content: "hello" }], stream, temperature: 0.2 });
+  }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
+});
+
+test("Responses strips only canonical access programs and preserves unknown upstream extensions", async () => {
+  const body = { input: "hello", stream: false, access_programs: { cyber: ["standard"] }, future_upstream_extension: { enabled: true } };
+  const original = structuredClone(body);
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("responses").send({ client: "codex", model: "allowed", body, routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal });
+    await response.text();
+    assert.equal(calls[0].body.access_programs, undefined);
+    assert.deepEqual(calls[0].body.future_upstream_extension, body.future_upstream_extension);
+    assert.deepEqual(body, original);
+  }, { status: "completed", output: [] });
+});
+
 for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) test(`${adapter} preserves remote namespace grammar bytes (${stream})`, async () => {
   for (const [name, input] of [["apply_patch", "*** Begin Patch ***\n*** Delete File: a\n*** End Patch ***"], ["exec", '```js\ntext("hello")\n```']]) {
     const call = { type: "function_call", id: "f", call_id: "c", name, namespace: "remote", arguments: JSON.stringify({ input }), status: "completed" };
