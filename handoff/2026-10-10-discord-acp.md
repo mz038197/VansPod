@@ -1,5 +1,7 @@
 # Discord 連線用 TypeScript 寫進 classroom-app
 
+> **2026-10-11 更新**：這是早期交接筆記，並非最新實作規格。後續 Q1～Q41 已定案的行為（Agent 安裝與選擇、Thread／Session、Queue、Private／Public、ACP Approval）請優先閱讀 [Discord Agent 設計決策](../docs/design/discord-agent.md)、[ADR-0002](../docs/adr/0002-local-discord-acp-agent.md) 與 [ADR-0003](../docs/adr/0003-discord-agent-access-and-approvals.md)。下方內容保留作為歷史背景；與新文件衝突時以新文件為準。尚未開始實作。
+
 日期：2026-10-10
 
 下一輪要做的事：在 classroom-app 裡加一段本機 Discord Gateway，讓學生貼自己的 bot token 和頻道 ID 後，討論串的話能交給這台電腦上的 ACP CLI。不要另編 OpenAB 的 Windows 執行檔，也不要把 OpenAB 原始碼併進來。
