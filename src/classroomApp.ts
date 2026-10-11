@@ -1,3 +1,4 @@
+import type { ConnectionStorage } from "./secureStorage";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -74,11 +75,7 @@ export type ClassroomAppDeps = {
   files: {
     write(path: string, contents: string): Promise<void>;
   };
-  storage: {
-    getApiKey(): Promise<string | undefined>;
-    setApiKey(apiKey: string): Promise<void>;
-    clearApiKey(): Promise<void>;
-  };
+  storage: ConnectionStorage;
   stopProcess(): void;
   proxyBaseUrl: string;
   routes: {
@@ -177,6 +174,7 @@ const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
 const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一個。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
+  private readonly hiddenKeys = new Set<string>();
   private connected = false;
   private classLabel: string | undefined;
   private nickname: string | undefined;
@@ -273,7 +271,11 @@ export class ClassroomApp {
     if (this.mustRestart.length > 0) {
       view.mustRestart = [...this.mustRestart];
     }
-    return view;
+    let rendered = JSON.stringify(view);
+    for (const key of this.hiddenKeys) {
+      rendered = rendered.split(JSON.stringify(key).slice(1, -1)).join("[redacted]");
+    }
+    return JSON.parse(rendered) as ClassroomAppView;
   }
 
   async checkEnvironment(): Promise<void> {
@@ -399,7 +401,7 @@ export class ClassroomApp {
     client: ProxyClient,
     requested?: string,
   ): Promise<UpstreamSend | undefined> {
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     const model = this.classroomModel(client, requested);
     if (!apiKey || !model) {
       return undefined;
@@ -543,7 +545,10 @@ export class ClassroomApp {
       }
       return;
     }
-    await this.deps.storage.setApiKey(redeemed.api_key);
+    await this.deps.storage.setConnection({
+      version: 1, apiKey: redeemed.api_key, session: redeemed.session, nickname: name, mode: this.mode,
+    });
+    this.hiddenKeys.add(redeemed.api_key);
     const label = [redeemed.session.class_name, redeemed.session.name]
       .filter(Boolean)
       .join(" · ");
@@ -576,18 +581,20 @@ export class ClassroomApp {
 
   async setSwitch(mode: ModelSwitchMode): Promise<void> {
     if (mode === "native") {
+      await this.saveMode("native");
       this.mode = "native";
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey || this.modelIds.length === 0) {
       this.mode = "native";
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
+    await this.saveMode("classroom");
     const entering = this.mode !== "classroom";
     this.mode = "classroom";
     if (entering) {
@@ -596,12 +603,17 @@ export class ClassroomApp {
     await this.publishModelOptions();
   }
 
+  private async saveMode(mode: ModelSwitchMode): Promise<void> {
+    const connection = await this.deps.storage.getConnection();
+    if (connection) await this.deps.storage.setConnection({ ...connection, mode });
+  }
+
   async reloadCatalog(): Promise<void> {
     await this.loadCatalog();
   }
 
   async reloadAllowlist(): Promise<void> {
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       return;
     }
@@ -643,7 +655,7 @@ export class ClassroomApp {
   }
 
   async copyKey(): Promise<void> {
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
       return;
@@ -669,7 +681,7 @@ export class ClassroomApp {
   }
 
   async clearConnection(): Promise<void> {
-    await this.deps.storage.clearApiKey();
+    await this.deps.storage.clearConnection();
     this.connected = false;
     this.classLabel = undefined;
     this.nickname = undefined;
@@ -762,7 +774,7 @@ export class ClassroomApp {
     if (!this.connected) {
       return;
     }
-    const apiKey = await this.deps.storage.getApiKey();
+    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       this.catalog = undefined;
       this.catalogError = undefined;

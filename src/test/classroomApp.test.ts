@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
+import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -9,6 +10,16 @@ import {
 
 const KEY = "vcr_sk_nick";
 const PROXY = "http://127.0.0.1:47821";
+
+it("temporary connections retain the whole record only in the current process storage", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const connection = { version: 1 as const, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native" as const };
+  assert.deepEqual(await storage.setConnection(connection), { persistence: "temporary" });
+  assert.deepEqual(await storage.getConnection(), connection);
+  assert.equal(await createConnectionStorage(createMemorySecureStorage()).getConnection(), undefined);
+  await storage.clearConnection();
+  assert.equal(await storage.getConnection(), undefined);
+});
 
 const REMOTE_YAML = `
 actions:
@@ -27,6 +38,7 @@ snippets:
 function harness(
   session?: { class_name?: string; name?: string },
   options?: {
+    storage?: ConnectionStorage;
     redeemError?: Error;
     catalogYaml?: unknown;
     catalogBody?: { course_catalog_yaml?: unknown };
@@ -58,7 +70,7 @@ function harness(
   const copilotWrites: { providers: Array<Record<string, unknown>> }[] = [];
   const proxyReceived: string[] = [];
   const sent: UpstreamSend[] = [];
-  let storedKey: string | undefined;
+  const storage = options?.storage ?? createConnectionStorage(createMemorySecureStorage());
   let clipboard = "";
   let clipboardWrites = 0;
   let clipboardError: Error | undefined;
@@ -124,17 +136,7 @@ function harness(
         clipboardWrites += 1;
       },
     },
-    storage: {
-      async getApiKey() {
-        return storedKey;
-      },
-      async setApiKey(apiKey: string) {
-        storedKey = apiKey;
-      },
-      async clearApiKey() {
-        storedKey = undefined;
-      },
-    },
+    storage,
     commands: {
       async run(cwd, command, onOutput) {
         runCalls.push({ cwd, command });
@@ -223,7 +225,8 @@ function harness(
     modelKeys,
     clipboard: () => clipboard,
     clipboardWrites: () => clipboardWrites,
-    storedKey: () => storedKey,
+    storedKey: async () => (await storage.getConnection())?.apiKey,
+    storedConnection: () => storage.getConnection(),
     stops: () => stops,
     proxyStops: () => proxyStops,
     proxyStarts: () => proxyStarts,
@@ -301,7 +304,7 @@ describe("Classroom App redeem", () => {
     assert.equal(view.sessionTitle, "Week 1");
     assert.equal(view.detail, "Classroom API Key 已設定。");
     assert.equal(view.canCopyKey, true);
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
@@ -321,7 +324,7 @@ describe("Classroom App redeem", () => {
     assert.equal(app.view().connected, false);
     assert.equal(app.view().canCopyKey, false);
     assert.equal(app.view().classLabel, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
     assert.equal(app.view().detail, "兌換失敗。請檢查邀請碼與課堂暱稱。");
   });
@@ -385,7 +388,7 @@ describe("Clear Classroom Connection", () => {
     assert.equal(view.courseTitle, undefined);
     assert.equal(view.sessionTitle, undefined);
     assert.equal(view.notice, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(view.catalog, undefined);
     assert.equal(JSON.stringify(view).includes(KEY), false);
     await app.copyKey();
@@ -405,7 +408,7 @@ describe("Clear Classroom Connection", () => {
     assert.equal(view.canCopyKey, false);
     assert.equal(view.classLabel, undefined);
     assert.equal(view.notice, undefined);
-    assert.equal(storedKey(), undefined);
+    assert.equal(await storedKey(), undefined);
     assert.equal(JSON.stringify(view).includes(KEY), false);
     await app.copyKey();
     assert.equal(clipboardWrites(), 0);
@@ -632,7 +635,7 @@ describe("Course Catalog after redeem", () => {
     const { app, catalogKeys, storedKey, fileReads } = harness();
     await app.redeem("ABC12345", "Ada");
     assert.deepEqual(catalogKeys, [KEY]);
-    assert.equal(catalogKeys[0], storedKey());
+    assert.equal(catalogKeys[0], await storedKey());
     const view = app.view();
     assert.equal(view.catalog?.source, "remote");
     assert.deepEqual(view.catalog?.actions, [
@@ -1697,7 +1700,7 @@ describe("close window", () => {
     assert.equal(app.view().connected, true);
     assert.equal(app.view().classLabel, "Demo · Week 1");
     assert.equal(app.view().canCopyKey, true);
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     await app.copyKey();
     assert.equal(clipboardWrites(), 1);
     assert.equal(stops(), 0);
@@ -1735,7 +1738,7 @@ describe("VCRouter", () => {
       providers: [openRouter],
     });
     await app.redeem("ABC12345", "Ada");
-    assert.equal(storedKey(), KEY);
+    assert.equal(await storedKey(), KEY);
     await app.start();
     assert.equal(copilotWrites().length, 1);
     const written = copilotWrites()[0];
@@ -1941,4 +1944,24 @@ describe("VCRouter", () => {
     assert.deepEqual(proxyReceived(), ["VCRouter"]);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
+});
+
+it("redeem commits metadata, nickname and mode together through secure storage", async () => {
+ const h = harness();
+ await h.app.redeem(" invite ", " Student ");
+ assert.deepEqual(await h.storedConnection(), {
+  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native",
+ });
+ await h.app.setSwitch("classroom");
+ assert.equal((await h.storedConnection())?.mode, "classroom");
+});
+
+it("does not expose the connection key in installation output", async () => {
+  const h = harness(undefined, { run: async () => `failed credential: ${KEY}` });
+  await h.app.redeem("invite", "Student");
+  await h.app.setProjectFolder("C:/project");
+  h.app.prepare("demo");
+  await h.app.confirm();
+  assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
+  assert.equal(renderPage(h.app.view()).includes(KEY), false);
 });
