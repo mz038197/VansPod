@@ -415,7 +415,10 @@ export class ClassroomApp {
     client: ProxyClient,
     requested?: string,
   ): Promise<UpstreamSend | undefined> {
-    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
+    if (!this.connected) return undefined;
+    let apiKey: string | undefined;
+    try { apiKey = (await this.deps.storage.getConnection())?.apiKey; }
+    catch { return undefined; }
     const model = this.classroomModel(client, requested);
     if (!apiKey || !model) {
       return undefined;
@@ -669,6 +672,7 @@ export class ClassroomApp {
   }
 
   private async reloadAllowlistNow(): Promise<void> {
+    if (!this.connected) return;
     const apiKey = (await this.deps.storage.getConnection())?.apiKey;
     if (!apiKey) {
       return;
@@ -715,12 +719,12 @@ export class ClassroomApp {
   }
 
   private async copyKeyNow(): Promise<void> {
-    const apiKey = (await this.deps.storage.getConnection())?.apiKey;
-    if (!apiKey) {
-      this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
-      return;
-    }
     try {
+      const apiKey = this.connected ? (await this.deps.storage.getConnection())?.apiKey : undefined;
+      if (!apiKey) {
+        this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
+        return;
+      }
       await this.deps.clipboard.write(apiKey);
     } catch {
       this.notice = "無法複製 Classroom API Key。請重新連線後再試。";
@@ -745,7 +749,12 @@ export class ClassroomApp {
   }
 
   private async clearConnectionNow(): Promise<void> {
-    await this.deps.storage.clearConnection();
+    try {
+      await this.deps.storage.clearConnection();
+    } catch {
+      this.notice = "無法清除課堂連線。已保留原本連線，重新啟動後仍可能恢復。請稍後再試。";
+      return;
+    }
     this.connected = false;
     this.classLabel = undefined;
     this.nickname = undefined;
@@ -759,7 +768,11 @@ export class ClassroomApp {
     this.mode = "native";
     this.modelIds = [];
     this.forgetModelChoices();
-    await this.restoreModelOptions();
+    try {
+      await this.restoreModelOptions();
+    } catch {
+      this.notice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
+    }
   }
 
   async start(): Promise<void> {
