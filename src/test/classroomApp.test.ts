@@ -1965,3 +1965,17 @@ it("does not expose the connection key in installation output", async () => {
   assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
   assert.equal(renderPage(h.app.view()).includes(KEY), false);
 });
+
+it("startup restores saved identity once and reloads remote data without assuming Classroom mode", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved", name: "Lesson" }, nickname: "Student", mode: "classroom" });
+  const h = harness(undefined, { storage });
+  await Promise.all([h.app.start(), h.app.start()]);
+  assert.equal(h.app.view().connected, true);
+  assert.equal(h.app.view().classLabel, "Saved · Lesson");
+  assert.equal(h.app.view().nickname, "Student");
+  assert.equal(h.app.view().mode, "native");
+  assert.deepEqual(h.modelKeys, [KEY]);
+  assert.deepEqual(h.catalogKeys, [KEY]);
+  assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
+});
