@@ -36,16 +36,32 @@ _Avoid_: 在畫面上展示 API Key、只顯示學生暱稱而稱為課堂名稱
 老師為單一 Class Session 指定、由 Router 回傳並強制執行的可用模型清單。VansPod 不以本機預設清單取代它。
 _Avoid_: Router Model Template 全集、App 內建模型表、把 Allowlist 塞進 Course Catalog
 
+**Client Model Catalog**:
+VansPod 將當前 Session Model Allowlist 發布給某個 Client Route 後，在該客戶端可供學生選擇的模型目錄。學生在客戶端內從目錄選擇模型；VansPod 不把單一模型鎖定為該 Client Route 唯一可用模型。Client Model Catalog 是 Session Model Allowlist 的客戶端投影，不是另一個權威來源。
+_Avoid_: VansPod 自行決定課堂可用模型、只發布單一模型、將客戶端當前選擇當成 Allowlist
+
+**Client Route**:
+一個可獨立選擇 Native 或 Classroom 連線的本機客戶端路由。Claude Code Client Route 同時包含共用官方設定的 Claude CLI 與通過驗證後的 Claude Desktop Code Local session；VS Code Chat Client Route 指 Visual Studio Code IDE 中可使用 BYOK 模型的 Chat、Agent 與 utility tasks，是另一個獨立路由，不要求 GitHub 登入或 Copilot plan。Claude Desktop 在本專案只指 Code 分頁的 Local session，不包含一般 Chat、Cloud、SSH 或 WSL session。
+_Avoid_: 把客戶端稱為上游、把 VS Code Chat 當成 Claude Code 擴充、宣稱 VansPod 接管 VS Code inline code completion、semantic search 或 embeddings、宣稱 VansPod 接管所有 Claude Desktop 連線
+
+**Client Route Health**:
+單一 Client Route 的本機代理入口是否可用，以及新設定是否已被客戶端載入的狀態。綠色表示入口正常且可切換 Classroom；黃色表示設定已更新但客戶端尚待重啟或重載；紅色表示入口或設定恢復失敗，禁止 Classroom、模型與 adapter 操作；灰色表示未偵測到該客戶端，安裝後需重新載入偵測。不健康的 Client Route 不得切到 Classroom 或寫入課堂設定，但不影響其他健康 Client Route 的連線與切換。
+_Avoid_: 一個 Client Route 失敗就停用所有客戶端、在代理入口不可用時仍寫入 Classroom 設定
+
+**Model Upstream**:
+VansPod 或其本機代理將模型請求送往的 Router 或模型供應端。它與發出請求的 Client Route 不同。
+_Avoid_: VS Code Chat、Claude CLI、Claude Desktop、把客戶端與模型供應端都稱為上游
+
 **Web Search**:
 Router 在一個 Class Session 內，代學生的 Coding Agent 執行的網路搜尋。它不是模型，不屬於 Session Model Allowlist；是否開放由老師對每個 Class Session 個別決定，預設不開放，並由 Router 強制執行。未開放時，Coding Agent 應直接告知學生，而不是自行改用其他方式抓取網頁。它只決定 Router 是否代為搜尋，不限制學生電腦自己的連網能力。
 _Avoid_: 搜尋模型、把搜尋列進 Session Model Allowlist、學生自己的搜尋帳號、未開放時用 shell 抓網頁替代、把關閉 Web Search 當成斷網
 
 **Model Switch**:
-每個客戶端各自的本機開關，讓 Codex 與 Claude Code 獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個客戶端不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該客戶端原有的個人設定。
+每個 Client Route 各自的本機開關，讓它獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個 Client Route 不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該 Client Route 原有的個人設定。
 _Avoid_: 全域強制一起切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
 
 **Model API Adapter**:
-VansPod 配合 Router 上游模型 API 協定、適配 Codex 或 Claude Code 請求與回應的方式。它不同於 Model Switch 的 Classroom／Native 模式選擇。
+VansPod 配合 Router 上游模型 API 協定、適配某個 Client Route 請求與回應的方式。每個 Client Route 各自保存選擇，不因其他 Client Route 切換模式、模型或 adapter 而改變。Adapter 是非敏感的個人偏好，在健康 Client Route 為 Native 時也可預先選擇；這只保存偏好，不會切入 Classroom。切回 Native 或清除 Classroom Connection 後仍保留 adapter 偏好，供下次進入 Classroom 時使用。它不同於 Model Switch 的 Classroom／Native 模式選擇。
 _Avoid_: Model Switch、模型本身、opencodex 的 adapter 實例
 
 **Copy Classroom API Key**:
