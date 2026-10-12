@@ -47,6 +47,10 @@ function sse(events: Array<{ type: string; [key: string]: unknown }>): string {
   return events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
 }
 
+// A reply the fake Router sends with a failing HTTP status.
+class Failure { constructor(readonly status: number, readonly body: unknown) {} }
+const routerError = (status: number, code: string | null, type: string, message: string) => new Failure(status, { error: { message, type, code, param: null } });
+
 // A fake Router that plays its replies in order, whichever endpoint is asked.
 async function withRouter(replies: unknown[], run: (url: string, calls: Call[]) => Promise<void>) {
   const calls: Call[] = [], queue = [...replies];
@@ -55,7 +59,8 @@ async function withRouter(replies: unknown[], run: (url: string, calls: Call[]) 
     calls.push({ path: req.url ?? "", body: JSON.parse(raw), headers: req.headers });
     const reply = queue.shift();
     if (reply === undefined) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "fake Router has nothing left to say" } })); return; }
-    if (typeof reply === "string") { res.setHeader("content-type", "text/event-stream"); res.end(reply); }
+    if (reply instanceof Failure) { res.writeHead(reply.status, { "content-type": "application/json" }); res.end(typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body)); }
+    else if (typeof reply === "string") { res.setHeader("content-type", "text/event-stream"); res.end(reply); }
     else { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(reply)); }
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
@@ -75,7 +80,7 @@ async function message(response: Response, stream: boolean): Promise<{ content: 
   assert.deepEqual(events.filter(event => event.type === "message_start" || event.type === "message_stop").map(event => event.type), ["message_start", "message_stop"]);
   const starts = events.filter(event => event.type === "content_block_start");
   assert.deepEqual(starts.map(event => event.index), starts.map((_, index) => index));
-  assert.deepEqual(events.filter(event => event.type === "content_block_stop").map(event => event.index).sort(), starts.map(event => event.index));
+  assert.deepEqual(events.filter(event => event.type === "content_block_stop").map(event => event.index).sort((a, b) => a - b), starts.map(event => event.index));
   const content = starts.map(start => {
     const deltas = events.filter(event => event.type === "content_block_delta" && event.index === start.index).map(event => event.delta);
     const block = { ...start.content_block } as Block;
@@ -143,5 +148,100 @@ for (const adapter of ["chat", "responses"] as const) for (const stream of [fals
     const offered = (calls[0].body.tools as Array<Record<string, any>>).map(tool => adapter === "chat" ? tool.function : tool);
     assert.deepEqual(offered.map(tool => tool.name), ["WebFetch", "web_search"]);
     assert.deepEqual([offered[0].description, offered[0].parameters], [webFetch.description, webFetch.input_schema]);
+  });
+});
+
+const modelPath = (adapter: Adapter) => adapter === "chat" ? "/v1/chat/completions" : "/v1/responses";
+const searchTool = (maxUses?: number) => [{ type: "web_search_20250305", name: "web_search", ...(maxUses === undefined ? {} : { max_uses: maxUses }) }];
+// What the model reads as the result of its latest search call.
+const fedBack = (adapter: Adapter, call: Call) => { const fed = adapter === "chat" ? (call.body.messages as Block[]).at(-1)! : (call.body.input as Block[]).at(-1)!; return String(adapter === "chat" ? fed.content : fed.output); };
+const limitReached = { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" };
+
+for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) for (const [maxUses, cap] of [[8, 5], [undefined, 5], [2, 2]] as const) {
+  test(`a Claude Code request runs at most ${cap} searches when max_uses is ${maxUses} through ${adapter} (stream ${stream})`, async () => {
+    // A model that would go on searching for as long as it is allowed to.
+    const replies = [...Array.from({ length: cap }, () => [modelAsks(adapter, stream), found]).flat(), modelAnswers(adapter, stream)];
+    await withRouter(replies, async (routerBaseUrl, calls) => {
+      const { content, stop_reason, usage } = await message(await send(adapter, { ...sample.body, tools: searchTool(maxUses), stream }, routerBaseUrl), stream);
+      assert.deepEqual(calls.map(call => call.path), [...Array.from({ length: cap }, () => [modelPath(adapter), "/v1/search"]).flat(), modelPath(adapter)]);
+      // Once the searches are used up the model is asked again with tool calls switched off.
+      const asked = calls.filter(call => call.path === modelPath(adapter));
+      assert.deepEqual(asked.map(call => call.body.tool_choice), [...Array.from({ length: cap }, () => "auto"), "none"]);
+      assert.deepEqual(content.map(block => block.type), [...Array.from({ length: cap }, () => ["server_tool_use", "web_search_tool_result"]).flat(), "text"]);
+      assert.equal(content.at(-1)!.text, answer);
+      assert.equal(stop_reason, "end_turn");
+      assert.deepEqual(usage.server_tool_use, { web_search_requests: cap });
+    });
+  });
+}
+
+for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) test(`a model that keeps asking past the limit is refused without a search and then stopped through ${adapter} (stream ${stream})`, async () => {
+  const again = () => modelAsks(adapter, stream);
+  await withRouter([again(), found, again(), again(), again(), found], async (routerBaseUrl, calls) => {
+    const { content, stop_reason, usage } = await message(await send(adapter, { ...sample.body, tools: searchTool(1), stream }, routerBaseUrl), stream);
+    assert.deepEqual(calls.map(call => call.path), [modelPath(adapter), "/v1/search", modelPath(adapter), modelPath(adapter)]);
+    assert.match(fedBack(adapter, calls[3]), /limit .* has been reached/);
+    assert.match(fedBack(adapter, calls[3]), /Do not call this tool again/);
+    assert.deepEqual(content.map(block => block.type), Array.from({ length: 3 }, () => ["server_tool_use", "web_search_tool_result"]).flat());
+    assert.deepEqual([content[3].content, content[5].content], [limitReached, limitReached]);
+    assert.equal(content[5].tool_use_id, content[4].id);
+    assert.equal(stop_reason, "end_turn");
+    assert.deepEqual(usage.server_tool_use, { web_search_requests: 1 });
+  });
+});
+
+for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) test(`a failed search reaches Claude Code as a search error result and the model as an explanation through ${adapter} (stream ${stream})`, async () => {
+  // Router relays its search provider's HTTP status, so only the error code tells the cases apart.
+  const cases: Array<[string, unknown, string, RegExp]> = [
+    ["disabled", routerError(403, "web_search_disabled", "invalid_request_error", "此課堂未開放網路搜尋"), "unavailable", /not enabled for this class session/],
+    ["rate limited", routerError(429, "web_search_rate_limited", "rate_limit_error", "搜尋太頻繁，請稍後再試"), "too_many_requests", /too many searches/],
+    ["unavailable", routerError(503, "web_search_unavailable", "server_error", "網路搜尋目前無法使用"), "unavailable", /not available right now/],
+    ["provider 429", routerError(429, null, "upstream_error", "Upstream provider error synthetic-key"), "unavailable", /search failed/],
+    ["provider 503", routerError(503, null, "upstream_error", "Upstream provider error"), "unavailable", /search failed/],
+    ["not JSON", new Failure(502, "<html>bad gateway</html>"), "unavailable", /search failed/],
+    ["malformed success", { results: "none" }, "unavailable", /search failed/],
+  ];
+  const read = new Map<string, string>();
+  for (const [name, reply, code, expected] of cases) await withRouter([modelAsks(adapter, stream), reply, modelAnswers(adapter, stream)], async (routerBaseUrl, calls) => {
+    // The request itself succeeds: the model goes on to tell the student what happened.
+    const { content, stop_reason, usage } = await message(await send(adapter, { ...sample.body, stream }, routerBaseUrl), stream);
+    assert.deepEqual(calls.map(call => call.path), [modelPath(adapter), "/v1/search", modelPath(adapter)], name);
+    assert.deepEqual(content.map(block => block.type), ["server_tool_use", "web_search_tool_result", "text"], name);
+    assert.deepEqual(content[1], { type: "web_search_tool_result", tool_use_id: content[0].id, content: { type: "web_search_tool_result_error", error_code: code } }, name);
+    assert.equal(content[2].text, answer, name);
+    assert.equal(stop_reason, "end_turn", name);
+    assert.deepEqual(usage, { input_tokens: 40, output_tokens: 12, server_tool_use: { web_search_requests: 0 } }, name);
+    read.set(name, fedBack(adapter, calls[2]));
+    assert.match(read.get(name)!, expected, name);
+    assert.doesNotMatch(read.get(name)!, /synthetic-key/, name);
+  });
+  assert.equal(new Set(["disabled", "rate limited", "unavailable", "provider 429"].map(name => read.get(name))).size, 4);
+  for (const name of ["provider 503", "not JSON", "malformed success"]) assert.equal(read.get(name), read.get("provider 429"), name);
+  const disabled = read.get("disabled")!;
+  assert.match(disabled, /這堂課沒有開放網路搜尋/);
+  assert.match(disabled, /Do not retry/);
+  assert.match(disabled, /tell the user directly/i);
+  assert.doesNotMatch(disabled, /another way|other way|instead|alternative|built-in|其他方式|改用|內建|WebFetch|Codex/i);
+});
+
+for (const adapter of ["chat", "responses"] as const) for (const stream of [false, true]) test(`a search call Router would reject is refused as a search error result through ${adapter} (stream ${stream})`, async () => {
+  const cases: Array<[string, string, string, RegExp]> = [
+    ["too long", JSON.stringify({ query: "台".repeat(1001) }), "query_too_long", /longer than 1000 characters/],
+    ["no query", JSON.stringify({ q: query }), "invalid_tool_input", /no query text/],
+    ["blank query", JSON.stringify({ query: "  " }), "invalid_tool_input", /no query text/],
+  ];
+  for (const [name, args, code, expected] of cases) await withRouter([modelAsks(adapter, stream, "web_search", args), modelAnswers(adapter, stream)], async (routerBaseUrl, calls) => {
+    const { content, stop_reason } = await message(await send(adapter, { ...sample.body, stream }, routerBaseUrl), stream);
+    // Router is never asked; the model reads what was wrong and may call again.
+    assert.deepEqual(calls.map(call => call.path), [modelPath(adapter), modelPath(adapter)], name);
+    assert.deepEqual(content.map(block => block.type), ["server_tool_use", "web_search_tool_result", "text"], name);
+    assert.deepEqual(content[1].content, { type: "web_search_tool_result_error", error_code: code }, name);
+    assert.match(fedBack(adapter, calls[1]), expected, name);
+    assert.equal(stop_reason, "end_turn", name);
+  });
+  // A query of exactly Router's maximum length is searched as it is.
+  await withRouter([modelAsks(adapter, stream, "web_search", JSON.stringify({ query: "台".repeat(1000) })), found, modelAnswers(adapter, stream)], async (routerBaseUrl, calls) => {
+    await message(await send(adapter, { ...sample.body, stream }, routerBaseUrl), stream);
+    assert.deepEqual(calls[1].body, { queries: ["台".repeat(1000)] });
   });
 });

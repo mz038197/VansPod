@@ -34,3 +34,5 @@
 ## 實作紀錄
 
 2026-10-13 VansPod × Codex（GitHub #27）：請求格式以 `src/test/fixtures/codex-search/` 的真實樣本為準。回應格式取自 Codex 原始碼（`openai/codex` tag `rust-v0.162.1`）：`codex-rs/codex-api/src/search.rs` 的 `SearchResponse { encrypted_output, output, results }`，以及 `codex-rs/ext/web-search/src/tool.rs`——模型只讀 `output`，`results` 只供客戶端顯示，非 2xx 回應是 `FunctionCallError::Fatal`。因此未開放、太頻繁、不可用、上游失敗與不支援的指令一律回 200，把說明放在 `output`；這個回應尚未以真實 Codex 端對端驗證。
+
+2026-10-13 VansPod × Claude Code 的上限與錯誤結果（GitHub #29）：錯誤結果的格式與代碼取自 Anthropic 的 web search tool 文件——`web_search_tool_result` 的 `content` 是單一物件 `{ type: "web_search_tool_result_error", error_code }`。Router 的 `web_search_rate_limited` 對應 `too_many_requests`；`web_search_disabled`、`web_search_unavailable` 與上游失敗沒有更貼近的代碼，一律是 `unavailable`，差別只在模型讀到的說明，該說明與 Codex 共用同一組文字。搜尋次數（含失敗的）用完後，下一個模型請求帶 `tool_choice: none`，模型只能作答；仍要求搜尋的呼叫不送 Router，回 `max_uses_exceeded`，再犯一次就結束回覆。超過 1000 字元或沒有查詢文字的呼叫不送 Router，分別回 `query_too_long` 與 `invalid_tool_input`，不像 Codex 那樣截斷。

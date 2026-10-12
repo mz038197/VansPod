@@ -9,20 +9,21 @@ import { AdapterError, list, object } from "./adapters/types";
 type RouterResult = { query: string; title: string; url: string; text: string };
 
 const MAX_QUERIES = 3;
-const MAX_QUERY_LENGTH = 1000;
+export const MAX_QUERY_LENGTH = 1000;
 
-// Every explanation below is read verbatim by the model, hence the English half. A
+// Every explanation below is read verbatim by the model, hence the English half; Claude
+// Code's search loop (claudeWebSearch.ts) gives the same ones for the same Router code. A
 // failure is still a 200: Codex treats a non-2xx reply as fatal to the whole turn
 // (and retries 5xx first), so the model would never get to tell the student why.
 // None of them may hint at another route to the information: an earlier refusal
 // did, and the model crawled sites from the shell for minutes (ADR-0007).
-const NO_SHELL = "Do not use shell commands (curl, wget, scripts) to fetch web pages.";
-const EXPLANATIONS: Record<string, string> = {
+export const NO_SHELL = "Do not use shell commands (curl, wget, scripts) to fetch web pages.";
+export const EXPLANATIONS: Record<string, string> = {
   web_search_disabled: `這堂課沒有開放網路搜尋。Web search is not enabled for this class session. This is a class setting, not a malfunction, and no search was performed. Do not retry this tool. ${NO_SHELL} Tell the user directly that web search is not enabled for this class session.`,
   web_search_rate_limited: `搜尋太頻繁，請稍後再試。Web search is temporarily rate limited: there were too many searches in the last minute, so no search was performed. Do not retry this tool now. ${NO_SHELL} Tell the user to wait about a minute and then ask again.`,
   web_search_unavailable: `網路搜尋服務目前無法使用。The classroom web search service is not available right now. This is a service problem, not a class setting, and no search was performed. Do not retry this tool. ${NO_SHELL} Tell the user that web search is currently out of service and that they can report it to their teacher.`,
 };
-const SEARCH_FAILED = `搜尋失敗，沒有取得結果。The web search failed: the search service returned an error, so there are no results. This is not a class setting. You may retry this tool once; if it fails again, tell the user that the search failed and that they can try again later. ${NO_SHELL}`;
+export const SEARCH_FAILED = `搜尋失敗，沒有取得結果。The web search failed: the search service returned an error, so there are no results. This is not a class setting. You may retry this tool once; if it fails again, tell the user that the search failed and that they can try again later. ${NO_SHELL}`;
 
 function unsupported(names: string[]): string {
   return `課堂模式的網路搜尋只支援以關鍵字搜尋。${names.length ? `These web commands are not supported in this classroom session and were not run: ${names.join(", ")}.` : "This request named no search_query, and nothing else is supported in this classroom session."} Only search_query (searching by query text) is supported; its results already include a text snippet of each page. Do not retry the unsupported commands. ${NO_SHELL} If that is not enough, tell the user this classroom session cannot do it.`;
@@ -43,11 +44,12 @@ function resultsText(queries: string[], results: RouterResult[]): string {
 
 // Router relays its search provider's HTTP status (a provider 429 arrives as 429 with
 // code null), so the error code alone tells a refusal from an upstream failure.
+export async function routerErrorCode(response: Response): Promise<string> {
+  try { return text((object(await response.json(), "search error").error as { code?: unknown } | null)?.code); } catch { return ""; }
+}
+
 async function failure(response: Response): Promise<string> {
-  try {
-    const error = object(await response.json(), "search error").error;
-    return EXPLANATIONS[text((error as { code?: unknown } | null)?.code)] ?? SEARCH_FAILED;
-  } catch { return SEARCH_FAILED; }
+  return EXPLANATIONS[await routerErrorCode(response)] ?? SEARCH_FAILED;
 }
 
 export async function codexSearch(upstream: UpstreamSend, baseUrl: string): Promise<Response> {
