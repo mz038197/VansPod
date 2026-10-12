@@ -39,7 +39,7 @@ export async function fakeRouter() {
       if (pathname === '/extension/chat-language-models') {
         if (state.hanging) return;
         if (state.models === 'missing') return reply(res, 200, {});
-        return reply(res, 200, state.models === 'empty' ? [] : [{ name: 'VCRouter', models: [{ id: selected.model }] }]);
+        return reply(res, 200, state.models === 'empty' ? [] : [{ name: 'VCRouter', vendor: 'customendpoint', models: [{ id: selected.model, name: 'Synthetic Classroom Model', toolCalling: true, vision: true, maxInputTokens: 32000, api_key: 'must-be-removed', headers: { authorization: 'must-be-removed' } }] }]);
       }
       if (['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(pathname)) {
         const input = JSON.parse(await body(req));
@@ -86,12 +86,20 @@ export async function fakeRouter() {
 
 export async function sandbox() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'classroom-sea-verify-'));
-  const home = path.join(root, 'home'), roaming = path.join(root, 'roaming'), local = path.join(root, 'local'), temp = path.join(root, 'tmp');
-  const paths = { codex: path.join(home, '.codex/config.toml'), claude: path.join(home, '.claude/settings.json'), vscode: path.join(roaming, 'Code/User/settings.json'), copilot: path.join(roaming, 'Code/User/chatLanguageModels.json'), connection: path.join(home, '.vanspod/connection.json') };
+  const home = path.join(root, 'home'), roaming = path.join(root, 'roaming'), local = path.join(root, 'local'), temp = path.join(root, 'tmp'), bin = path.join(root, 'bin');
+  const paths = {
+    codex: path.join(home, '.codex/config.toml'), codexCatalog: path.join(home, '.codex/classroom-catalog.json'), codexCache: path.join(home, '.codex/models_cache.json'),
+    claude: path.join(home, '.claude/settings.json'), claudeCatalog: path.join(home, '.claude/cache/gateway-models.json'),
+    vscode: path.join(roaming, 'Code/User/settings.json'), copilot: path.join(roaming, 'Code/User/chatLanguageModels.json'),
+    connection: path.join(home, '.vanspod/connection.json'), preferences: path.join(home, '.vanspod/settings.json'), vsCodeJournal: path.join(home, '.vanspod/vscode-route-journal.json'),
+    unrelated: path.join(home, 'student-work/keep-me.txt'), bin,
+  };
   const seeds = { codex: 'model = "personal-model"\npersonal_marker = "preserve-codex"\n', claude: JSON.stringify({ personal_marker: 'preserve-claude', env: { PERSONAL_ENV: 'preserve-env' } }), vscode: JSON.stringify({ 'editor.fontSize': 17, personal_marker: 'preserve-vscode' }), copilot: JSON.stringify([{ name: 'PersonalProvider', marker: 'preserve-provider', apiKey: 'synthetic-personal-only' }]) };
-  for (const dir of [home, roaming, local, temp]) await fs.mkdir(dir, { recursive: true });
+  for (const dir of [home, roaming, local, temp, bin, path.dirname(paths.unrelated)]) await fs.mkdir(dir, { recursive: true });
   for (const [name, data] of Object.entries(seeds)) { await fs.mkdir(path.dirname(paths[name]), { recursive: true }); await fs.writeFile(paths[name], data); }
-  const env = { ...process.env, USERPROFILE: home, APPDATA: roaming, LOCALAPPDATA: local, TEMP: temp, TMP: temp, CLASSROOM_APP_HEADLESS: '1' };
+  await fs.writeFile(paths.unrelated, 'unrelated student file must survive');
+  for (const command of ['codex', 'claude', 'code']) await fs.writeFile(path.join(bin, command + '.cmd'), '@exit /b 0\r\n');
+  const env = { ...process.env, USERPROFILE: home, APPDATA: roaming, LOCALAPPDATA: local, TEMP: temp, TMP: temp, PATH: bin + path.delimiter + process.env.PATH, CLASSROOM_APP_HEADLESS: '1' };
   for (const target of [...Object.values(paths), home, roaming, local, temp]) safeAssert(path.resolve(target).startsWith(path.resolve(root) + path.sep), 'Sandbox path escaped the intended root');
   return { root, paths, env, async cleanup() {
     const target = path.resolve(root), expected = path.resolve(os.tmpdir()) + path.sep;
@@ -110,8 +118,8 @@ async function startExe(exe, box, router, port, overrides = {}) {
   let output = '', spawnFailed = false;
   child.on('error', () => { spawnFailed = true; });
   child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
-  const url = `http://127.0.0.1:${port}`;
-  const handle = { child, url, async stop() {
+  let url = `http://127.0.0.1:${port}`;
+  const handle = { child, get url() { return url; }, routeUrl(route) { return `http://127.0.0.1:${port + ({ codex: 0, claude: 1, vscode: 2 }[route] ?? 0)}`; }, output: () => output, async stop() {
     if (!spawnFailed && child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit'); child.kill(); await exited;
     }
@@ -123,7 +131,9 @@ async function startExe(exe, box, router, port, overrides = {}) {
         assertPrivateOutput(output);
         throw new Error('Isolated SEA process failed before readiness: ' + output.slice(0, 1000));
       }
-      try { const response = await fetch(url, { signal: AbortSignal.timeout(500) }); if (response.ok && output.includes(`VansPod: ${url}/`)) return handle; } catch {}
+      const announced = output.match(/VansPod: (http:\/\/127\.0\.0\.1:\d+)\//)?.[1];
+      if (announced) url = announced;
+      try { const response = await fetch(url, { signal: AbortSignal.timeout(500) }); if (response.ok && announced) return handle; } catch {}
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Isolated SEA process readiness timeout');
@@ -203,13 +213,45 @@ async function monitorArguments(app) {
 }
 
 async function proxy(app, model = sessions.first.model) {
-  const response = await fetch(app.url + '/v1/chat/completions', {
+  const response = await fetch(app.url + '/v1/responses', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'synthetic-copilot-verification' },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'synthetic request' }] }), signal: AbortSignal.timeout(10000),
+    body: JSON.stringify({ model, input: 'synthetic request', stream: false }), signal: AbortSignal.timeout(10000),
   });
   const text = await response.text();
   for (const session of Object.values(sessions)) safeAssert(!text.includes(session.key), 'API key appeared in HTTP response');
   return response.status;
+}
+
+async function routeRequest(app, route, endpoint, bodyValue, expected = 200) {
+  const response = await fetch(app.routeUrl(route) + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyValue), signal: AbortSignal.timeout(10000) });
+  const text = await response.text();
+  assertPrivateOutput(text);
+  safeAssert(response.status === expected, `${route} ${endpoint} returned ${response.status}: ${text.slice(0, 160)}`);
+  return text;
+}
+
+function clientCard(html, client) {
+  const match = html.match(new RegExp(`<div class="model-client">(?:(?!<div class="model-client">)[\\s\\S])*?<input type="hidden" name="client" value="${client}">(?:(?!<div class="model-client">)[\\s\\S])*?<\\/form><\\/div>`));
+  safeAssert(match, `Missing ${client} card`);
+  return match[0];
+}
+
+function assertRoute(html, client, health, mode) {
+  const card = clientCard(html, client);
+  safeAssert(card.includes(health === 'green' ? 'client-light detected' : `client-light health-${health}`), `${client} was not ${health}`);
+  safeAssert(new RegExp(`value="${mode}"[^>]*class="on"`).test(card), `${client} was not ${mode}`);
+}
+
+function assertHealthyRoute(html, client, mode) {
+  const card = clientCard(html, client);
+  safeAssert(card.includes('client-light detected') || card.includes('client-light health-yellow'), `${client} was not healthy`);
+  safeAssert(new RegExp(`value="${mode}"[^>]*class="on"`).test(card), `${client} was not ${mode}`);
+}
+
+async function occupy(port) {
+  const server = http.createServer((_req, res) => { res.writeHead(409); res.end('occupied'); });
+  server.listen(port, '127.0.0.1'); await once(server, 'listening');
+  return () => new Promise(resolve => server.close(resolve));
 }
 
 async function personalSettingsSnapshot() {
@@ -230,6 +272,156 @@ async function denyCreateFiles(directory, sandboxRoot) {
   const run = promisify(execFile);
   await run(icacls, [directory, '/deny', user + ':(WD,AD)'], { windowsHide: true });
   return async () => { await run(icacls, [directory, '/remove:d', user], { windowsHide: true }); };
+}
+
+async function freeBasePort() {
+  for (let base = 50000; base < 65000; base += 3) {
+    const servers = [];
+    try {
+      for (const port of [base, base + 1, base + 2]) {
+        const server = http.createServer();
+        await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+        servers.push(server);
+      }
+      await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+      return base;
+    } catch {
+      await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+    }
+  }
+  throw new Error('No three-port verification range is available');
+}
+
+export async function runMultiRouteLifecycle({ exe }) {
+  safeAssert(process.platform === 'win32', 'Packaged multi-route verification requires Windows');
+  const restoreCheck = await personalSettingsSnapshot();
+  const router = await fakeRouter();
+  const box = await sandbox();
+  const base = await freeBasePort();
+  let app, releaseCollision, locked;
+  const results = [];
+  const record = message => { results.push(message); console.log('PASS ' + message); };
+  const restart = async () => { if (app) await app.stop(); app = await startExe(path.resolve(exe), box, router, base); };
+  const switchRoute = (client, mode) => post(app, '/switch', { client, mode });
+  try {
+    const personal = {
+      codex: await fs.readFile(box.paths.codex, 'utf8'), claude: await fs.readFile(box.paths.claude, 'utf8'),
+      vscode: await fs.readFile(box.paths.vscode, 'utf8'), copilot: await fs.readFile(box.paths.copilot, 'utf8'), unrelated: await fs.readFile(box.paths.unrelated, 'utf8'),
+    };
+    const legacyProvider = [{ name: 'PersonalProvider', marker: 'preserve-provider', apiKey: 'synthetic-personal-only' }, { name: 'VCRouter', url: `http://127.0.0.1:${base}` }];
+    await fs.writeFile(box.paths.copilot, JSON.stringify(legacyProvider));
+    await restart();
+    let html = await page(app);
+    for (const client of ['codex', 'claude', 'vscode']) assertRoute(html, client, 'green', 'native');
+    for (const route of ['codex', 'claude', 'vscode']) safeAssert((await fetch(app.routeUrl(route), { signal: AbortSignal.timeout(2000) })).status === 200, `${route} fixed route did not listen`);
+    safeAssert(!JSON.parse(await fs.readFile(box.paths.copilot, 'utf8')).some(provider => provider.url === `http://127.0.0.1:${base}`), 'Legacy VansPod provider was not migrated');
+    safeAssert(await fs.readFile(box.paths.codex, 'utf8') === personal.codex && await fs.readFile(box.paths.claude, 'utf8') === personal.claude && await fs.readFile(box.paths.vscode, 'utf8') === personal.vscode, 'Native startup changed personal settings');
+    record(`configured base port owns ${base}, ${base + 1}, ${base + 2}; deterministic clients and legacy provider migration`);
+
+    await post(app, '/redeem', { invite_code: 'first', nickname: sessions.first.nickname });
+    for (const client of ['codex', 'claude', 'vscode']) await switchRoute(client, 'classroom');
+    html = await page(app);
+    for (const client of ['codex', 'claude', 'vscode']) assertRoute(html, client, 'yellow', 'classroom');
+    const codexConfig = await fs.readFile(box.paths.codex, 'utf8');
+    const claudeConfig = JSON.parse(await fs.readFile(box.paths.claude, 'utf8'));
+    const codexCatalog = JSON.parse(await fs.readFile(box.paths.codexCatalog, 'utf8'));
+    const claudeCatalog = await (await fetch(app.routeUrl('claude') + '/v1/models')).json();
+    const providers = JSON.parse(await fs.readFile(box.paths.copilot, 'utf8'));
+    const vcr = providers.find(provider => provider.name === 'VCRouter');
+    safeAssert(codexConfig.includes(`http://127.0.0.1:${base}/v1`) && claudeConfig.env.ANTHROPIC_BASE_URL === `http://127.0.0.1:${base + 1}`, 'Client-native routes used wrong listener origin');
+    safeAssert(codexCatalog.models.some(model => model.slug === `VCRouter/${sessions.first.model}`), 'Codex catalog missed allowlist');
+    safeAssert(claudeCatalog.data.some(model => model.id === sessions.first.model), 'Claude discovery missed allowlist');
+    safeAssert(vcr.models.some(model => model.id === sessions.first.model && model.url === `http://127.0.0.1:${base + 2}/v1`), 'VS Code provider missed allowlist or route');
+    safeAssert(!JSON.stringify(vcr).match(/api.?key|authorization|must-be-removed/i), 'VS Code provider retained Router credentials');
+    record('one Session Model Allowlist is projected through Codex catalog, Claude discovery, and credential-free VS Code provider');
+
+    await post(app, '/adapter', { client: 'codex', adapter: 'chat' });
+    await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
+    await post(app, '/adapter', { client: 'vscode', adapter: 'chat' });
+    const callStart = router.state.calls.length;
+    await Promise.all([
+      routeRequest(app, 'codex', '/v1/responses', { model: sessions.first.model, input: 'codex', stream: false }),
+      routeRequest(app, 'claude', '/v1/messages', { model: sessions.first.model, messages: [{ role: 'user', content: 'claude' }], max_tokens: 20, stream: false }),
+      routeRequest(app, 'vscode', '/v1/chat/completions', { model: sessions.first.model, messages: [{ role: 'user', content: 'vscode' }], stream: false }),
+    ]);
+    const concurrent = router.state.calls.slice(callStart).map(call => call.pathname).sort();
+    safeAssert(concurrent.filter(value => value === '/v1/chat/completions').length === 2 && concurrent.includes('/v1/messages'), 'Concurrent listeners did not retain per-route adapter selection');
+    for (const route of ['codex', 'claude', 'vscode']) await routeRequest(app, route, route === 'claude' ? '/v1/messages' : route === 'vscode' ? '/v1/chat/completions' : '/v1/responses', route === 'claude' ? { model: 'invalid-model', messages: [], max_tokens: 1 } : route === 'vscode' ? { model: 'invalid-model', messages: [] } : { model: 'invalid-model', input: 'x' }, 409);
+    record('concurrent packaged requests preserve listener-owned route identity, adapter choice, and reject invalid models');
+
+    await switchRoute('vscode', 'native');
+    await Promise.all([
+      routeRequest(app, 'codex', '/v1/responses', { model: sessions.first.model, input: 'still live' }),
+      routeRequest(app, 'vscode', '/v1/chat/completions', { model: sessions.first.model, messages: [] }, 409),
+    ]);
+    await switchRoute('vscode', 'classroom');
+    record('stale VS Code session is rejected while another Client Route remains live');
+
+    await post(app, '/stop');
+    safeAssert(await fs.readFile(box.paths.codex, 'utf8') === personal.codex && await fs.readFile(box.paths.claude, 'utf8') === personal.claude && await fs.readFile(box.paths.vscode, 'utf8') === personal.vscode, 'Stop did not restore personal route settings');
+    safeAssert(JSON.parse(await fs.readFile(box.paths.copilot, 'utf8')).some(provider => provider.marker === 'preserve-provider'), 'Stop removed a personal VS Code provider');
+    await app.stop(); app = undefined; await restart();
+    html = await page(app); for (const client of ['codex', 'claude', 'vscode']) assertHealthyRoute(html, client, 'classroom');
+    record('packaged Stop restores all personal settings before listeners close; restart safely restores saved Classroom routes');
+
+    router.state.offline = true;
+    await post(app, '/reload');
+    html = await page(app);
+    safeAssert(html.includes('保留上次成功的模型清單'), 'Failed refresh did not retain and report the previous allowlist');
+    router.state.offline = false;
+    await routeRequest(app, 'codex', '/v1/responses', { model: sessions.first.model, input: 'retained' });
+    router.state.models = 'empty';
+    await post(app, '/reload');
+    html = await page(app);
+    for (const client of ['codex', 'claude', 'vscode']) assertRoute(html, client, 'green', 'native');
+    safeAssert(await fs.readFile(box.paths.codex, 'utf8') === personal.codex && await fs.readFile(box.paths.claude, 'utf8') === personal.claude && await fs.readFile(box.paths.vscode, 'utf8') === personal.vscode, 'Empty allowlist did not restore personal settings');
+    router.state.models = 'valid'; await post(app, '/reload');
+    for (const client of ['codex', 'claude', 'vscode']) await switchRoute(client, 'classroom');
+    record('failed refresh retains the catalog; authoritative empty allowlist returns all routes to Native');
+
+    await app.stop(); app = undefined;
+    releaseCollision = await occupy(base + 1); await restart();
+    html = await page(app); assertHealthyRoute(html, 'codex', 'classroom'); assertRoute(html, 'claude', 'red', 'native'); assertHealthyRoute(html, 'vscode', 'classroom');
+    await releaseCollision(); releaseCollision = undefined; await post(app, '/reload'); assertRoute(await page(app), 'claude', 'green', 'native');
+    await switchRoute('claude', 'classroom'); await app.stop(); app = undefined;
+    releaseCollision = await occupy(base + 2); await restart();
+    html = await page(app); assertHealthyRoute(html, 'codex', 'classroom'); assertHealthyRoute(html, 'claude', 'classroom'); assertRoute(html, 'vscode', 'red', 'native');
+    await releaseCollision(); releaseCollision = undefined; await post(app, '/reload'); assertRoute(await page(app), 'vscode', 'green', 'native');
+    record('Claude and VS Code port collisions isolate red health and recover Native on Reload');
+
+    await app.stop(); app = undefined;
+    releaseCollision = await occupy(base); await restart();
+    safeAssert(app.url !== app.routeUrl('codex'), 'Base-port collision did not open emergency UI');
+    html = await page(app); assertRoute(html, 'codex', 'red', 'native'); safeAssert((await fetch(app.url + '/v1/responses', { method: 'POST', body: '{}' })).status === 503, 'Emergency UI accepted model traffic');
+    assertHealthyRoute(html, 'claude', 'classroom');
+    await releaseCollision(); releaseCollision = undefined; await post(app, '/reload'); assertRoute(await page(app), 'codex', 'green', 'native');
+    record('base-port collision opens UI-only emergency listener, marks Codex red, and leaves other routes independent');
+
+    await fs.writeFile(box.paths.copilot, JSON.stringify([{ name: 'PersonalProvider', marker: 'preserve-provider' }, { name: 'VCRouter', vendor: 'customendpoint', apiKey: '${input:chat.lm.secret.old}', models: [] }]));
+    await switchRoute('vscode', 'classroom');
+    html = await page(app); assertRoute(html, 'vscode', 'red', 'native'); safeAssert(html.includes('舊擴充'), 'Old-extension conflict lacked remediation');
+    await fs.writeFile(box.paths.copilot, JSON.stringify([{ name: 'PersonalProvider', marker: 'preserve-provider' }])); await post(app, '/reload');
+    assertRoute(await page(app), 'vscode', 'green', 'native');
+    record('old-extension secret provider is never adopted and red-route retry recovers after cleanup');
+
+    await switchRoute('codex', 'classroom'); await switchRoute('claude', 'classroom'); await switchRoute('vscode', 'classroom');
+    locked = await helper('lock-verification-file.ps1', ['-Path', box.paths.claude]); safeAssert(locked.status === 'READY', 'Claude restore lock did not become ready');
+    await post(app, '/clear');
+    html = await page(app); assertRoute(html, 'claude', 'red', 'native'); assertRoute(html, 'codex', 'green', 'native'); assertRoute(html, 'vscode', 'green', 'native');
+    await locked.finish(); locked = undefined; await post(app, '/reload'); assertRoute(await page(app), 'claude', 'green', 'native');
+    safeAssert(await fs.readFile(box.paths.unrelated, 'utf8') === personal.unrelated, 'Unrelated user file changed');
+    safeAssert((await fs.readFile(box.paths.codex, 'utf8')).includes('preserve-codex') && JSON.parse(await fs.readFile(box.paths.claude, 'utf8')).personal_marker === 'preserve-claude' && JSON.parse(await fs.readFile(box.paths.copilot, 'utf8')).some(provider => provider.marker === 'preserve-provider'), 'Personal settings did not survive lifecycle');
+    await assertPrivateDisk(box.root); assertPrivateOutput(app.output());
+    safeAssert(router.state.calls.every(call => !JSON.stringify(call).includes('synthetic-key-')), 'Captured Router traffic retained Classroom API Key');
+    record('partial restore failure is isolated and retryable; switch, Reload, Stop, Clear and restart preserve personal and unrelated files; scans find no Classroom key');
+    return { base, results };
+  } finally {
+    const failures = [];
+    for (const [name, cleanup] of Object.entries({ lock: () => locked?.finish(), collision: () => releaseCollision?.(), app: () => app?.stop(), router: () => router.close(), sandbox: () => box.cleanup(), personalSettings: () => restoreCheck() })) {
+      try { await cleanup(); } catch (error) { failures.push(name + ':' + String(error)); }
+    }
+    if (failures.length) throw new Error('Multi-route cleanup failed: ' + failures.join(', '));
+  }
 }
 
 export async function runLifecycle({ exe }) {
@@ -258,32 +450,33 @@ export async function runLifecycle({ exe }) {
     stopMonitor = await monitorArguments(app);
     await post(app, '/redeem', { invite_code: 'first', nickname: sessions.first.nickname });
     assertSession(await page(app), 'first'); await assertPrivateDisk(box.root); record('redeem: whole-record protected disk and metadata');
-    await post(app, '/switch', { mode: 'classroom' }); safeAssert(selectedMode(await page(app), 'classroom'), 'Classroom mode unavailable after valid allowlist');
+    for (const client of ['codex', 'claude', 'vscode']) await post(app, '/switch', { client, mode: 'classroom' });
+    safeAssert(selectedMode(await page(app), 'classroom'), 'Classroom mode unavailable after valid allowlist');
     const independentCodex = await fs.readFile(box.paths.codex, 'utf8');
     await post(app, '/switch', { client: 'claude', mode: 'native' });
     safeAssert(await fs.readFile(box.paths.codex, 'utf8') === independentCodex, 'Claude switch changed Codex files');
     safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Native Claude failed to restore original CLI settings');
     safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Native Claude failed to restore original VS Code settings');
-    safeAssert(/aria-label="Claude Code API 協定" disabled/.test(await page(app)), 'Native Claude adapter was enabled');
+    safeAssert(!/aria-label="Claude Code API 協定" disabled/.test(await page(app)), 'Healthy Native Claude adapter was disabled');
     await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
-    safeAssert(/value="responses" selected/.test(await page(app)), 'Native adapter selection changed');
+    safeAssert(JSON.parse(await fs.readFile(box.paths.preferences, 'utf8')).routes.claudeCode.adapter === 'messages', 'Native Claude adapter preference was not saved');
     await restart();
     safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Mixed restart rewrote Native Claude settings');
     safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Mixed restart rewrote Native VS Code Claude settings');
     const mixedHtml = await page(app);
-    safeAssert(/aria-label="Claude Code API 協定" disabled/.test(mixedHtml) && !/aria-label="Codex API 協定" disabled/.test(mixedHtml), 'Mixed modes did not restore');
+    safeAssert(!/aria-label="Claude Code API 協定" disabled/.test(mixedHtml) && !/aria-label="Codex API 協定" disabled/.test(mixedHtml), 'Healthy mixed modes did not restore');
     await post(app, '/switch', { client: 'claude', mode: 'classroom' });
     record('independent modes: Claude switch preserves Codex files, adapter gating, mixed restart');
     safeAssert(await proxy(app) === 200, 'Allowed classroom proxy request failed');
-    safeAssert(await proxy(app, 'synthetic-denied-model') === 200, 'Existing disallowed-model substitution behavior changed');
-    safeAssert(router.state.calls.at(-1).model === sessions.first.model, 'Proxy forwarded an out-of-allowlist model');
-    record('proxy: allowed model and substitution never forward denied model');
+    safeAssert(await proxy(app, 'synthetic-denied-model') === 409, 'Out-of-allowlist model was not rejected');
+    record('proxy: allowed model succeeds and denied model is rejected before Router');
     for (const client of ['codex', 'claude']) for (const adapter of client === 'codex' ? ['chat', 'responses'] : ['chat', 'responses', 'messages']) {
       await post(app, '/adapter', { client, adapter });
       for (const stream of [false, true]) {
         const endpoint = client === 'codex' ? '/v1/responses' : '/v1/messages';
         const body = client === 'codex' ? { input: [{ type: 'additional_tools', role: 'developer', tools: [{ type: 'custom', name: 'apply_patch', format: { type: 'text' } }, { type: 'custom', name: 'exec', format: { type: 'text' } }] }, { role: 'user', content: 'hello' }], include: ['reasoning.encrypted_content'], prompt_cache_key: 'synthetic-cache', client_metadata: { thread_id: 'synthetic-thread', future_client_field: { version: 2 } }, access_programs: { cyber: ['standard'] }, future_client_extension: { version: 3 }, reasoning: { effort: 'medium', summary: 'auto', context: { source: 'synthetic-exe' } }, text: { verbosity: 'low' }, stream } : { messages: [{ role: 'user', content: 'hello' }], max_tokens: 100, stream };
-        const response = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model }), signal: AbortSignal.timeout(10000) });
+        const clientUrl = app.routeUrl(client === 'claude' ? 'claude' : 'codex');
+        const response = await fetch(clientUrl + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model }), signal: AbortSignal.timeout(10000) });
         const text = await response.text();
         safeAssert(response.status === 200 && text.includes('synthetic success'), `Packaged ${client}/${adapter}/${stream} failed`);
         safeAssert(!text.includes(sessions.first.key), 'Adapter leaked Classroom key');
@@ -295,7 +488,7 @@ export async function runLifecycle({ exe }) {
           safeAssert(text.includes('"type":"custom_tool_call"') && text.includes('"input":"text(\\"hello\\")"'), 'Packaged Responses did not restore freeform executor');
           safeAssert(!text.includes('response.function_call_arguments'), 'Packaged Responses leaked function arguments events for freeform executor');
           const result = stream ? JSON.parse(text.match(/event: response.completed\ndata: ([^\n]+)/)[1]).response : JSON.parse(text);
-          const next = await fetch(app.url + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model, input: [...body.input, ...result.output, { type: 'custom_tool_call_output', call_id: 'call_exec', output: 'hello' }] }), signal: AbortSignal.timeout(10000) });
+          const next = await fetch(clientUrl + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, model: sessions.first.model, input: [...body.input, ...result.output, { type: 'custom_tool_call_output', call_id: 'call_exec', output: 'hello' }] }), signal: AbortSignal.timeout(10000) });
           safeAssert(next.status === 200, 'Packaged Responses rejected freeform history on the next turn');
           await next.text();
           safeAssert(router.state.calls.at(-1).hasFunctionResult, 'Packaged Responses lost the paired tool result');
@@ -361,6 +554,7 @@ export async function runLifecycle({ exe }) {
     await restart(); assertSession(await page(app), 'first');
     record('real shared-read file lock: replacement/delete fail, old UI/key/mode/restart preserved');
     await post(app, '/redeem', { invite_code: 'second', nickname: sessions.second.nickname }); assertSession(await page(app), 'second');
+    await post(app, '/switch', { client: 'codex', mode: 'classroom' });
     safeAssert(await proxy(app, sessions.second.model) === 200, 'New session did not route with new credential');
     safeAssert(router.state.calls.at(-1).authorizedSession === 'second', 'New proxy kept previous session credential');
     await restart(); assertSession(await page(app), 'second'); await assertPrivateDisk(box.root); record('safe session switch: new identity, allowlist, Router key and restart');
@@ -373,6 +567,7 @@ export async function runLifecycle({ exe }) {
     const migratedPage = await page(app);
     safeAssert(/<form\b[^>]*\baction="\/copy"[^>]*>/i.test(migratedPage), 'Legacy key did not migrate');
     safeAssert(!migratedPage.includes(sessions.first.class_name) && !migratedPage.includes(sessions.first.nickname), 'Legacy migration invented identity');
+    await post(app, '/switch', { client: 'codex', mode: 'classroom' });
     safeAssert(await proxy(app) === 200, 'Migrated legacy credential could not route');
     await assertPrivateDisk(box.root); await restart(); safeAssert(await proxy(app) === 200, 'Migrated key did not survive restart');
     record('legacy success: encrypted replacement, missing metadata stays absent, restart/routes');
@@ -383,11 +578,12 @@ export async function runLifecycle({ exe }) {
     await disconnected(); safeAssert((await page(app)).includes('已移除舊憑證'), 'Failed protect did not show migration result');
     await assertPrivateDisk(box.root);
     await post(app, '/redeem', { invite_code: 'second', nickname: sessions.second.nickname }); assertSession(await page(app), 'second');
-    safeAssert(await proxy(app, sessions.second.model) === 200, 'Fresh temporary connection did not route');
+    await post(app, '/switch', { client: 'codex', mode: 'classroom' });
+    safeAssert(await proxy(app, sessions.second.model) >= 400, 'Temporary connection bypassed failed route-preference persistence');
     await assertPrivateDisk(box.root);
     await restoreAcl(); restoreAcl = undefined;
     await restart(); await disconnected();
-    record('real sandbox create-file denial: migration failure deletes legacy, fresh memory fallback works, no restart recovery');
+    record('real sandbox create-file denial: migration failure deletes legacy, fresh memory connection remains Native, no restart recovery');
     await app.stop();
     await fs.writeFile(box.paths.connection, JSON.stringify({ apiKey: sessions.first.key }));
     lock = await helper('lock-verification-file.ps1', ['-Path', box.paths.connection]); safeAssert(lock.status === 'READY', 'Legacy storage lock did not become ready');
@@ -406,6 +602,7 @@ export async function runLifecycle({ exe }) {
     safeAssert(await fs.readFile(box.paths.connection, 'utf8') === corrupt, 'Unreadable ciphertext was deleted');
     safeAssert(router.state.calls.length === 0, 'Unreadable ciphertext produced a Router credential');
     await post(app, '/redeem', { invite_code: 'second', nickname: sessions.second.nickname }); assertSession(await page(app), 'second');
+    await post(app, '/switch', { client: 'codex', mode: 'classroom' });
     await assertPrivateDisk(box.root); record('unreadable ciphertext: retained, refused, replaced only by successful redeem');
     const ciphertext = await fs.readFile(box.paths.connection, 'utf8');
     await fs.writeFile(box.paths.connection + '.abandoned.tmp', ciphertext);
@@ -443,4 +640,9 @@ export async function runLifecycle({ exe }) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const result = await runLifecycle({ exe: path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/VansPod.exe') }); console.log(JSON.stringify(result, null, 2)); }
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const exe = path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/VansPod.exe');
+  const multiRoute = await runMultiRouteLifecycle({ exe });
+  const secureStorage = await runLifecycle({ exe });
+  console.log(JSON.stringify({ multiRoute, secureStorage }, null, 2));
+}
