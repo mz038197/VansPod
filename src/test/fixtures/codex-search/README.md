@@ -8,4 +8,4 @@
 
 去識別：`body.id`（Codex session id）、`turn_id`、`create_time` 換成固定值。提示文字是取樣時輸入的測試句子，原樣保留。
 
-只有請求。Codex 期待的成功回應格式沒有真實樣本：VansPod 當時回的是 #22 的 400 拒絕。
+只有請求。Codex 期待的成功回應格式沒有真實樣本：VansPod 當時回的是 #22 的 400 拒絕。 回應格式改以 Codex 原始碼為準，見 ADR-0007 的實作紀錄。

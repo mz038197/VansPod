@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import http from "node:http";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
 
@@ -284,6 +286,23 @@ for (const adapter of ["responses", "chat"] as const) test(`Codex ${adapter} pro
     }
   }, adapter === "responses" ? { id: "r", status: "completed", output: [] } : { choices: [{ message: { content: null, tool_calls: [{ id: "call_patch", type: "function", function: { name: "apply_patch", arguments: '{"input":"hello"}' } }] }, finish_reason: "tool_calls" }] });
 });
+
+// Real requests captured from codex-cli (GitHub #23). Tests run from dist/, the samples stay in src/.
+function codexSearchSample(name: string): { path: string; body: { commands: Record<string, unknown> } & Record<string, unknown> } {
+  return JSON.parse(readFileSync(path.join(__dirname, "../../src/test/fixtures/codex-search", `${name}.json`), "utf8"));
+}
+
+async function withSearchRouter(status: number, reply: unknown, run: (url: string, calls: Array<{ path: string; authorization: string | undefined; body: unknown }>) => Promise<void>) {
+  const calls: Array<{ path: string; authorization: string | undefined; body: unknown }> = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = ""; for await (const chunk of req) raw += chunk;
+    calls.push({ path: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(raw) });
+    res.writeHead(status, { "content-type": "application/json" }); res.end(typeof reply === "string" ? reply : JSON.stringify(reply));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  try { const address = server.address(); assert.ok(address && typeof address !== "string"); await run(`http://127.0.0.1:${address.port}`, calls); }
+  finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}
 
 async function withRouter(run: (url: string, calls: Array<{ path: string; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }>) => Promise<void>, reply: unknown) {
   const calls: Array<{ path: string; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> = [];
@@ -743,16 +762,100 @@ test("Chat carries tool result images in a following user message, keeping tool 
   }, { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
 });
 
-test("Codex built-in web search gets a clear classroom refusal and never reaches Router", async () => {
+test("Codex web search becomes a Router search with the Classroom API Key and comes back as a Codex search result", async () => {
+  const sample = codexSearchSample("search-query");
+  const results = [
+    { query: "台中 近期活動", title: "台中爵士音樂節", url: "https://example.com/jazz", text: "十月在市民廣場舉行。" },
+    { query: "台中 近期活動", title: "Taichung Events", url: "https://example.com/events", text: "A list of events this month." },
+  ];
+  for (const adapter of ["chat", "responses"] as const) await withSearchRouter(200, { results }, async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: `${sample.path}?client_version=0.162.1`, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
+    assert.equal(response.status, 200);
+    const reply = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
+    assert.deepEqual(Object.keys(reply).sort(), ["encrypted_output", "output", "results"]);
+    assert.equal(reply.encrypted_output, null);
+    for (const result of results) for (const part of [result.title, result.url, result.text]) assert.ok(reply.output.includes(part), part);
+    assert.deepEqual(reply.results, [
+      { type: "text_result", ref_id: "turn0search0", url: "https://example.com/jazz", title: "台中爵士音樂節", snippet: "十月在市民廣場舉行。" },
+      { type: "text_result", ref_id: "turn0search1", url: "https://example.com/events", title: "Taichung Events", snippet: "A list of events this month." },
+    ]);
+    // Only the query strings leave: not the conversation, the model or the session id.
+    assert.deepEqual(calls, [{ path: "/v1/search", authorization: "Bearer synthetic-key", body: { queries: ["台中 近期活動"] } }]);
+  });
+});
+
+test("Codex web search sends Router only the first three queries and names the commands it left out", async () => {
+  const sample = codexSearchSample("search-query");
+  const body = { ...sample.body, commands: { ...sample.body.commands, search_query: ["一", "二", "三", "四", "五"].map(q => ({ q })), open: [{ ref_id: "https://example.com" }] } };
+  await withSearchRouter(200, { results: [] }, async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+    assert.equal(response.status, 200);
+    const reply = await response.json() as { output: string; results: unknown };
+    assert.match(reply.output, /No web search results/);
+    assert.match(reply.output, /not supported in this classroom session and were not run: open./);
+    assert.deepEqual(reply.results, []);
+    assert.deepEqual(calls.map(call => call.body), [{ queries: ["一", "二", "三"] }]);
+  });
+});
+
+test("Codex web commands other than search_query get a clear unsupported result and never reach Router", async () => {
+  const blank = codexSearchSample("search-query");
+  const samples = [codexSearchSample("open"), codexSearchSample("finance"), { ...blank, body: { ...blank.body, commands: { search_query: [], weather: [{ location: "Taichung" }] } } }];
+  await withSearchRouter(200, { results: [] }, async (routerBaseUrl, calls) => {
+    for (const [index, command] of ["open", "finance", "weather"].entries()) {
+      const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: samples[index].path, apiKey: "synthetic-key", body: JSON.stringify(samples[index].body) }, routerBaseUrl);
+      assert.equal(response.status, 200);
+      const reply = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
+      assert.match(reply.output, /not supported/);
+      assert.ok(reply.output.includes(command), reply.output);
+      assert.match(reply.output, /search_query/);
+      assert.deepEqual([reply.encrypted_output, reply.results], [null, []]);
+    }
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("Codex web search explains each Router failure differently in a result the model can read", async () => {
+  const sample = codexSearchSample("search-query");
+  const error = (code: string | null, type: string, message: string) => ({ error: { message, type, code, param: null } });
+  // Router relays its search provider's HTTP status, so only the error code tells the cases apart.
+  const cases: Array<[string, number, unknown, RegExp]> = [
+    ["disabled", 403, error("web_search_disabled", "invalid_request_error", "此課堂未開放網路搜尋"), /not enabled for this class session/],
+    ["rate limited", 429, error("web_search_rate_limited", "rate_limit_error", "搜尋太頻繁，請稍後再試"), /too many searches/],
+    ["unavailable", 503, error("web_search_unavailable", "server_error", "網路搜尋目前無法使用"), /not available right now/],
+    ["provider 429", 429, error(null, "upstream_error", "Upstream provider error synthetic-key"), /search failed/],
+    ["provider 503", 503, error(null, "upstream_error", "Upstream provider error"), /search failed/],
+    ["not JSON", 502, "<html>bad gateway</html>", /search failed/],
+    ["malformed success", 200, { results: "none" }, /search failed/],
+  ];
+  const outputs = new Map<string, string>();
+  for (const [name, status, reply, expected] of cases) await withSearchRouter(status, reply, async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
+    // A non-2xx reply is fatal to the Codex turn, so the explanation travels as a successful search result.
+    assert.equal(response.status, 200, name);
+    const result = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
+    assert.match(result.output, expected, name);
+    assert.deepEqual([result.encrypted_output, result.results], [null, []], name);
+    assert.doesNotMatch(result.output, /synthetic-key/, name);
+    assert.equal(calls.length, 1, name);
+    outputs.set(name, result.output);
+  });
+  assert.equal(new Set(["disabled", "rate limited", "unavailable", "provider 429"].map(name => outputs.get(name))).size, 4);
+  for (const name of ["provider 503", "not JSON", "malformed success"]) assert.equal(outputs.get(name), outputs.get("provider 429"), name);
+  const disabled = outputs.get("disabled")!;
+  assert.match(disabled, /這堂課沒有開放網路搜尋/);
+  assert.match(disabled, /Do not retry/);
+  assert.match(disabled, /Do not use shell commands/);
+  assert.match(disabled, /tell the user directly/i);
+  assert.doesNotMatch(disabled, /another way|other way|instead|alternative|built-in|其他方式|改用|內建|Codex/i);
+  // Router refused before a connection could be made at all.
+  const unreachable = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, "http://127.0.0.1:1");
+  assert.equal(unreachable.status, 200);
+  assert.equal((await unreachable.json() as { output: string }).output, outputs.get("provider 429"));
+});
+
+test("Codex paths with no adapter are refused by name without contacting Router", async () => {
   for (const adapter of ["chat", "responses"] as const) await withRouter(async (routerBaseUrl, calls) => {
-    const search = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/alpha/search", apiKey: "synthetic-key", body: JSON.stringify({ queries: ["weather"] }) }, routerBaseUrl);
-    assert.equal(search.status, 400);
-    const message = (await search.json() as { error: { message: string } }).error.message;
-    assert.match(message, /課堂模式沒有網路搜尋功能/);
-    assert.match(message, /Do not retry/);
-    assert.match(message, /tell the user directly/i);
-    assert.match(message, /Do not use shell commands/);
-    assert.doesNotMatch(message, /another way|other way|instead|alternative|built-in|其他方式|改用|內建|Codex/i);
     const other = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/responses/compact", apiKey: "synthetic-key", body: "{}" }, routerBaseUrl);
     assert.equal(other.status, 400);
     assert.match((await other.json() as { error: { message: string } }).error.message, /尚未支援所選 adapter：\/v1\/responses\/compact/);
