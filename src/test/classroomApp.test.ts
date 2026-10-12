@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
-import type { ModelOptions } from "../routeFiles";
+import { withVsCodeBaseUrl, withoutVsCodeBaseUrl, anthropicBaseValues, type ModelOptions } from "../routeFiles";
 import type { AdapterSettingsStorage } from "../adapterSettings";
 import {
   ClassroomApp,
@@ -367,6 +367,7 @@ function harness(
   };
   const routeWrites = { codex: 0, claudeTerminal: 0, vsCode: 0 };
   let codexRouteBackup: { url?: unknown } | undefined;
+  let claudeRouteBackup: { terminal?: unknown; vscode?: unknown } | undefined;
   let modelOptions: ModelOptions | null = null;
   const resolvedSession = session ?? { class_name: "Demo", name: "Week 1" };
   const app = new ClassroomApp({
@@ -460,6 +461,27 @@ function harness(
     },
     proxyBaseUrl: PROXY,
     routes: {
+      async setClaudeRoute(classroom, proxyBaseUrl) {
+        if (classroom) {
+          claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: structuredClone(docs.vsCode["claudeCode.environmentVariables"]) };
+          docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
+          docs.vsCode = withVsCodeBaseUrl(docs.vsCode, proxyBaseUrl);
+          routeWrites.claudeTerminal += 1;
+          routeWrites.vsCode += 1;
+        } else {
+          if (docs.claudeTerminal.ANTHROPIC_BASE_URL === proxyBaseUrl) {
+            if (claudeRouteBackup?.terminal !== undefined) docs.claudeTerminal.ANTHROPIC_BASE_URL = claudeRouteBackup.terminal;
+            else delete docs.claudeTerminal.ANTHROPIC_BASE_URL;
+            routeWrites.claudeTerminal += 1;
+          }
+          if (anthropicBaseValues(docs.vsCode["claudeCode.environmentVariables"]).includes(proxyBaseUrl)) {
+            if (claudeRouteBackup?.vscode !== undefined) docs.vsCode["claudeCode.environmentVariables"] = claudeRouteBackup.vscode;
+            else docs.vsCode = withoutVsCodeBaseUrl(docs.vsCode);
+            routeWrites.vsCode += 1;
+          }
+          claudeRouteBackup = undefined;
+        }
+      },
       async setCodexRoute(classroom, proxyBaseUrl) {
         const current = docs.codex.openai_base_url;
         const managed = current === proxyBaseUrl || current === `${proxyBaseUrl}/v1`;
@@ -1606,6 +1628,8 @@ describe("route addresses", () => {
       },
     });
     await app.start();
+    await app.redeem("ABC12345", "Ada");
+    await app.setSwitch("classroom", "claude");
     assert.equal(docs.claudeTerminal.ANTHROPIC_BASE_URL, PROXY);
     assert.equal(docs.claudeTerminal.ANTHROPIC_API_KEY, "sk-ant-keep");
     assert.equal(docs.claudeTerminal.apiKey, "keep-api");
@@ -1634,6 +1658,8 @@ describe("route addresses", () => {
       },
     });
     await app.start();
+    await app.redeem("ABC12345", "Ada");
+    await app.setSwitch("classroom", "claude");
     assert.deepEqual(docs.vsCode["claudeCode.environmentVariables"], {
       OTHER: "stay",
       ANTHROPIC_API_KEY: "sk-ant-keep",
@@ -1681,11 +1707,11 @@ describe("route addresses", () => {
     assert.equal(app.view().mode, "native");
     assert.equal(app.view().modelId, undefined);
     assert.equal(docs.codex.openai_base_url, "https://personal.example/v1");
-    assert.deepEqual(routeWrites, { ...writes, codex: writes.codex + 2 });
+    assert.deepEqual(routeWrites, { ...writes, codex: writes.codex + 2, claudeTerminal: writes.claudeTerminal + 2, vsCode: writes.vsCode + 2 });
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("preserves the personal Codex address when stopping and removes Claude route overrides", async () => {
+  it("preserves the personal Codex address when stopping and preserves personal Claude routes", async () => {
     const previous = "https://user:secret@old.example/v1?key=vcr_sk_secret";
     const { app, docs, proxyStops } = harness(undefined, {
       codex: {
@@ -1712,17 +1738,18 @@ describe("route addresses", () => {
     assert.equal(docs.codex.openai_base_url, previous);
     assert.equal(docs.codex.trust, "always");
     assert.deepEqual(docs.codex.mcp, { server: "local" });
-    assert.equal(Object.hasOwn(docs.claudeTerminal, "ANTHROPIC_BASE_URL"), false);
+    assert.equal(docs.claudeTerminal.ANTHROPIC_BASE_URL, "https://claude.example");
     assert.equal(docs.claudeTerminal.theme, "dark");
     assert.equal(docs.claudeTerminal.ANTHROPIC_API_KEY, "sk-ant-keep");
     assert.deepEqual(docs.vsCode["claudeCode.environmentVariables"], [
       { name: "OTHER", value: "stay" },
+      { name: "ANTHROPIC_BASE_URL", value: "https://claude.example" },
     ]);
     assert.equal(docs.vsCode["editor.fontSize"], 14);
     const written = JSON.stringify(docs);
     assert.equal(written.includes(previous), true);
     assert.equal(written.includes("old.example"), true);
-    assert.equal(written.includes("claude.example"), false);
+    assert.equal(written.includes("claude.example"), true);
     assert.equal(written.includes("secret"), true);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
@@ -1747,7 +1774,7 @@ describe("route addresses", () => {
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("drops ANTHROPIC_BASE_URL from a VS Code environment map and keeps the other entries", async () => {
+  it("preserves personal ANTHROPIC_BASE_URL in a VS Code environment map", async () => {
     const { app, docs } = harness(undefined, {
       vsCode: {
         "claudeCode.environmentVariables": {
@@ -1761,9 +1788,10 @@ describe("route addresses", () => {
     await app.stop();
     assert.deepEqual(docs.vsCode["claudeCode.environmentVariables"], {
       OTHER: "stay",
+      ANTHROPIC_BASE_URL: "https://claude.example",
       ANTHROPIC_API_KEY: "sk-ant-keep",
     });
-    assert.equal(JSON.stringify(docs).includes("claude.example"), false);
+    assert.equal(JSON.stringify(docs).includes("claude.example"), true);
   });
 });
 
@@ -2291,7 +2319,7 @@ describe("close window", () => {
     assert.equal(docs.codex.openai_base_url, undefined);
     assert.equal(docs.codex.trust, "always");
     assert.deepEqual(docs.codex.mcp, { server: "local" });
-    assert.equal(docs.claudeTerminal.ANTHROPIC_BASE_URL, PROXY);
+    assert.equal(docs.claudeTerminal.ANTHROPIC_BASE_URL, undefined);
     assert.equal(docs.claudeTerminal.ANTHROPIC_API_KEY, "sk-ant-keep");
     assert.equal(app.view().connected, false);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
@@ -2742,4 +2770,23 @@ it("Native route restoration failure is controlled and retains the safely commit
   assert.match(h.app.view().notice ?? "", /部分客戶端設定無法恢復/);
   assert.doesNotMatch(h.app.view().notice ?? "", /vcr_sk_nick|重新啟動仍可能恢復 Classroom/);
   await h.app.forward({ client: "codex", model: "later" }); assert.equal(h.sent()[0]?.target, "chatgpt");
+});
+
+it("Native startup leaves personal Claude CLI and VS Code routes untouched", async () => {
+  const h = harness(undefined, { claudeTerminal: { ANTHROPIC_BASE_URL: "https://personal.example", theme: "dark" }, vsCode: { "claudeCode.environmentVariables": [{ name: "ANTHROPIC_BASE_URL", value: "https://personal.example" }, { name: "OTHER", value: "keep" }] } });
+  const original = structuredClone(h.docs);
+  await h.app.start();
+  assert.deepEqual(h.docs.claudeTerminal, original.claudeTerminal);
+  assert.deepEqual(h.docs.vsCode["claudeCode.environmentVariables"], original.vsCode["claudeCode.environmentVariables"]);
+});
+
+it("Native startup recovery failure is visible and can be retried without restarting the app", async () => {
+  let fail = true;
+  const h = harness(undefined, { async setModelOptions(options) { if (fail && !options) throw new Error("synthetic restore failure"); } });
+  await assert.doesNotReject(h.app.start());
+  assert.equal(h.app.view().mode, "native");
+  assert.match(h.app.view().notice ?? "", /恢復|重試/);
+  fail = false;
+  await h.app.setSwitch("native", "claude");
+  assert.equal(h.app.view().notice, undefined);
 });

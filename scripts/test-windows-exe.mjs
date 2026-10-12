@@ -247,7 +247,14 @@ export async function runLifecycle({ exe }) {
     safeAssert(await proxy(app) >= 400, 'Disconnected proxy accepted classroom request');
   };
   try {
+    const personalCodex = await fs.readFile(box.paths.codex, 'utf8');
+    const personalClaude = await fs.readFile(box.paths.claude, 'utf8');
+    const personalVsCode = await fs.readFile(box.paths.vscode, 'utf8');
     await restart();
+    safeAssert(await fs.readFile(box.paths.codex, 'utf8') === personalCodex, 'Native startup changed personal Codex settings');
+    safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Native startup changed personal Claude settings');
+    safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Native startup changed personal VS Code Claude settings');
+    record('Native startup: Codex and Claude CLI/VS Code personal files unchanged');
     stopMonitor = await monitorArguments(app);
     await post(app, '/redeem', { invite_code: 'first', nickname: sessions.first.nickname });
     assertSession(await page(app), 'first'); await assertPrivateDisk(box.root); record('redeem: whole-record protected disk and metadata');
@@ -255,10 +262,14 @@ export async function runLifecycle({ exe }) {
     const independentCodex = await fs.readFile(box.paths.codex, 'utf8');
     await post(app, '/switch', { client: 'claude', mode: 'native' });
     safeAssert(await fs.readFile(box.paths.codex, 'utf8') === independentCodex, 'Claude switch changed Codex files');
+    safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Native Claude failed to restore original CLI settings');
+    safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Native Claude failed to restore original VS Code settings');
     safeAssert(/aria-label="Claude Code API 協定" disabled/.test(await page(app)), 'Native Claude adapter was enabled');
     await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
     safeAssert(/value="responses" selected/.test(await page(app)), 'Native adapter selection changed');
     await restart();
+    safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Mixed restart rewrote Native Claude settings');
+    safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Mixed restart rewrote Native VS Code Claude settings');
     const mixedHtml = await page(app);
     safeAssert(/aria-label="Claude Code API 協定" disabled/.test(mixedHtml) && !/aria-label="Codex API 協定" disabled/.test(mixedHtml), 'Mixed modes did not restore');
     await post(app, '/switch', { client: 'claude', mode: 'classroom' });

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { clientSettingsBackup, optionalText } from "./clientSettingsBackup";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -75,6 +77,12 @@ function isAnthropicBaseEntry(entry: unknown): boolean {
   );
 }
 
+function withoutManagedVsCodeBaseUrl(doc: Record<string, unknown>, proxy: string): Record<string, unknown> {
+  const env = doc[VS_CODE_ENV];
+  if (!Array.isArray(env)) return withoutVsCodeBaseUrl(doc);
+  return { ...doc, [VS_CODE_ENV]: env.filter(entry => !isAnthropicBaseEntry(entry) || !isManagedUrl((entry as { value?: unknown }).value, proxy)) };
+}
+
 function withoutEnvKey(
   doc: Record<string, unknown>,
   key: string,
@@ -101,45 +109,123 @@ export type ModelOptions = {
 };
 
 export function createRouteFiles(paths: RouteFilePaths) {
-  let backup: ModelBackup | undefined;
+  const codexBackup = clientSettingsBackup(path.join(path.dirname(paths.codex), "classroom-codex-settings-backup.json"), {
+    config: { file: paths.codex, restore: restoreTomlFields },
+    cache: { file: path.join(path.dirname(paths.codex), "models_cache.json"), restore: current => current },
+    catalog: { file: path.join(path.dirname(paths.codex), "classroom-catalog.json"), restore: current => current },
+  });
+  const claudeBackup = clientSettingsBackup(path.join(path.dirname(paths.claude), "classroom-claude-settings-backup.json"), {
+    config: { file: paths.claude, restore: restoreJsonFields },
+    vscode: { file: paths.vsCode, restore: restoreJsonFields },
+    gateway: { file: gatewayCachePath(paths.claude), restore: current => current },
+  });
+  async function migrate(proxy: string) {
+    const saved = await readDiskBackup(paths);
+    const route = await optionalText(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"));
+    if (saved && (saved.clients?.codex ?? true) || route !== null) {
+      let original = await readText(paths.codex);
+      const keys: string[] = [];
+      if (saved && (saved.clients?.codex ?? true)) {
+        if (readRootTomlString(original, "model")?.startsWith("VCRouter/")) {
+          original = setTomlField(original, "model", saved.codexModel);
+          keys.push("model");
+        }
+        if (readRootTomlString(original, "model_catalog_json") === path.join(path.dirname(paths.codex), "classroom-catalog.json")) {
+          original = setTomlField(original, "model_catalog_json", saved.catalogPath);
+          keys.push("model_catalog_json");
+        }
+        const cache = parseJsonObject(await readText(path.join(path.dirname(paths.codex), "models_cache.json")));
+        if (Array.isArray(cache?.models) && cache.models.length && cache.models.every(value => String(asRecord(value)?.slug).startsWith("VCRouter/"))) await codexBackup.seed("cache", saved.modelsCache ?? null, []);
+      }
+      if (route !== null) {
+        const value = JSON.parse(route).baseUrl;
+        if (value !== null && typeof value !== "string") throw new Error("Invalid Codex route backup");
+        if (isManagedUrl(readRootTomlString(original, "openai_base_url"), proxy)) {
+          original = setTomlField(original, "openai_base_url", isManagedUrl(value, proxy) ? undefined : value ?? undefined);
+          keys.push("openai_base_url");
+        }
+      }
+      await codexBackup.seed("config", original, keys);
+    }
+    if (saved && (saved.clients?.claude ?? true)) {
+      const current = await readText(paths.claude);
+      const doc = parseJsonObject(current);
+      if (!doc) throw new Error("Invalid Claude settings");
+      const gateway = parseJsonObject(await readText(gatewayCachePath(paths.claude)));
+      const keys: string[] = [];
+      if (isManagedUrl(asRecord(doc.env)?.ANTHROPIC_BASE_URL, proxy)) keys.push("env.ANTHROPIC_BASE_URL");
+      if (isManagedUrl(doc.ANTHROPIC_BASE_URL, proxy)) keys.push("ANTHROPIC_BASE_URL");
+      if (isManagedUrl(gateway?.baseUrl, proxy)) {
+        if (Array.isArray(gateway?.models) && gateway.models.some(value => asRecord(value)?.id === doc.model)) keys.push("model");
+        await claudeBackup.seed("gateway", saved.gateway ?? null, []);
+      }
+      const original = restoreJsonFields(current, personalClaudeText(saved.claudeFile ?? "", proxy), current, keys);
+      await claudeBackup.seed("config", original, keys);
+    }
+    // New durable journals exist before obsolete backup files are removed.
+    if (saved) await fs.rm(backupFile(paths), { force: true });
+    if (route !== null) await fs.rm(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"), { force: true });
+  }
   return {
     async setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void> {
-      const routeBackup = path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json");
+      await migrate(proxyBaseUrl);
       const text = await readText(paths.codex);
-      const current = readRootTomlString(text, "openai_base_url");
-      const managed = (value: string | undefined) => {
-        if (!value) return false;
-        try {
-          return new URL(value).origin === new URL(proxyBaseUrl).origin;
-        } catch {
-          return false;
-        }
-      };
-      const raw = await readOptional(routeBackup);
-      let saved: { baseUrl: string | null } | undefined;
-      if (raw !== undefined) {
-        const parsed = JSON.parse(raw) as { baseUrl?: unknown };
-        if (!parsed || (parsed.baseUrl !== null && typeof parsed.baseUrl !== "string")) {
-          throw new Error("Invalid Codex route backup");
-        }
-        saved = { baseUrl: parsed.baseUrl };
-      }
-      let next: string;
       if (classroom) {
-        if (!saved) {
-          saved = { baseUrl: managed(current) ? null : current ?? null };
-          await writeText(routeBackup, `${JSON.stringify(saved)}\n`);
-        }
-        const url = proxyBaseUrl.endsWith("/v1") ? proxyBaseUrl : `${proxyBaseUrl}/v1`;
-        next = upsertRootTomlString(text, "openai_base_url", url);
+        const original = isManagedUrl(readRootTomlString(text, "openai_base_url"), proxyBaseUrl) ? removeRootTomlKey(text, "openai_base_url") : text;
+        await codexBackup.write("config", upsertRootTomlString(text, "openai_base_url", proxyBaseUrl.replace(/\/$/, "") + "/v1"), ["openai_base_url"], original === text ? undefined : original);
       } else {
-        if (!saved && !managed(current)) return;
-        next = saved?.baseUrl && !managed(saved.baseUrl)
-          ? upsertRootTomlString(text, "openai_base_url", saved.baseUrl)
-          : removeRootTomlKey(text, "openai_base_url");
+        await codexBackup.restore();
+        const current = await readText(paths.codex);
+        let next = current;
+        if (isManagedUrl(readRootTomlString(next, "openai_base_url"), proxyBaseUrl)) next = removeRootTomlKey(next, "openai_base_url");
+        if (readRootTomlString(next, "model")?.startsWith("VCRouter/")) next = removeRootTomlKey(next, "model");
+        if (readRootTomlString(next, "model_catalog_json") === path.join(path.dirname(paths.codex), "classroom-catalog.json")) next = removeRootTomlKey(next, "model_catalog_json");
+        if (next !== current) await writeText(paths.codex, next);
+        const cachePath = path.join(path.dirname(paths.codex), "models_cache.json");
+        const cache = parseJsonObject(await readText(cachePath));
+        if (cache?.fetched_at === "2000-01-01T00:00:00Z" && Array.isArray(cache.models) && cache.models.every(value => String(asRecord(value)?.slug).startsWith("VCRouter/"))) await fs.rm(cachePath, { force: true });
       }
-      if (next !== text) await writeText(paths.codex, next);
-      if (!classroom) await fs.rm(routeBackup, { force: true });
+    },
+    async setClaudeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void> {
+      await migrate(proxyBaseUrl);
+      if (!classroom) {
+        await claudeBackup.restore();
+        const text = await optionalText(paths.claude);
+        if (text !== null) {
+          let next = personalClaudeText(text, proxyBaseUrl);
+          const gateway = parseJsonObject(await readText(gatewayCachePath(paths.claude)));
+          if (isManagedUrl(gateway?.baseUrl, proxyBaseUrl)) {
+            const doc = parseJsonObject(next)!;
+            if (Array.isArray(gateway?.models) && gateway.models.some(value => asRecord(value)?.id === doc.model)) {
+              delete doc.model;
+              next = JSON.stringify(doc, null, 2) + "\n";
+            }
+          }
+          if (next !== text) await writeText(paths.claude, next);
+          if (isManagedUrl(gateway?.baseUrl, proxyBaseUrl)) await fs.rm(gatewayCachePath(paths.claude), { force: true });
+        }
+        const vscode = await optionalText(paths.vsCode);
+        if (vscode !== null) {
+          const doc = parseJsonObject(vscode);
+          if (!doc) throw new Error("Invalid VS Code settings");
+          if (anthropicBaseValues(doc[VS_CODE_ENV]).some(value => isManagedUrl(value, proxyBaseUrl))) {
+            await writeText(paths.vsCode, JSON.stringify(withoutManagedVsCodeBaseUrl(doc, proxyBaseUrl), null, 2) + "\n");
+          }
+        }
+        return;
+      }
+      const text = await readText(paths.claude);
+      const doc = parseJsonObject(text);
+      if (!doc) throw new Error("Invalid Claude settings");
+      const env = { ...(asRecord(doc.env) ?? {}), ANTHROPIC_BASE_URL: proxyBaseUrl };
+      const next = replaceJsonProperty(text, "env", env);
+      const personal = personalClaudeText(text, proxyBaseUrl);
+      await claudeBackup.write("config", next, ["env.ANTHROPIC_BASE_URL"], personal === text ? undefined : personal);
+      const vscode = await readText(paths.vsCode);
+      const vsDoc = parseJsonObject(vscode);
+      if (!vsDoc) throw new Error("Invalid VS Code settings");
+      const original = anthropicBaseValues(vsDoc[VS_CODE_ENV]).some(value => isManagedUrl(value, proxyBaseUrl)) ? JSON.stringify(withoutManagedVsCodeBaseUrl(vsDoc, proxyBaseUrl), null, 2) + "\n" : vscode;
+      await claudeBackup.write("vscode", replaceJsonProperty(vscode, VS_CODE_ENV, withVsCodeBaseUrl(vsDoc, proxyBaseUrl)[VS_CODE_ENV]), ["vscodeBase"], original === vscode ? undefined : original);
     },
     async readCodex(): Promise<Record<string, unknown>> {
       const url = readRootTomlString(await readText(paths.codex), "openai_base_url");
@@ -198,40 +284,24 @@ export function createRouteFiles(paths: RouteFilePaths) {
     },
     async setModelOptions(options: ModelOptions | null): Promise<void> {
       if (!options) {
-        await restoreModelOptions(paths, backup);
-        backup = undefined;
+        await codexBackup.restore();
+        await claudeBackup.restore();
         return;
       }
+      await migrate(options.proxyBaseUrl);
       const clients = options.clients ?? { codex: true, claude: true };
-      backup ??= await readDiskBackup(paths);
-      const active = backup ? backup.clients ?? { codex: true, claude: true } : { codex: false, claude: false };
-      const current = await captureModelBackup(paths);
-      backup ??= { clients: { codex: false, claude: false } };
-      if (clients.codex && !active.codex) {
-        backup.codexModel = current.codexModel;
-        backup.catalogPath = current.catalogPath;
-        backup.modelsCache = current.modelsCache;
-      }
-      if (clients.claude && !active.claude) {
-        backup.claudeFile = current.claudeFile;
-        backup.gateway = current.gateway;
-      }
-      // Record newly managed files before touching them, so a partial write can be restored.
-      backup.clients = { codex: active.codex || clients.codex, claude: active.claude || clients.claude };
-      await writeText(backupFile(paths), `${JSON.stringify(backup)}\n`);
-      await restoreModelOptions(paths, backup, { codex: active.codex && !clients.codex, claude: active.claude && !clients.claude });
-      backup.clients = clients;
-      await writeText(backupFile(paths), `${JSON.stringify(backup)}\n`);
+      if (!clients.codex) await codexBackup.restore();
+      if (!clients.claude) await claudeBackup.restore();
       if (clients.codex && options.updateClient !== "claude") {
         const catalogPath = path.join(path.dirname(paths.codex), "classroom-catalog.json");
         const cachePath = path.join(path.dirname(paths.codex), "models_cache.json");
         const liveCache = await readOptional(cachePath);
-        const template = pickTemplate(liveCache) ?? pickTemplate(backup.modelsCache);
+        const template = pickTemplate(liveCache);
         const models = catalogModels(options.ids, template);
         const selected = catalogSlug(options.codexModel);
-        await writeText(catalogPath, `${JSON.stringify({ models }, null, 2)}\n`);
-        await writeText(
-          cachePath,
+        await codexBackup.write("catalog", `${JSON.stringify({ models }, null, 2)}\n`, []);
+        await codexBackup.write(
+          "cache",
           `${JSON.stringify(
             {
               fetched_at: "2000-01-01T00:00:00Z",
@@ -241,21 +311,25 @@ export function createRouteFiles(paths: RouteFilePaths) {
             null,
             2,
           )}\n`,
+          [],
         );
         let toml = await readText(paths.codex);
         toml = upsertRootTomlString(toml, "model_catalog_json", catalogPath);
         toml = upsertRootTomlString(toml, "model", selected);
-        await writeText(paths.codex, toml);
+        await codexBackup.write("config", toml, ["model", "model_catalog_json"]);
       }
       if (clients.claude && options.updateClient !== "codex") {
-        await writeClaudeModel(paths.claude, options.claudeModel);
-        await writeText(
-          gatewayCachePath(paths.claude),
+        const text = await readText(paths.claude);
+        if (!parseJsonObject(text)) throw new Error("Invalid Claude settings");
+        await claudeBackup.write("config", replaceJsonProperty(text, "model", options.claudeModel), ["model"]);
+        await claudeBackup.write(
+          "gateway",
           `${JSON.stringify({
             baseUrl: options.proxyBaseUrl,
             fetchedAt: 0,
             models: options.ids.map((id) => ({ id, display_name: id })),
           })}\n`,
+          [],
         );
       }
       if (options.restartCodex && clients.codex && options.updateClient !== "claude") {
@@ -273,6 +347,71 @@ type ModelBackup = {
   claudeFile?: string;
   gateway?: string;
 };
+
+function isManagedUrl(value: unknown, proxy: string): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const origin = new URL(value).origin;
+    return origin === new URL(proxy).origin || origin === "http://127.0.0.1:47821";
+  } catch { return false; }
+}
+
+function setTomlField(text: string, key: string, value: string | undefined): string {
+  return value === undefined ? removeRootTomlKey(text, key) : upsertRootTomlString(text, key, value);
+}
+
+function restoreTomlFields(current: string, original: string, written: string, keys: string[]): string {
+  return keys.reduce((text, key) => readRootTomlString(text, key) === readRootTomlString(written, key)
+    ? setTomlField(text, key, readRootTomlString(original, key)) : text, current);
+}
+
+function personalClaudeText(text: string, proxy: string): string {
+  const doc = parseJsonObject(text);
+  if (!doc) throw new Error("Invalid Claude settings");
+  const env = asRecord(doc.env);
+  if (!isManagedUrl(env?.ANTHROPIC_BASE_URL, proxy) && !isManagedUrl(doc.ANTHROPIC_BASE_URL, proxy)) return text;
+  if (env && isManagedUrl(env.ANTHROPIC_BASE_URL, proxy)) {
+    delete env.ANTHROPIC_BASE_URL;
+    if (!Object.keys(env).length) delete doc.env;
+  }
+  if (isManagedUrl(doc.ANTHROPIC_BASE_URL, proxy)) delete doc.ANTHROPIC_BASE_URL;
+  return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function restoreJsonFields(current: string, original: string, written: string, keys: string[]): string {
+  const doc = parseJsonObject(current), before = parseJsonObject(original), managed = parseJsonObject(written);
+  if (!doc || !before || !managed) throw new Error("Invalid client settings during restore");
+  let changed = false;
+  for (const key of keys) {
+    if (key === "vscodeBase") {
+      if (!isDeepStrictEqual(anthropicBaseValues(doc[VS_CODE_ENV]), anthropicBaseValues(managed[VS_CODE_ENV]))) continue;
+      const env = doc[VS_CODE_ENV], previous = before[VS_CODE_ENV];
+      if (Array.isArray(env)) {
+        const bases = Array.isArray(previous) ? previous.filter(isAnthropicBaseEntry)
+          : asRecord(previous)?.ANTHROPIC_BASE_URL === undefined ? [] : [{ name: "ANTHROPIC_BASE_URL", value: asRecord(previous)?.ANTHROPIC_BASE_URL }];
+        doc[VS_CODE_ENV] = [...env.filter(entry => !isAnthropicBaseEntry(entry)), ...bases];
+      } else if (asRecord(env)) {
+        const value = Array.isArray(previous) ? (previous.find(isAnthropicBaseEntry) as { value?: unknown } | undefined)?.value : asRecord(previous)?.ANTHROPIC_BASE_URL;
+        const next = { ...asRecord(env) };
+        if (value === undefined) delete next.ANTHROPIC_BASE_URL;
+        else next.ANTHROPIC_BASE_URL = value;
+        doc[VS_CODE_ENV] = next;
+      }
+      changed = true;
+    } else if (key === "env.ANTHROPIC_BASE_URL") {
+      const env = asRecord(doc.env), old = asRecord(before.env), expected = asRecord(managed.env);
+      if (!env || !isDeepStrictEqual(env.ANTHROPIC_BASE_URL, expected?.ANTHROPIC_BASE_URL)) continue;
+      if (old?.ANTHROPIC_BASE_URL === undefined) delete env.ANTHROPIC_BASE_URL;
+      else env.ANTHROPIC_BASE_URL = old.ANTHROPIC_BASE_URL;
+      if (!Object.keys(env).length) delete doc.env;
+      changed = true;
+    } else if (isDeepStrictEqual(doc[key], managed[key])) {
+      if (before[key] === undefined) delete doc[key]; else doc[key] = before[key];
+      changed = true;
+    }
+  }
+  return changed ? JSON.stringify(doc, null, 2) + "\n" : current;
+}
 
 function gatewayCachePath(claudeSettings: string): string {
   return path.join(path.dirname(claudeSettings), "cache", "gateway-models.json");
@@ -435,24 +574,7 @@ function restartCodexAppServers(): Promise<void> {
 }
 
 async function readOptional(file: string): Promise<string | undefined> {
-  try {
-    return await fs.readFile(file, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-async function captureModelBackup(paths: RouteFilePaths): Promise<ModelBackup> {
-  const toml = await readText(paths.codex);
-  return {
-    codexModel: readRootTomlString(toml, "model"),
-    catalogPath: readRootTomlString(toml, "model_catalog_json"),
-    modelsCache: await readOptional(
-      path.join(path.dirname(paths.codex), "models_cache.json"),
-    ),
-    claudeFile: await readOptional(paths.claude),
-    gateway: await readOptional(gatewayCachePath(paths.claude)),
-  };
+  return (await optionalText(file)) ?? undefined;
 }
 
 function backupFile(paths: RouteFilePaths): string {
@@ -473,63 +595,8 @@ async function readDiskBackup(
   return parsed as ModelBackup;
 }
 
-async function writeClaudeModel(file: string, model: string): Promise<void> {
-  const text = await readText(file);
-  const next =
-    text.trim() === ""
-      ? `${JSON.stringify({ model }, null, 2)}\n`
-      : replaceJsonProperty(text, "model", model);
-  await writeText(file, next.endsWith("\n") ? next : `${next}\n`);
-}
-
-async function restoreBackedFile(
-  file: string,
-  contents: string | undefined,
-): Promise<void> {
-  if (contents === undefined) {
-    await fs.rm(file, { force: true });
-    return;
-  }
-  await writeText(file, contents);
-}
-
-async function restoreModelOptions(
-  paths: RouteFilePaths,
-  backup: ModelBackup | undefined,
-  clients?: { codex: boolean; claude: boolean },
-): Promise<void> {
-  const saved = backup ?? (await readDiskBackup(paths));
-  if (!saved) {
-    return;
-  }
-  const restore = clients ?? saved.clients ?? { codex: true, claude: true };
-  if (restore.codex) {
-    let toml = await readText(paths.codex);
-    toml = saved.catalogPath
-      ? upsertRootTomlString(toml, "model_catalog_json", saved.catalogPath)
-      : removeRootTomlKey(toml, "model_catalog_json");
-    toml = saved.codexModel
-      ? upsertRootTomlString(toml, "model", saved.codexModel)
-      : removeRootTomlKey(toml, "model");
-    await writeText(paths.codex, toml);
-    await restoreBackedFile(
-      path.join(path.dirname(paths.codex), "models_cache.json"),
-      saved.modelsCache,
-    );
-  }
-  if (restore.claude) {
-    await restoreBackedFile(paths.claude, saved.claudeFile);
-    await restoreBackedFile(gatewayCachePath(paths.claude), saved.gateway);
-  }
-  if (!clients) await fs.rm(backupFile(paths), { force: true });
-}
-
 async function readText(file: string): Promise<string> {
-  try {
-    return await fs.readFile(file, "utf8");
-  } catch {
-    return "";
-  }
+  return (await optionalText(file)) ?? "";
 }
 
 async function writeText(file: string, text: string): Promise<void> {

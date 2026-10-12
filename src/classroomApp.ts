@@ -11,8 +11,6 @@ import type { CommandResult } from "./commandRunner";
 import {
   VS_CODE_ENV,
   anthropicBaseValues,
-  withVsCodeBaseUrl,
-  withoutVsCodeBaseUrl,
   type ModelOptions,
 } from "./routeFiles";
 
@@ -86,6 +84,7 @@ export type ClassroomAppDeps = {
   proxyBaseUrl: string;
   routes: {
     setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
+    setClaudeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
     readCodex(): Promise<Record<string, unknown>>;
     writeCodex(doc: Record<string, unknown>): Promise<void>;
     readClaudeTerminal(): Promise<Record<string, unknown>>;
@@ -537,12 +536,14 @@ export class ClassroomApp {
       updateClient,
     };
     if (updateClient !== "claude") await this.deps.routes.setCodexRoute(this.clientModes.codex === "classroom", this.deps.proxyBaseUrl);
+    if (updateClient !== "codex") await this.deps.routes.setClaudeRoute(this.clientModes.claude === "classroom", this.deps.proxyBaseUrl);
     await this.deps.routes.setModelOptions(options);
   }
 
   private async restoreModelOptions(): Promise<void> {
-    await this.deps.routes.setModelOptions(null);
     await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
+    await this.deps.routes.setClaudeRoute(false, this.deps.proxyBaseUrl);
+    await this.deps.routes.setModelOptions(null);
   }
 
   prepare(actionId: string): void {
@@ -710,7 +711,7 @@ export class ClassroomApp {
       return;
     }
     const previous = { ...this.clientModes };
-    if (previous[client] === mode) return;
+    if (previous[client] === mode && mode !== "native") return;
     const next = { ...previous, [client]: mode };
     const aggregate = Object.values(next).includes("classroom") ? "classroom" : "native";
     if (!await this.saveMode(aggregate, next)) return;
@@ -719,6 +720,7 @@ export class ClassroomApp {
     this.modelNotice.delete(client);
     try {
       await this.publishModelOptions(client);
+      this.notice = undefined;
       if (!this.modelRestart.includes(client)) this.modelRestart.push(client);
       this.adapterNotice = undefined;
     } catch {
@@ -915,11 +917,6 @@ export class ClassroomApp {
       claude.ANTHROPIC_BASE_URL,
       ...anthropicBaseValues(vsCode[VS_CODE_ENV]),
     ]);
-    await this.deps.routes.writeClaudeTerminal({
-      ...claude,
-      ANTHROPIC_BASE_URL: url,
-    });
-    await this.deps.routes.writeVsCodeClaude(withVsCodeBaseUrl(vsCode, url));
     const doc = await this.deps.copilot.read();
     const providers = Array.isArray(doc.providers) ? doc.providers : [];
     const already = providers.some((provider) => provider?.name === "VCRouter");
@@ -933,10 +930,12 @@ export class ClassroomApp {
       this.noteRestart("claude");
       this.routeRestartNoted = true;
     }
-    if (this.mode === "classroom") {
-      await this.publishModelOptions();
-    } else {
-      await this.restoreModelOptions();
+    try {
+      if (this.mode === "classroom") await this.publishModelOptions();
+      else await this.restoreModelOptions();
+    } catch {
+      this.mode = "native";
+      this.notice = "無法完成客戶端設定恢復。備份已保留，請重試切換個人模式。";
     }
     if (!already) {
       await this.deps.copilot.write({
@@ -985,12 +984,6 @@ export class ClassroomApp {
   private async stopNow(): Promise<void> {
     this.proxyRunning = false;
     this.deps.proxy.stop();
-    const claude = await this.deps.routes.readClaudeTerminal();
-    const vsCode = await this.deps.routes.readVsCodeClaude();
-    await this.deps.routes.writeClaudeTerminal(
-      withoutKey(claude, "ANTHROPIC_BASE_URL"),
-    );
-    await this.deps.routes.writeVsCodeClaude(withoutVsCodeBaseUrl(vsCode));
     await this.restoreModelOptions();
   }
 
@@ -1095,15 +1088,6 @@ function previousHosts(proxyBaseUrl: string, values: unknown[]): string[] {
     }
   }
   return hosts;
-}
-
-function withoutKey(
-  doc: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> {
-  const next = { ...doc };
-  delete next[key];
-  return next;
 }
 
 function environmentInstallSucceeded(result: {

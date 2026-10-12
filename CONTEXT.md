@@ -37,7 +37,7 @@ _Avoid_: 在畫面上展示 API Key、只顯示學生暱稱而稱為課堂名稱
 _Avoid_: Router Model Template 全集、App 內建模型表、把 Allowlist 塞進 Course Catalog
 
 **Model Switch**:
-每個客戶端各自的本機開關，讓 Codex 與 Claude Code 獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個客戶端不改變另一個。
+每個客戶端各自的本機開關，讓 Codex 與 Claude Code 獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個客戶端不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該客戶端原有的個人設定。
 _Avoid_: 全域強制一起切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
 
 **Model API Adapter**:
