@@ -770,8 +770,16 @@ export class ClassroomApp {
     this.connectionDraft = undefined;
     this.notice = undefined;
     // Storage is committed: publish its identity before any client-file operation can fail.
+    if (desiredVsCodeMode === "classroom") {
+      try { await this.deps.vsCodeRouteSettings?.restore(); }
+      catch {
+        this.clientRoutes.vsCodeChat.health = "red";
+        try { await this.saveClientRoutePreferences(); } catch { /* Native/red remains authoritative in memory. */ }
+        this.notice = this.connectionNotice = "新課堂連線已建立，但無法恢復 VS Code 的 Native 設定。備份已保留，請稍後再試。";
+        return;
+      }
+    }
     try {
-      if (desiredVsCodeMode === "classroom") await this.deps.vsCodeRouteSettings?.restore();
       await this.restoreModelOptions();
     } catch {
       this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
@@ -1110,7 +1118,9 @@ export class ClassroomApp {
       this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "gray", restart: "ready" };
       return;
     }
-    const alreadyRunning = this.vsCodeOrigin !== undefined && (runtime.current?.("vsCodeChat")?.health ?? "green") === "green";
+    const alreadyRunning = this.vsCodeOrigin !== undefined &&
+      (this.clientRoutes.vsCodeChat.health === "green" || this.clientRoutes.vsCodeChat.health === "yellow") &&
+      (runtime.current?.("vsCodeChat")?.health ?? "green") === "green";
     let started;
     try { started = await runtime.start("vsCodeChat"); }
     catch {
