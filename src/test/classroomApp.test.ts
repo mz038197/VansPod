@@ -5,6 +5,7 @@ import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
 import { withVsCodeBaseUrl, withoutVsCodeBaseUrl, anthropicBaseValues, type ModelOptions } from "../routeFiles";
 import type { AdapterSettingsStorage } from "../adapterSettings";
+import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -318,6 +319,7 @@ function harness(
   options?: {
     detectClient?: (client: "codex" | "claude") => Promise<boolean>;
     adapterSettings?: AdapterSettingsStorage;
+    clientRouteSettings?: ClientRouteSettingsStorage;
     storage?: ConnectionStorage;
     send?: (upstream: UpstreamSend) => Promise<void>;
     redeemError?: Error;
@@ -373,6 +375,7 @@ function harness(
   const app = new ClassroomApp({
     detectClient: options?.detectClient,
     adapterSettings: options?.adapterSettings,
+    clientRouteSettings: options?.clientRouteSettings,
     router: {
       async redeemNickname(body) {
         redeemCalls.push(body);
@@ -615,6 +618,57 @@ it("adapter selections default to Responses, remain independent, and survive red
   const restarted = harness(undefined, { adapterSettings }); await restarted.app.start();
   assert.deepEqual(restarted.app.view().adapters, { codex: "chat", claude: "messages" });
   await assert.rejects(restarted.app.setAdapter("codex", "messages"), /Codex/);
+});
+
+it("publishes independent Client Route defaults without changing legacy routing state", () => {
+  const { app } = harness();
+  assert.deepEqual(app.view().clientRoutes, {
+    codex: { id: "codex", mode: "native", adapter: "responses", health: "gray", restart: "ready" },
+    claudeCode: { id: "claudeCode", mode: "native", adapter: "responses", health: "gray", restart: "ready" },
+    vsCodeChat: { id: "vsCodeChat", mode: "native", adapter: "responses", health: "gray", restart: "ready" },
+  });
+  assert.deepEqual(app.view().clientModes, { codex: "native", claude: "native" });
+});
+
+it("does not copy a legacy combined Classroom mode into the separated Client Routes", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  await storage.setConnection({
+    version: 1,
+    apiKey: KEY,
+    session: { class_name: "Saved" },
+    mode: "classroom",
+  });
+  const { app } = harness(undefined, { storage });
+
+  await app.start();
+
+  assert.equal(app.view().mode, "classroom");
+  assert.deepEqual(Object.fromEntries(
+    Object.entries(app.view().clientRoutes ?? {}).map(([id, route]) => [id, route.mode]),
+  ), { codex: "native", claudeCode: "native", vsCodeChat: "native" });
+});
+
+it("publishes persisted separated Client Route state without changing legacy routing", async () => {
+  const clientRouteSettings: ClientRouteSettingsStorage = {
+    async load() {
+      return {
+        codex: { mode: "classroom", adapter: "chat" },
+        claudeCode: { mode: "native", adapter: "messages" },
+        vsCodeChat: { mode: "classroom", adapter: "chat" },
+      };
+    },
+    async save() {},
+  };
+  const { app } = harness(undefined, { clientRouteSettings });
+
+  await app.start();
+
+  assert.deepEqual(app.view().clientRoutes, {
+    codex: { id: "codex", mode: "classroom", adapter: "chat", health: "gray", restart: "ready" },
+    claudeCode: { id: "claudeCode", mode: "native", adapter: "messages", health: "gray", restart: "ready" },
+    vsCodeChat: { id: "vsCodeChat", mode: "classroom", adapter: "chat", health: "gray", restart: "ready" },
+  });
+  assert.deepEqual(app.view().clientModes, { codex: "native", claude: "native" });
 });
 
 it("routes each client independently and restores mixed modes after restart", async () => {

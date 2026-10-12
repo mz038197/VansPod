@@ -3,6 +3,11 @@ import { StorageError } from "./storageErrors";
 import { defaultAdapters, isAdapterChoice, type AdapterSettings, type AdapterSettingsStorage } from "./adapterSettings";
 import type { AdapterClient, AdapterId } from "./adapters";
 import {
+  defaultClientRoutes,
+  type ClientRoutes,
+  type ClientRouteSettingsStorage,
+} from "./clientRoutes";
+import {
   parseCourseCatalog,
   type InstallAction,
   type LessonSnippet,
@@ -47,6 +52,7 @@ export type CopilotDocument = {
 export type ClassroomAppDeps = {
   detectClient?(client: AdapterClient): Promise<boolean>;
   adapterSettings?: AdapterSettingsStorage;
+  clientRouteSettings?: ClientRouteSettingsStorage;
   router: {
     redeemNickname(body: {
       invite_code: string;
@@ -176,6 +182,7 @@ export type ClassroomAppView = {
   installedActionIds?: string[];
   mode: ModelSwitchMode;
   clientModes?: ClientModes;
+  clientRoutes?: ClientRoutes;
   detectedClients?: Record<AdapterClient, boolean>;
   allowedModels?: string[];
   modelId?: string;
@@ -195,6 +202,7 @@ const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一�
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private adapters = defaultAdapters();
+  private clientRoutes = defaultClientRoutes();
   private adapterNotice: string | undefined;
   private readonly hiddenKeys = new Set<string>();
   private initialization: Promise<void> | undefined;
@@ -260,6 +268,7 @@ export class ClassroomApp {
       commandRunning: this.commandRunning,
       mode: this.mode,
       clientModes: { ...this.clientModes },
+      clientRoutes: this.clientRouteView(),
       detectedClients: { ...this.detectedClients },
       allowedModels: [...this.modelIds],
       adapters: { ...this.adapters },
@@ -325,6 +334,14 @@ export class ClassroomApp {
       rendered = rendered.split(JSON.stringify(key).slice(1, -1)).join("[redacted]");
     }
     return JSON.parse(rendered) as ClassroomAppView;
+  }
+
+  private clientRouteView(): ClientRoutes {
+    return {
+      codex: { ...this.clientRoutes.codex },
+      claudeCode: { ...this.clientRoutes.claudeCode },
+      vsCodeChat: { ...this.clientRoutes.vsCodeChat },
+    };
   }
 
   async checkEnvironment(): Promise<void> {
@@ -903,6 +920,18 @@ export class ClassroomApp {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
         catch { this.adapterNotice = "無法讀取 adapter 設定，目前使用 Responses 預設值。"; }
+      }
+      if (this.deps.clientRouteSettings) {
+        try {
+          const settings = await this.deps.clientRouteSettings.load();
+          this.clientRoutes = {
+            codex: { ...this.clientRoutes.codex, ...settings.codex },
+            claudeCode: { ...this.clientRoutes.claudeCode, ...settings.claudeCode },
+            vsCodeChat: { ...this.clientRoutes.vsCodeChat, ...settings.vsCodeChat },
+          };
+        } catch {
+          this.clientRoutes = defaultClientRoutes();
+        }
       }
       await this.restoreConnection();
       await this.detectClients();

@@ -25,6 +25,7 @@ import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody } from "./responsesChat";
 import { createAdapterSettingsStorage } from "./adapterSettings";
+import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { sendRouter, relayResponse } from "./modelProxy";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -515,9 +516,11 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
 
 async function main(): Promise<void> {
   const routeFiles = createRouteFiles(routePaths());
+  const settingsFile = path.join(os.homedir(), ".vanspod", "settings.json");
   const app = new ClassroomApp({
     detectClient,
-    adapterSettings: createAdapterSettingsStorage(path.join(os.homedir(), ".vanspod", "settings.json")),
+    adapterSettings: createAdapterSettingsStorage(settingsFile),
+    clientRouteSettings: createClientRouteSettingsStorage(settingsFile),
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
     projectFiles: { readClassroomInstalls },
