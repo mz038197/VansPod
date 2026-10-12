@@ -23,4 +23,4 @@ npm start
 
 協定轉換參考官方 [Chat API](https://developers.openai.com/api/reference/resources/chat)、[Responses API](https://developers.openai.com/api/reference/resources/responses) 與 [Claude 串流事件](https://platform.claude.com/docs/en/build-with-claude/streaming)。
 
-驗證指令：`npm run typecheck`、`npm test`、`npm run test:windows-exe`。Windows 驗證使用隔離設定與模擬 Router，涵蓋五條 JSON／SSE 路徑及偏好重啟保存；通過不表示實際 Router 或模型已完成端到端驗證。
+驗證指令：`npm run typecheck`、`npm test`、`npm run test:windows-exe`。Windows 驗證使用隔離的合成 USERPROFILE／APPDATA 與模擬 Router，涵蓋三個 Client Route、47821～47823／自訂 base port、port collision、獨立模式與 adapter、client-native catalog、失敗恢復，以及五條 JSON／SSE adapter 路徑；測試前後亦確認真實使用者設定未變。通過不表示實際 Router 或模型已完成端到端驗證。
