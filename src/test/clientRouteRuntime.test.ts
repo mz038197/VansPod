@@ -47,6 +47,25 @@ it("assigns Claude Code identity from its own listener regardless of request hin
   assert.equal(await response.text(), "claudeCode");
 });
 
+it("assigns VS Code Chat identity from its accepting listener regardless of request hints", async () => {
+  const runtime = createClientRouteRuntime({
+    basePort: 0,
+    async handle(accepted, _request, response) {
+      response.end(accepted.route ?? "ui-only");
+    },
+  });
+  runtimes.push(runtime);
+
+  const started = await runtime.start("vsCodeChat");
+  const response = await fetch(`${started.origin}/v1/responses`, {
+    method: "POST",
+    headers: { "user-agent": "codex", authorization: "Bearer misleading" },
+  });
+
+  assert.equal(started.health, "green");
+  assert.equal(await response.text(), "vsCodeChat");
+});
+
 it("reports only Claude Code red when its base-port-plus-one listener is occupied", async () => {
   const occupied = http.createServer((_request, response) => response.end("occupied"));
   await new Promise<void>((resolve, reject) => {

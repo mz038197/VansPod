@@ -8,6 +8,8 @@ import {
   type ClientRouteSettingsStorage,
 } from "./clientRoutes";
 import type { ClientRouteRuntime } from "./clientRouteRuntime";
+import type { VsCodeProvider, VsCodeRouteSettings } from "./vsCodeRouteSettings";
+import { isDeepStrictEqual } from "node:util";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -32,6 +34,7 @@ export type NicknameRedeemResult = {
 
 export type ModelSwitchMode = "native" | "classroom";
 export type ClientModes = Record<AdapterClient, ModelSwitchMode>;
+type ClientControl = AdapterClient | "vscode";
 
 export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
 
@@ -51,16 +54,17 @@ export type CopilotDocument = {
 };
 
 export type ClassroomAppDeps = {
-  detectClient?(client: AdapterClient): Promise<boolean>;
+  detectClient?(client: AdapterClient | "vsCodeChat"): Promise<boolean>;
   adapterSettings?: AdapterSettingsStorage;
   clientRouteSettings?: ClientRouteSettingsStorage;
   clientRouteRuntime?: ClientRouteRuntime;
+  vsCodeRouteSettings?: VsCodeRouteSettings;
   router: {
     redeemNickname(body: {
       invite_code: string;
       nickname: string;
     }): Promise<NicknameRedeemResult>;
-    fetchSessionModels(apiKey: string): Promise<string[]>;
+    fetchSessionModels(apiKey: string): Promise<string[] | VsCodeProvider[]>;
   };
   catalog: {
     fetchCourseCatalog(
@@ -233,13 +237,14 @@ export class ClassroomApp {
   private commandRunning = false;
   private commandSucceeded: boolean | undefined;
   private clientModes: ClientModes = { codex: "native", claude: "native" };
-  private detectedClients = { codex: false, claude: false };
+  private detectedClients = { codex: false, claude: false, vsCodeChat: false };
   // Legacy shared operations still reset both clients; aggregate mode keeps old connections readable.
   private get mode(): ModelSwitchMode {
     return Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
   }
   private set mode(mode: ModelSwitchMode) { this.clientModes = { codex: mode, claude: mode }; }
   private modelIds: string[] = [];
+  private modelProviders: VsCodeProvider[] = [];
   private environmentInstalled: Record<EnvironmentToolId, boolean> = {
     uv: false,
     git: false,
@@ -252,6 +257,7 @@ export class ClassroomApp {
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
   private routeRestartNoted = false;
+  private vsCodeOrigin: string | undefined;
   private sending = new Map<ProxyClient, string>();
   private modelNotice = new Set<ProxyClient>();
 
@@ -273,7 +279,7 @@ export class ClassroomApp {
       mode: this.mode,
       clientModes: { ...this.clientModes },
       clientRoutes: this.clientRouteView(),
-      detectedClients: { ...this.detectedClients },
+      detectedClients: { codex: this.detectedClients.codex, claude: this.detectedClients.claude },
       allowedModels: [...this.modelIds],
       adapters: { ...this.adapters },
       adapterNotice: this.adapterNotice,
@@ -441,6 +447,10 @@ export class ClassroomApp {
       route.health = "green";
       route.restart = "ready";
     }
+    if (this.deps.clientRouteRuntime && request.client === "copilot" && this.clientRoutes.vsCodeChat.mode === "classroom") {
+      this.clientRoutes.vsCodeChat.health = "green";
+      this.clientRoutes.vsCodeChat.restart = "ready";
+    }
     return forwardedRecord(upstream);
   }
 
@@ -453,6 +463,9 @@ export class ClassroomApp {
       );
     }
     if (request.client === "copilot") {
+      if (this.deps.clientRouteRuntime && this.clientRoutes.vsCodeChat.mode === "native") {
+        throw new Error("VS Code 已切回 Native。請重開 VS Code 後再試。");
+      }
       await this.deps.proxy.receive({ provider: "VCRouter" });
       const upstream = await this.classroomUpstream("copilot", request.model);
       if (!upstream) {
@@ -499,10 +512,21 @@ export class ClassroomApp {
     if (!apiKey || !model) {
       return undefined;
     }
-    return { client, target: "router", model, apiKey, ...(client === "copilot" ? {} : { adapter: this.adapters[client] }) };
+    return {
+      client,
+      target: "router",
+      model,
+      apiKey,
+      adapter: client === "copilot" ? this.clientRoutes.vsCodeChat.adapter : this.adapters[client],
+    };
   }
 
-  async setAdapter(client: AdapterClient, id: string): Promise<void> {
+  async setAdapter(client: ClientControl, id: string): Promise<void> {
+    if (client === "vscode") {
+      if (id !== "responses" && id !== "chat") throw new Error("無效的 VS Code adapter。");
+      await this.serialConnectionOperation(() => this.setVsCodeAdapter(id));
+      return;
+    }
     if (!isAdapterChoice(client, id)) throw new Error(`無效的 ${client === "codex" ? "Codex" : "Claude Code"} adapter。`);
     await this.serialConnectionOperation(async () => {
       if (client === "codex" && this.deps.clientRouteRuntime) {
@@ -729,9 +753,13 @@ export class ClassroomApp {
     }
     const desiredMode = this.mode;
     const desiredClientModes = { ...this.clientModes };
+    const desiredVsCodeMode = this.clientRoutes.vsCodeChat.mode;
     // A committed new session must never inherit permissions or resources from the old one.
     this.mode = "native";
+    this.clientRoutes.vsCodeChat.mode = "native";
+    this.clientRoutes.vsCodeChat.restart = "ready";
     this.modelIds = [];
+    this.modelProviders = [];
     this.forgetModelChoices();
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -742,6 +770,15 @@ export class ClassroomApp {
     this.connectionDraft = undefined;
     this.notice = undefined;
     // Storage is committed: publish its identity before any client-file operation can fail.
+    if (desiredVsCodeMode === "classroom") {
+      try { await this.deps.vsCodeRouteSettings?.restore(); }
+      catch {
+        this.clientRoutes.vsCodeChat.health = "red";
+        try { await this.saveClientRoutePreferences(); } catch { /* Native/red remains authoritative in memory. */ }
+        this.notice = this.connectionNotice = "新課堂連線已建立，但無法恢復 VS Code 的 Native 設定。備份已保留，請稍後再試。";
+        return;
+      }
+    }
     try {
       await this.restoreModelOptions();
     } catch {
@@ -762,6 +799,25 @@ export class ClassroomApp {
         try { await this.restoreModelOptions(); } catch { /* Keep proxy routing safely Native. */ }
         this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
       }
+    }
+    if (desiredVsCodeMode === "classroom" && this.modelIds.length > 0 && this.vsCodeOrigin) {
+      this.clientRoutes.vsCodeChat.mode = "classroom";
+      try {
+        const result = await this.deps.vsCodeRouteSettings?.publish({
+          providers: this.modelProviders,
+          adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
+          origin: this.vsCodeOrigin,
+        });
+        this.clientRoutes.vsCodeChat.health = result?.changed ? "yellow" : "green";
+        this.clientRoutes.vsCodeChat.restart = result?.changed ? "restart-required" : "ready";
+        if (result?.changed) this.noteModelRestart("vscode");
+      } catch (error) {
+        this.clientRoutes.vsCodeChat.mode = "native";
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.clientRoutes.vsCodeChat.restart = "ready";
+        this.notice = this.connectionNotice = error instanceof Error ? error.message : "新課堂連線已建立，但無法更新 VS Code 設定。";
+      }
+      try { await this.saveClientRoutePreferences(); } catch { this.clientRoutes.vsCodeChat.health = "red"; }
     }
   }
 
@@ -785,11 +841,15 @@ export class ClassroomApp {
     this.folderError = "這不是資料夾。";
   }
 
-  async setSwitch(mode: ModelSwitchMode, client?: AdapterClient): Promise<void> {
+  async setSwitch(mode: ModelSwitchMode, client?: ClientControl): Promise<void> {
     return this.serialConnectionOperation(() => client ? this.setClientSwitch(mode, client) : this.setSwitchNow(mode));
   }
 
-  private async setClientSwitch(mode: ModelSwitchMode, client: AdapterClient): Promise<void> {
+  private async setClientSwitch(mode: ModelSwitchMode, client: ClientControl): Promise<void> {
+    if (client === "vscode") {
+      await this.setVsCodeClientRouteSwitch(mode);
+      return;
+    }
     if (client === "codex" && this.deps.clientRouteRuntime) {
       await this.setCodexClientRouteSwitch(mode);
       return;
@@ -862,6 +922,66 @@ export class ClassroomApp {
       try { await this.saveClientRoutePreferences(); } catch { /* Keep the rollback visible in memory. */ }
       try { await this.publishModelOptions("codex"); } catch { /* The route remains non-Classroom. */ }
       this.notice = "無法更新 Codex Client Route，已保留原本模式。";
+    }
+  }
+
+  private async setVsCodeClientRouteSwitch(mode: ModelSwitchMode): Promise<void> {
+    const route = this.clientRoutes.vsCodeChat;
+    if (route.health === "red" || route.health === "gray") {
+      this.notice = "VS Code Chat Client Route 目前無法切換 Classroom。";
+      return;
+    }
+    if (mode === "classroom" && (!this.connected || this.modelIds.length === 0 || !this.vsCodeOrigin)) {
+      this.notice = "請先連線到有可用模型的課堂。";
+      return;
+    }
+    if (route.mode === mode) return;
+    const previous = { ...route };
+    route.mode = mode;
+    try {
+      await this.saveClientRoutePreferences();
+      const result = mode === "classroom"
+        ? await this.deps.vsCodeRouteSettings?.publish({ providers: this.modelProviders, adapter: route.adapter as "responses" | "chat", origin: this.vsCodeOrigin! })
+        : await this.deps.vsCodeRouteSettings?.restore();
+      route.health = mode === "classroom" && result?.changed ? "yellow" : "green";
+      route.restart = mode === "classroom" && result?.changed ? "restart-required" : "ready";
+      if (result?.changed) this.noteModelRestart("vscode");
+      this.notice = undefined;
+    } catch (error) {
+      this.clientRoutes.vsCodeChat = previous;
+      try { await this.saveClientRoutePreferences(); } catch { /* Keep visible state. */ }
+      if (String(error).includes("舊擴充") || String(error).includes("ownership") || String(error).includes("其他程式")) {
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.notice = error instanceof Error ? error.message : "VS Code VCRouter provider 衝突。";
+      } else {
+        this.notice = "無法更新 VS Code Chat Client Route，已保留原本模式。";
+      }
+    }
+  }
+
+  private async setVsCodeAdapter(id: "responses" | "chat"): Promise<void> {
+    const route = this.clientRoutes.vsCodeChat;
+    if (route.health === "red" || route.health === "gray") {
+      this.adapterNotice = "VS Code Chat Client Route 目前無法變更 adapter。";
+      return;
+    }
+    const previous = route.adapter;
+    route.adapter = id;
+    try {
+      await this.saveClientRoutePreferences();
+      if (route.mode === "classroom") {
+        const result = await this.deps.vsCodeRouteSettings?.publish({ providers: this.modelProviders, adapter: id, origin: this.vsCodeOrigin! });
+        if (result?.changed) {
+          route.health = "yellow";
+          route.restart = "restart-required";
+          this.noteModelRestart("vscode");
+        }
+      }
+      this.adapterNotice = undefined;
+    } catch {
+      route.adapter = previous;
+      try { await this.saveClientRoutePreferences(); } catch { /* Keep rollback in memory. */ }
+      this.adapterNotice = "無法更新 VS Code adapter，已保留原本設定。";
     }
   }
 
@@ -944,6 +1064,7 @@ export class ClassroomApp {
     if (this.deps.clientRouteRuntime) {
       await this.startCodexRoute();
       await this.startClaudeCodeRoute();
+      await this.startVsCodeRoute();
     }
     return this.serialConnectionOperation(() => this.reloadAllowlistNow());
   }
@@ -988,6 +1109,59 @@ export class ClassroomApp {
     this.clientModes.codex = this.clientRoutes.codex.mode === "classroom" && this.connected && this.modelIds.length > 0
       ? "classroom"
       : "native";
+  }
+
+  private async startVsCodeRoute(): Promise<void> {
+    const runtime = this.deps.clientRouteRuntime;
+    if (!runtime) return;
+    if (!this.detectedClients.vsCodeChat) {
+      this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "gray", restart: "ready" };
+      return;
+    }
+    const alreadyRunning = this.vsCodeOrigin !== undefined &&
+      (this.clientRoutes.vsCodeChat.health === "green" || this.clientRoutes.vsCodeChat.health === "yellow") &&
+      (runtime.current?.("vsCodeChat")?.health ?? "green") === "green";
+    let started;
+    try { started = await runtime.start("vsCodeChat"); }
+    catch {
+      await this.failVsCodeRouteStart();
+      return;
+    }
+    this.vsCodeOrigin = started.origin;
+    if (started.health !== "green") {
+      await this.failVsCodeRouteStart();
+      return;
+    }
+    if (alreadyRunning) return;
+    try {
+      if (this.clientRoutes.vsCodeChat.mode === "classroom" && this.connected && this.modelIds.length > 0) {
+        const result = await this.deps.vsCodeRouteSettings?.publish({
+          providers: this.modelProviders,
+          adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
+          origin: started.origin,
+        });
+        this.clientRoutes.vsCodeChat.health = result?.changed ? "yellow" : "green";
+        this.clientRoutes.vsCodeChat.restart = result?.changed ? "restart-required" : "ready";
+        if (result?.changed) this.noteModelRestart("vscode");
+      } else {
+        this.clientRoutes.vsCodeChat.mode = "native";
+        await this.deps.vsCodeRouteSettings?.initializeNative();
+        this.clientRoutes.vsCodeChat.health = "green";
+        this.clientRoutes.vsCodeChat.restart = "ready";
+      }
+    } catch (error) {
+      this.clientRoutes.vsCodeChat.mode = "native";
+      this.clientRoutes.vsCodeChat.health = "red";
+      this.clientRoutes.vsCodeChat.restart = "ready";
+      this.notice = error instanceof Error ? error.message : "VS Code Chat Client Route 設定失敗。";
+    }
+    try { await this.saveClientRoutePreferences(); } catch { /* Route health remains visible. */ }
+  }
+
+  private async failVsCodeRouteStart(): Promise<void> {
+    try { await this.deps.vsCodeRouteSettings?.restore(); } catch { /* Journal remains available for retry. */ }
+    this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "red", restart: "ready" };
+    try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
   }
 
   private async startClaudeCodeRoute(): Promise<void> {
@@ -1047,7 +1221,7 @@ export class ClassroomApp {
   }
 
   private async detectClients(): Promise<void> {
-    await Promise.all((["codex", "claude"] as const).map(async client => {
+    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(async client => {
       try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
       catch { this.detectedClients[client] = false; }
     }));
@@ -1072,23 +1246,38 @@ export class ClassroomApp {
   }
 
   private async loadModels(apiKey: string): Promise<void> {
-    let ids: string[];
+    let payload: string[] | VsCodeProvider[];
     try {
-      ids = await this.deps.router.fetchSessionModels(apiKey);
+      payload = await this.deps.router.fetchSessionModels(apiKey);
     } catch {
       return;
     }
+    const items: unknown[] = Array.isArray(payload) ? payload : [];
+    const stringPayload = items.every(item => typeof item === "string");
+    const providers = stringPayload ? [] : items.filter(
+      (item): item is VsCodeProvider => !!item && typeof item === "object" && !Array.isArray(item),
+    );
+    const ids = providers.length > 0
+      ? providers.flatMap(provider => Array.isArray(provider.models) ? provider.models.flatMap(model => {
+        const id = model && typeof model === "object" && !Array.isArray(model) ? (model as Record<string, unknown>).id : undefined;
+        return typeof id === "string" && id ? [id] : [];
+      }) : [])
+      : items as string[];
     if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || !id.trim())) {
       this.modelIds = [];
+      this.modelProviders = [];
       this.mode = "native";
       if (this.deps.clientRouteRuntime) {
         this.clientRoutes.codex.mode = "native";
         this.clientRoutes.claudeCode.mode = "native";
+        this.clientRoutes.vsCodeChat.mode = "native";
         this.clientRoutes.codex.restart = "ready";
         this.clientRoutes.claudeCode.restart = "ready";
+        this.clientRoutes.vsCodeChat.restart = "ready";
         try { await this.saveClientRoutePreferences(); } catch {
           this.clientRoutes.codex.health = "red";
           this.clientRoutes.claudeCode.health = "red";
+          this.clientRoutes.vsCodeChat.health = "red";
         }
         try {
           await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
@@ -1096,17 +1285,42 @@ export class ClassroomApp {
             this.clientRoutes.claudeCode.health = this.detectedClients.claude ? "green" : "gray";
           }
         } catch { this.clientRoutes.claudeCode.health = "red"; }
+        try {
+          await this.deps.vsCodeRouteSettings?.restore();
+          if (this.clientRoutes.vsCodeChat.health !== "red") {
+            this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
+          }
+        } catch { this.clientRoutes.vsCodeChat.health = "red"; }
       }
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
     const previous = this.modelIds;
+    const providersChanged = !isDeepStrictEqual(this.modelProviders, providers);
     const changed = previous.join("\0") !== ids.join("\0");
     if (changed) {
       this.modelNotice.clear();
     }
     this.modelIds = ids;
+    this.modelProviders = structuredClone(providers);
+    if (providersChanged && this.deps.clientRouteRuntime && this.clientRoutes.vsCodeChat.mode === "classroom" && this.vsCodeOrigin) {
+      try {
+        const result = await this.deps.vsCodeRouteSettings?.publish({
+          providers: this.modelProviders,
+          adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
+          origin: this.vsCodeOrigin,
+        });
+        if (result?.changed) {
+          this.clientRoutes.vsCodeChat.health = "yellow";
+          this.clientRoutes.vsCodeChat.restart = "restart-required";
+          this.noteModelRestart("vscode");
+        }
+      } catch (error) {
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.notice = error instanceof Error ? error.message : "VS Code Chat Client Route 設定失敗。";
+      }
+    }
     if (!changed || this.mode !== "classroom") {
       return;
     }
@@ -1176,10 +1390,13 @@ export class ClassroomApp {
       this.clientRoutes.codex.restart = "ready";
       this.clientRoutes.claudeCode.mode = "native";
       this.clientRoutes.claudeCode.restart = "ready";
+      this.clientRoutes.vsCodeChat.mode = "native";
+      this.clientRoutes.vsCodeChat.restart = "ready";
       try { await this.saveClientRoutePreferences(); }
       catch {
         this.clientRoutes.codex.health = "red";
         this.clientRoutes.claudeCode.health = "red";
+        this.clientRoutes.vsCodeChat.health = "red";
       }
     }
     this.modelIds = [];
@@ -1203,6 +1420,15 @@ export class ClassroomApp {
       } catch {
         restoreFailed = true;
         this.clientRoutes.claudeCode.health = "red";
+      }
+      try {
+        await this.deps.vsCodeRouteSettings?.restore();
+        if (this.clientRoutes.vsCodeChat.health !== "red") {
+          this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
+        }
+      } catch {
+        restoreFailed = true;
+        this.clientRoutes.vsCodeChat.health = "red";
       }
     }
     if (restoreFailed) {
@@ -1238,6 +1464,7 @@ export class ClassroomApp {
       await this.detectClients();
       await this.startCodexRoute();
       await this.startClaudeCodeRoute();
+      await this.startVsCodeRoute();
     })();
     await this.initialization;
     const codex = await this.deps.routes.readCodex();
@@ -1249,9 +1476,9 @@ export class ClassroomApp {
       claude.ANTHROPIC_BASE_URL,
       ...anthropicBaseValues(vsCode[VS_CODE_ENV]),
     ]);
-    const doc = await this.deps.copilot.read();
+    const doc = this.deps.vsCodeRouteSettings ? { providers: [] } : await this.deps.copilot.read();
     const providers = Array.isArray(doc.providers) ? doc.providers : [];
-    const already = providers.some((provider) => provider?.name === "VCRouter");
+    const already = this.deps.vsCodeRouteSettings || providers.some((provider) => provider?.name === "VCRouter");
     this.deps.proxy.start();
     this.proxyRunning = true;
     if (hosts.length > 0) {
@@ -1333,6 +1560,15 @@ export class ClassroomApp {
       failure ??= error;
       this.clientRoutes.claudeCode.health = "red";
     }
+    try {
+      if (this.deps.clientRouteRuntime) {
+        await this.deps.vsCodeRouteSettings?.restore();
+        await this.deps.clientRouteRuntime.stop("vsCodeChat");
+      }
+    } catch (error) {
+      failure ??= error;
+      this.clientRoutes.vsCodeChat.health = "red";
+    }
     if (failure) throw failure;
   }
 
@@ -1340,6 +1576,10 @@ export class ClassroomApp {
     if (!this.mustRestart.includes(client)) {
       this.mustRestart.push(client);
     }
+  }
+
+  private noteModelRestart(client: MustRestartClient): void {
+    if (!this.modelRestart.includes(client)) this.modelRestart.push(client);
   }
 
   closeWindow(): void {

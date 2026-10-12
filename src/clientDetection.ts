@@ -9,8 +9,8 @@ function succeeds(command: string, args: string[]): Promise<boolean> {
 }
 
 /** Detect a usable CLI, or a running/installed Codex desktop app; no model API call. */
-export async function detectClient(client: AdapterClient): Promise<boolean> {
-  const cli = client === "codex" ? "codex" : "claude";
+export async function detectClient(client: AdapterClient | "vsCodeChat"): Promise<boolean> {
+  const cli = client === "codex" ? "codex" : client === "claude" ? "claude" : "code";
   const cliFound = process.platform === "win32"
     ? await succeeds("cmd.exe", ["/d", "/s", "/c", `${cli} --version`])
     : await succeeds(cli, ["--version"]);
