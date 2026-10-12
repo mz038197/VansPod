@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
@@ -11,6 +13,7 @@ import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
 import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
+import { sendRouter } from "../modelProxy";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -3848,4 +3851,31 @@ it("Native startup recovery failure is visible and can be retried without restar
   fail = false;
   await h.app.setSwitch("native", "claude");
   assert.equal(h.app.view().notice, undefined);
+});
+
+it("Classroom Codex built-in search gets the search refusal whatever model its body names and never reaches Router", async () => {
+  let routerCalls = 0;
+  const router = http.createServer((_req, res) => { routerCalls += 1; res.end("{}"); });
+  await new Promise<void>(resolve => router.listen(0, "127.0.0.1", resolve));
+  const responses: Response[] = [];
+  const h = harness(undefined, {
+    send: async upstream => { responses.push(await sendRouter(upstream, `http://127.0.0.1:${(router.address() as AddressInfo).port}`)); },
+  });
+  try {
+    await h.app.start();
+    await h.app.redeem("DEMO", "Student");
+    await h.app.setSwitch("classroom");
+    // Search is not a model request: Codex may send no model, or one outside the allowlist.
+    for (const model of ["", "not-allowed", "later"]) {
+      await h.app.forward({ client: "codex", model, method: "POST", path: "/v1/alpha/search", body: JSON.stringify({ commands: { search_query: [{ q: "台中活動" }] } }) });
+      const response = responses.pop()!;
+      assert.equal(response.status, 400);
+      assert.match((await response.json() as { error: { message: string } }).error.message, /Classroom mode has no web search capability/);
+    }
+    for (const client of ["codex", "claude"] as const) {
+      await assert.rejects(h.app.forward({ client, model: "", method: "POST", path: client === "codex" ? "/v1/responses" : "/v1/alpha/search", body: "{}" }), /\(missing\).*不在課堂允許清單/);
+    }
+    assert.equal(responses.length, 0);
+    assert.equal(routerCalls, 0);
+  } finally { router.close(); }
 });

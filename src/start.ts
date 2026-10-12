@@ -29,6 +29,7 @@ import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { sendRouter, relayResponse } from "./modelProxy";
+import { captureSearchRequest } from "./searchRequestCapture";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -441,8 +442,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
   const slot = responseSlot.getStore();
   if (!slot) return;
   if (upstream.target === "router" && upstream.client !== "copilot") {
-    // Temporary #23 diagnostic, off unless the directory is named: docs/verification/search-request-capture.md.
-    slot.response = await sendRouter(upstream, routerBaseUrl(), process.env.CLASSROOM_APP_CAPTURE_SEARCH_DIR || undefined);
+    slot.response = await sendRouter(upstream, routerBaseUrl());
     return;
   }
   try {
@@ -477,6 +477,7 @@ async function main(): Promise<void> {
     res: http.ServerResponse,
   ) => Promise<void>;
   let app!: ClassroomApp;
+  const storage = createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() });
   const clientRouteRuntime = createClientRouteRuntime({
     basePort: port,
     models(route) {
@@ -513,7 +514,7 @@ async function main(): Promise<void> {
         throw new Error("VansPod 不寫 MCP 設定");
       },
     },
-    storage: createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() }),
+    storage,
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
@@ -718,6 +719,12 @@ async function main(): Promise<void> {
         const client: ProxyClient = accepted.route === "claudeCode" ? "claude" : accepted.route === "vsCodeChat" ? "copilot" : "codex";
         try {
           const body = await readBody(req, 20_971_520);
+          // Temporary #23 diagnostic, off unless the directory is named: docs/verification/search-request-capture.md.
+          const captureDirectory = process.env.CLASSROOM_APP_CAPTURE_SEARCH_DIR;
+          if (captureDirectory && client !== "copilot" && app.view().clientRoutes?.[accepted.route].mode === "classroom") {
+            await captureSearchRequest(captureDirectory, { client, method: req.method, url: req.url, headers: req.headers, body,
+              classroomApiKey: async () => (await storage.getConnection())?.apiKey });
+          }
           const slot: { response?: Response } = {};
           const headers: Record<string, string> = {};
           for (const name of ["anthropic-version", "anthropic-beta"]) {

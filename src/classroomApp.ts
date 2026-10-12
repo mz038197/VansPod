@@ -19,6 +19,7 @@ import {
 } from "./courseCatalog";
 import type { CommandResult } from "./commandRunner";
 import type { CodexRouteOptions, DetectedRouteClients } from "./routeFiles";
+import { isCodexSearch } from "./modelProxy";
 
 export type NicknameRedeemResult = {
   api_key: string;
@@ -488,7 +489,8 @@ export class ClassroomApp {
       throw new Error("Claude Code 已切回 Native。請重開 Claude Code CLI 後再試。");
     }
     if (this.clientModes[request.client] === "classroom") {
-      this.assertAllowedModel(request.model);
+      // Search names no model of its own; modelProxy answers it without contacting Router.
+      if (!isCodexSearch(request.client, request.path)) this.assertAllowedModel(request.model);
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
