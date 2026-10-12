@@ -347,6 +347,7 @@ function harness(
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
+    setClaudeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
     setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
   },
 ) {
@@ -486,6 +487,7 @@ function harness(
         }
       },
       async setClaudeRoute(classroom, proxyBaseUrl) {
+        await options?.setClaudeRoute?.(classroom, proxyBaseUrl);
         if (classroom) {
           claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: structuredClone(docs.vsCode["claudeCode.environmentVariables"]) };
           docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
@@ -1093,6 +1095,92 @@ it("Clear removes the journal-owned VS Code provider and returns the route to he
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "ready");
 });
 
+it("Clear commits credential revocation before independent route recovery and Reload retries every failed journal", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const running = new Set<string>();
+  const restoreAttempts = { codex: 0, claudeCode: 0, vsCodeChat: 0 };
+  let failRecovery = false;
+  const assertRevoked = async () => {
+    assert.equal((await storage.getConnection())?.apiKey, undefined);
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      running.add(route);
+      const port = route === "codex" ? 47821 : route === "claudeCode" ? 47822 : 47823;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    current(route) {
+      if (!running.has(route)) return undefined;
+      const port = route === "codex" ? 47821 : route === "claudeCode" ? 47822 : 47823;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop(route) { if (route) running.delete(route); },
+  };
+  const h = harness(undefined, {
+    storage,
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    async setModelOptions(value) {
+      if (value !== null) return;
+      restoreAttempts.codex += 1;
+      await assertRevoked();
+      if (failRecovery) throw new Error(`Codex restore denied ${KEY}`);
+    },
+    async setClaudeCodeRoute(classroom) {
+      if (classroom) return;
+      restoreAttempts.claudeCode += 1;
+      await assertRevoked();
+      if (failRecovery) throw new Error(`Claude restore denied ${KEY}`);
+    },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() {
+        restoreAttempts.vsCodeChat += 1;
+        await assertRevoked();
+        if (failRecovery) throw new Error(`VS Code restore denied ${KEY}`);
+        return { changed: true };
+      },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.setSwitch("classroom", "vscode");
+  failRecovery = true;
+
+  await h.app.clearConnection();
+
+  assert.equal(await storage.getConnection(), undefined);
+  const failedRoutes = h.app.view().clientRoutes!;
+  assert.deepEqual({
+    codex: failedRoutes.codex.health,
+    claudeCode: failedRoutes.claudeCode.health,
+    vsCodeChat: failedRoutes.vsCodeChat.health,
+  }, { codex: "red", claudeCode: "red", vsCodeChat: "red" });
+  assert.deepEqual([...running].sort(), ["claudeCode", "codex", "vsCodeChat"]);
+  await assert.rejects(h.app.forward({ client: "codex", model: "later" }), /重開 Codex/);
+  await assert.rejects(h.app.forward({ client: "claude", model: "later" }), /重開 Claude Code/);
+  await assert.rejects(h.app.forward({ client: "copilot", model: "later" }), /重開 VS Code/);
+  assert.deepEqual(h.sent(), []);
+  assert.equal(JSON.stringify(h.app.view()).includes(KEY), false);
+
+  failRecovery = false;
+  const attemptsAfterClear = { ...restoreAttempts };
+  await h.app.reloadAllowlist();
+
+  assert.equal(restoreAttempts.codex, attemptsAfterClear.codex + 1);
+  assert.equal(restoreAttempts.claudeCode, attemptsAfterClear.claudeCode + 1);
+  assert.equal(restoreAttempts.vsCodeChat, attemptsAfterClear.vsCodeChat + 1);
+  const recoveredRoutes = h.app.view().clientRoutes!;
+  assert.deepEqual({
+    codex: recoveredRoutes.codex.health,
+    claudeCode: recoveredRoutes.claudeCode.health,
+    vsCodeChat: recoveredRoutes.vsCodeChat.health,
+  }, { codex: "green", claudeCode: "green", vsCodeChat: "green" });
+});
+
 it("an authoritative empty allowlist restores VS Code to Native", async () => {
   let providers: Array<Record<string, unknown>> = [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }];
   let restored = 0;
@@ -1347,6 +1435,44 @@ it("stops the Codex listener only after restoring its Native settings", async ()
   assert.deepEqual(events, ["restore", "stop:codex", "stop:claudeCode", "stop:vsCodeChat"]);
 });
 
+it("Stop restores separated routes without touching the retired combined Claude seam or adapter preferences", async () => {
+  const stopped: string[] = [];
+  let rejectLegacyRestore = false;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "codex" ? 47821 : route === "claudeCode" ? 47822 : 47823;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop(route) { if (route) stopped.push(route); },
+  };
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    async setClaudeRoute(classroom) {
+      if (!classroom && rejectLegacyRestore) throw new Error("retired combined Claude route was touched");
+    },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.setAdapter("codex", "chat");
+  await h.app.setAdapter("claude", "messages");
+  await h.app.setAdapter("vscode", "chat");
+  rejectLegacyRestore = true;
+
+  await h.app.stop();
+
+  assert.deepEqual(stopped, ["codex", "claudeCode", "vsCodeChat"]);
+  assert.deepEqual({
+    codex: h.app.view().clientRoutes?.codex.adapter,
+    claudeCode: h.app.view().clientRoutes?.claudeCode.adapter,
+    vsCodeChat: h.app.view().clientRoutes?.vsCodeChat.adapter,
+  }, { codex: "chat", claudeCode: "messages", vsCodeChat: "chat" });
+});
+
 it("keeps a failed Claude Code listener red and Native without affecting Codex", async () => {
   const starts: string[] = [];
   const runtime: ClientRouteRuntime = {
@@ -1388,16 +1514,27 @@ it("stops healthy routes while retaining a Claude listener whose Native restorat
     detectClient: async () => true,
     clientRouteRuntime: runtime,
     async setClaudeCodeRoute(classroom) {
-      if (!classroom && failRestore) throw new Error("synthetic restore denial");
+      if (!classroom && failRestore) throw new Error(`synthetic restore denial ${KEY}`);
     },
   });
   await h.app.start();
+  await h.app.redeem("DEMO", "Student");
   failRestore = true;
 
-  await assert.rejects(h.app.stop(), /synthetic restore denial/);
+  await assert.rejects(h.app.stop(), (error: unknown) => {
+    assert.match(String(error), /synthetic restore denial/);
+    assert.equal(String(error).includes(KEY), false);
+    return true;
+  });
 
   assert.deepEqual(stopped, ["codex", "vsCodeChat"]);
   assert.equal(h.app.view().clientRoutes?.claudeCode.health, "red");
+  await assert.rejects(h.app.forward({ client: "claude", model: "later" }), (error: unknown) => {
+    assert.match(String(error), /重開 Claude Code/);
+    assert.equal(String(error).includes(KEY), false);
+    return true;
+  });
+  assert.deepEqual(h.sent(), []);
 });
 
 it("switches Claude Code independently, supports all three adapters, and rejects stale or disallowed requests", async () => {
