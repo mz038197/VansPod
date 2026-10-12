@@ -2,6 +2,7 @@ import type { UpstreamSend } from "./classroomApp";
 import { modelApiAdapter } from "./adapters";
 import { AdapterError, object } from "./adapters/types";
 import { event } from "./adapters/stream";
+import { claudeWebSearch } from "./claudeWebSearch";
 import type http from "node:http";
 import { once } from "node:events";
 
@@ -31,7 +32,7 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string): Promi
     let body: unknown; try { body = JSON.parse(upstream.body ?? ""); } catch { throw new AdapterError("請求正文必須是有效 JSON。"); }
     const parsed = object(body, "request");
     if (parsed.stream !== undefined && typeof parsed.stream !== "boolean") throw new AdapterError("stream 必須是布林值。");
-    const response = await modelApiAdapter(upstream.adapter ?? "responses").send({ client, model: upstream.model, body: parsed,
+    const response = await claudeWebSearch(modelApiAdapter(upstream.adapter ?? "responses"), { client, model: upstream.model, body: parsed,
       apiKey: upstream.apiKey ?? "", routerBaseUrl: baseUrl.replace(/\/+$/, ""), headers: upstream.headers,
       signal: upstream.signal ?? new AbortController().signal });
     if (response.ok) return response;
