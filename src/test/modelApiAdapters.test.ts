@@ -133,7 +133,7 @@ test("Codex Chat honors summary none without losing plaintext reasoning on the n
     const next = await modelApiAdapter("chat").send({ client: "codex", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal,
       body: { input: [...result.output, { role: "user", content: "next" }], stream: false } });
     await next.text();
-    assert.match((calls[1].body.messages as Array<{ content: string }>)[0].content, /plan/);
+    assert.deepEqual((calls[1].body.messages as unknown[])[0], { role: "assistant", content: "hello", reasoning_content: "plan" });
     assert.equal(calls[0].body.client_metadata, undefined);
   }, { choices: [{ message: { content: "hello", reasoning: "plan" }, finish_reason: "stop" }] });
 });
@@ -189,7 +189,7 @@ for (const stream of [false, true]) test(`Codex Chat preserves plaintext reasoni
     const next = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "chat", path: "/v1/responses", apiKey: "synthetic-key", body: JSON.stringify({ input: [...output, { role: "user", content: "next" }], stream }) }, routerBaseUrl);
     assert.equal(next.status, 200);
     await next.text();
-    assert.match((calls[1].body.messages as Array<{ content: string }>)[0].content, /plan briefly/);
+    assert.deepEqual((calls[1].body.messages as unknown[])[0], { role: "assistant", content: "hello", reasoning_content: "plan briefly" });
   }, reply);
 });
 
@@ -682,10 +682,9 @@ for (const stream of [false, true]) test(`Chat skips opaque encrypted reasoning 
     assert.deepEqual(calls[0].body.messages, [
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi" },
-      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
       { role: "user", content: "again" },
     ]);
-    assert.doesNotMatch(JSON.stringify(calls[0].body), /gAAAA|final_answer/);
+    assert.doesNotMatch(JSON.stringify(calls[0].body), /gAAAA|final_answer|<reasoning>/);
     assert.deepEqual(body, original);
   }, stream ? 'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\n' : { choices: [{ message: { content: "hello" }, finish_reason: "stop" }] });
 });
@@ -705,10 +704,9 @@ for (const stream of [false, true]) test(`Chat reads Codex input items by projec
     assert.equal(response.status, 200, await response.clone().text());
     const reply = await response.text();
     assert.ok(stream ? reply.includes("event: response.completed") : JSON.parse(reply).status === "completed");
-    assert.deepEqual((calls[0].body.messages as unknown[]).slice(-5), [
+    assert.deepEqual((calls[0].body.messages as unknown[]).slice(-4), [
       { role: "user", content: "hello" },
-      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
-      { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }], reasoning_content: "plan" },
       { role: "tool", tool_call_id: "call_1", content: "done" },
       { role: "user", content: "again" },
     ]);
@@ -780,7 +778,6 @@ test("Chat keeps a compacted or extended Codex history usable instead of rejecti
     assert.deepEqual((calls[0].body.messages as Array<{ role: string }>).filter(message => message.role !== "system"), [
       { role: "user", content: "[earlier conversation was compacted; the summary is stored in a format this model cannot read]" },
       { role: "user", content: [{ type: "text", text: "hello" }, { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=", detail: "auto" } }] },
-      { role: "assistant", content: "<reasoning>\nplan\n</reasoning>" },
       { role: "user", content: "done" },
       { role: "user", content: "(sub-agent message received)" },
       { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },

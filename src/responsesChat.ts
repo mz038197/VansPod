@@ -24,6 +24,7 @@ type ChatMessage = {
     function: { name: string; arguments: string };
   }>;
   tool_call_id?: string;
+  reasoning_content?: string;
 };
 
 type ChatTool = {
@@ -224,6 +225,21 @@ function pushFunctionCall(
   messages.push({ role: "assistant", content: null, tool_calls: [call] });
 }
 
+// Replayed reasoning rides on the assistant message it preceded, in the same
+// reasoning_content field the upstream returned it in. It must never be written
+// into content: a model that sees tagged reasoning in its own earlier answers
+// starts writing its reasoning into the visible answer the same way. Reasoning
+// with no assistant message after it has nothing to ride on and is dropped.
+function foldReasoning(messages: ChatMessage[]): void {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const held = messages[index];
+    if (held.role !== "assistant" || held.content !== null || held.tool_calls || held.reasoning_content === undefined) continue;
+    const next = messages[index + 1];
+    if (next?.role === "assistant") next.reasoning_content = held.reasoning_content + (next.reasoning_content ?? "");
+    messages.splice(index, 1);
+  }
+}
+
 const COMPACTION_ITEM_TYPES: ReadonlySet<string> = new Set(["compaction", "compaction_summary", "context_compaction"]);
 const OPAQUE_COMPACTION_NOTE = "[earlier conversation was compacted; the summary is stored in a format this model cannot read]";
 const UNPAIRABLE_ITEM_TYPES: ReadonlySet<string> = new Set(["local_shell_call", "tool_search_call", "tool_search_output"]);
@@ -306,7 +322,9 @@ export function responsesToChatBody(raw: string, model: string): string {
           if (part.type !== "reasoning_text") throw new AdapterError("Chat 無法轉換此 reasoning content 類型。");
           return string(part.text, "reasoning text");
         }).join(""));
-        if (summary) messages.push({ role: "assistant", content: `<reasoning>\n${summary}\n</reasoning>` });
+        // Held as a content-less assistant message until foldReasoning attaches
+        // it to the turn it belongs to.
+        if (summary) messages.push({ role: "assistant", content: null, reasoning_content: summary });
         continue;
       }
       if (record.type === "input_text" || record.type === "output_text") {
@@ -374,6 +392,7 @@ export function responsesToChatBody(raw: string, model: string): string {
     }
   }
   else if (input !== undefined) throw new AdapterError("Responses input 必須是文字或陣列。");
+  foldReasoning(messages);
   liftToolResultImages(messages);
   const tools = Array.isArray(parsed.tools)
     ? parsed.tools.flatMap((tool) => {
