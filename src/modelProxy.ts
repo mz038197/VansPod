@@ -3,6 +3,7 @@ import { modelApiAdapter } from "./adapters";
 import { AdapterError, object } from "./adapters/types";
 import { event } from "./adapters/stream";
 import { claudeWebSearch } from "./claudeWebSearch";
+import { codexSearch } from "./codexSearch";
 import type http from "node:http";
 import { once } from "node:events";
 
@@ -21,12 +22,7 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string): Promi
   const client = upstream.client === "claude" ? "claude" : "codex";
   try {
     const path = upstream.path ?? "";
-    // Classroom Router has no search backend, so tell the model plainly; the generic
-    // message made it retry the same tool over and over.
-    // The English half is addressed to the model, which reads this text verbatim.
-    // Neither half may hint at any other route to the information: an earlier wording
-    // did, and the model crawled sites from the shell for minutes (ADR-0007).
-    if (isCodexSearch(client, path)) throw new AdapterError("課堂模式沒有網路搜尋功能。Classroom mode has no web search capability. Do not retry this tool. Do not use shell commands (curl, wget, scripts) to fetch web pages. Tell the user directly that web search is not available in this classroom session.");
+    if (isCodexSearch(client, path)) return await codexSearch(upstream, baseUrl);
     const route = path.split("?")[0];
     if (client === "codex" ? !route.endsWith("/responses") : !route.endsWith("/messages")) throw new AdapterError(`此 API 路徑尚未支援所選 adapter：${route}`);
     let body: unknown; try { body = JSON.parse(upstream.body ?? ""); } catch { throw new AdapterError("請求正文必須是有效 JSON。"); }

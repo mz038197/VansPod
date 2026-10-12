@@ -30,3 +30,7 @@
 - Codex 的請求格式目前只有 opencodex 測試 fixture 這個二手來源；動工第一步是在 VansPod 攔下真實請求確認。
 - 分三段交付，各自可獨立上線：Router 端點 → VansPod × Codex → VansPod × Claude Code。
 - 取代 ADR-0004 中「由 Router 提供搜尋端點、或轉給學生自己的 ChatGPT，是尚未決定的後續選項」一句。
+
+## 實作紀錄
+
+2026-10-13 VansPod × Codex（GitHub #27）：請求格式以 `src/test/fixtures/codex-search/` 的真實樣本為準。回應格式取自 Codex 原始碼（`openai/codex` tag `rust-v0.162.1`）：`codex-rs/codex-api/src/search.rs` 的 `SearchResponse { encrypted_output, output, results }`，以及 `codex-rs/ext/web-search/src/tool.rs`——模型只讀 `output`，`results` 只供客戶端顯示，非 2xx 回應是 `FunctionCallError::Fatal`。因此未開放、太頻繁、不可用、上游失敗與不支援的指令一律回 200，把說明放在 `output`；這個回應尚未以真實 Codex 端對端驗證。
