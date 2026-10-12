@@ -487,11 +487,20 @@ async function main(): Promise<void> {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ) => Promise<void>;
+  let app!: ClassroomApp;
   const clientRouteRuntime = createClientRouteRuntime({
     basePort: port,
+    models(route) {
+      if (route !== "claudeCode") return undefined;
+      const view = app.view();
+      const claude = view.clientRoutes?.claudeCode;
+      return claude?.mode === "classroom" && claude.health !== "red" && claude.health !== "gray"
+        ? view.allowedModels ?? []
+        : [];
+    },
     handle: (accepted, req, res) => dispatch(accepted, req, res),
   });
-  const app = new ClassroomApp({
+  app = new ClassroomApp({
     detectClient,
     adapterSettings: createAdapterSettingsStorage(settingsFile),
     clientRouteSettings: createClientRouteSettingsStorage(settingsFile),
@@ -712,9 +721,9 @@ async function main(): Promise<void> {
         (req.method === "POST" || req.method === "PUT") &&
         (pathname.startsWith("/v1/") || pathname.startsWith("/backend-api/"))
       ) {
-        if (accepted.route !== "codex" && accepted.route !== "vsCodeChat") {
+        if (accepted.route !== "codex" && accepted.route !== "claudeCode" && accepted.route !== "vsCodeChat") {
           res.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ error: { message: "這個 Client Route 目前無法使用。" } }));
+          res.end(JSON.stringify({ error: { message: "Client Route 目前無法使用。" } }));
           return;
         }
         const controller = new AbortController(); activeRequests.add(controller);
@@ -722,7 +731,7 @@ async function main(): Promise<void> {
         req.once("aborted", aborted);
         const closed = () => { if (!res.writableFinished) controller.abort(); };
         res.once("close", closed);
-        const client: ProxyClient = accepted.route === "vsCodeChat" ? "copilot" : "codex";
+        const client: ProxyClient = accepted.route === "claudeCode" ? "claude" : accepted.route === "vsCodeChat" ? "copilot" : "codex";
         try {
           const body = await readBody(req, 20_971_520);
           const slot: { response?: Response } = {};
@@ -734,10 +743,10 @@ async function main(): Promise<void> {
             await responseSlot.run(slot, () => app.forward({ client, model: modelFromBody(body), method: req.method, path: pathname, body, headers, signal: controller.signal }));
           } catch (error) {
             const message = error instanceof Error ? error.message : "";
-            if (!message.includes("重開 Codex") && !message.includes("重開 VS Code")) throw error;
+            if (!message.includes("重開 Codex") && !message.includes("重開 Claude Code") && !message.includes("重開 VS Code") && !message.includes("不在課堂允許清單")) throw error;
             slot.response = Response.json({ error: { message } }, { status: 409 });
           }
-          if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, "codex", controller.signal);
+          if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, client === "claude" ? "claude" : "codex", controller.signal);
         } finally {
           controller.abort(); activeRequests.delete(controller);
           req.removeListener("aborted", aborted); res.removeListener("close", closed);

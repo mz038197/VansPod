@@ -96,6 +96,7 @@ export type ClassroomAppDeps = {
   routes: {
     setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
     setClaudeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
+    setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
     readCodex(): Promise<Record<string, unknown>>;
     writeCodex(doc: Record<string, unknown>): Promise<void>;
     readClaudeTerminal(): Promise<Record<string, unknown>>;
@@ -208,6 +209,7 @@ const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private adapters = defaultAdapters();
   private clientRoutes = defaultClientRoutes();
+  private readonly clientRouteOrigins: Partial<Record<"codex" | "claudeCode", string>> = {};
   private adapterNotice: string | undefined;
   private readonly hiddenKeys = new Set<string>();
   private initialization: Promise<void> | undefined;
@@ -439,9 +441,10 @@ export class ClassroomApp {
     // Only select a coherent connection and permissions under the lock; streaming stays concurrent.
     const upstream = await this.serialConnectionOperation(() => this.forwardUpstream(request));
     await this.deps.send(withHttp(upstream, request));
-    if (this.deps.clientRouteRuntime && request.client === "codex" && this.clientModes.codex === "classroom") {
-      this.clientRoutes.codex.health = "green";
-      this.clientRoutes.codex.restart = "ready";
+    if (this.deps.clientRouteRuntime && request.client !== "copilot" && this.clientModes[request.client] === "classroom") {
+      const route = request.client === "codex" ? this.clientRoutes.codex : this.clientRoutes.claudeCode;
+      route.health = "green";
+      route.restart = "ready";
     }
     if (this.deps.clientRouteRuntime && request.client === "copilot" && this.clientRoutes.vsCodeChat.mode === "classroom") {
       this.clientRoutes.vsCodeChat.health = "green";
@@ -472,7 +475,14 @@ export class ClassroomApp {
     if (request.client === "codex" && this.deps.clientRouteRuntime && this.clientModes.codex === "native") {
       throw new Error("Codex 已切回 Native。請重開 Codex 後再試。");
     }
+    if (request.client === "claude" && this.deps.clientRouteRuntime && this.clientModes.claude === "native") {
+      throw new Error("Claude Code 已切回 Native。請重開 Claude Code CLI 後再試。");
+    }
     if (this.clientModes[request.client] === "classroom") {
+      if (request.client === "claude" && this.deps.clientRouteRuntime &&
+        (!request.model || !this.modelIds.includes(request.model))) {
+        throw new Error(`模型 ${request.model || "(missing)"} 不在課堂允許清單。`);
+      }
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
@@ -535,6 +545,28 @@ export class ClassroomApp {
         if (this.clientRoutes.codex.mode === "classroom") {
           this.clientRoutes.codex.health = "yellow";
           this.clientRoutes.codex.restart = "restart-required";
+        }
+        this.adapterNotice = undefined;
+        return;
+      }
+      if (client === "claude" && this.deps.clientRouteRuntime) {
+        const route = this.clientRoutes.claudeCode;
+        if (route.health === "red" || route.health === "gray") {
+          this.adapterNotice = "Claude Code Client Route 目前無法變更 adapter。";
+          return;
+        }
+        const previous = route.adapter;
+        route.adapter = id;
+        try { await this.saveClientRoutePreferences(); }
+        catch {
+          route.adapter = previous;
+          this.adapterNotice = "無法儲存 adapter 選擇，已保留原本設定。";
+          return;
+        }
+        this.adapters = { ...this.adapters, claude: id };
+        if (route.mode === "classroom") {
+          route.health = "yellow";
+          route.restart = "restart-required";
         }
         this.adapterNotice = undefined;
         return;
@@ -602,11 +634,16 @@ export class ClassroomApp {
       claudeModel: this.sending.get("claude") ?? first,
       proxyBaseUrl: this.deps.proxyBaseUrl,
       restartCodex: true,
-      clients: { codex: this.clientModes.codex === "classroom", claude: this.clientModes.claude === "classroom" },
+      clients: {
+        codex: this.clientModes.codex === "classroom",
+        claude: !this.deps.clientRouteRuntime && this.clientModes.claude === "classroom",
+      },
       updateClient,
     };
     if (updateClient !== "claude") await this.deps.routes.setCodexRoute(this.clientModes.codex === "classroom", this.deps.proxyBaseUrl);
-    if (updateClient !== "codex") await this.deps.routes.setClaudeRoute(this.clientModes.claude === "classroom", this.deps.proxyBaseUrl);
+    if (!this.deps.clientRouteRuntime && updateClient !== "codex") {
+      await this.deps.routes.setClaudeRoute(this.clientModes.claude === "classroom", this.deps.proxyBaseUrl);
+    }
     await this.deps.routes.setModelOptions(options);
   }
 
@@ -784,6 +821,10 @@ export class ClassroomApp {
       await this.setCodexClientRouteSwitch(mode);
       return;
     }
+    if (client === "claude" && this.deps.clientRouteRuntime) {
+      await this.setClaudeCodeClientRouteSwitch(mode);
+      return;
+    }
     if (mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
       this.notice = "請先連線到有可用模型的課堂。";
       return;
@@ -911,6 +952,41 @@ export class ClassroomApp {
     }
   }
 
+  private async setClaudeCodeClientRouteSwitch(mode: ModelSwitchMode): Promise<void> {
+    const route = this.clientRoutes.claudeCode;
+    if (route.health === "red" || route.health === "gray") {
+      this.notice = "Claude Code Client Route 目前無法切換 Classroom。";
+      return;
+    }
+    if (mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.notice = "請先連線到有可用模型的課堂。";
+      return;
+    }
+    if (route.mode === mode) return;
+    const previousRoute = { ...route };
+    const previousModes = { ...this.clientModes };
+    route.mode = mode;
+    this.clientModes.claude = mode;
+    try {
+      await this.saveClientRoutePreferences();
+      const aggregate = Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
+      if (!await this.saveMode(aggregate, this.clientModes)) throw new Error("mode persistence failed");
+      await this.deps.routes.setClaudeCodeRoute(mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+      route.health = mode === "classroom" ? "yellow" : "green";
+      route.restart = mode === "classroom" ? "restart-required" : "ready";
+      this.notice = undefined;
+      this.adapterNotice = undefined;
+    } catch {
+      this.clientRoutes.claudeCode = previousRoute;
+      this.clientModes = previousModes;
+      try { await this.saveClientRoutePreferences(); } catch { /* Keep the rollback visible in memory. */ }
+      try {
+        await this.deps.routes.setClaudeCodeRoute(previousRoute.mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+      } catch { /* The visible route state remains authoritative. */ }
+      this.notice = "無法更新 Claude Code Client Route，已保留原本模式。";
+    }
+  }
+
   private async setSwitchNow(mode: ModelSwitchMode): Promise<void> {
     const requested = mode === "classroom" && this.connected && this.modelIds.length > 0 ? "classroom" : "native";
     if (!await this.saveMode(requested)) return;
@@ -954,6 +1030,7 @@ export class ClassroomApp {
     await this.detectClients();
     if (this.deps.clientRouteRuntime) {
       await this.startCodexRoute();
+      await this.startClaudeCodeRoute();
       await this.startVsCodeRoute();
     }
     return this.serialConnectionOperation(() => this.reloadAllowlistNow());
@@ -971,7 +1048,11 @@ export class ClassroomApp {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
     let health: "green" | "red" = "red";
-    try { health = (await runtime.start("codex")).health === "green" ? "green" : "red"; }
+    try {
+      const started = await runtime.start("codex");
+      this.clientRouteOrigins.codex = started.origin;
+      health = started.health === "green" ? "green" : "red";
+    }
     catch { health = "red"; }
     if (health === "red") {
       this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "red", restart: "ready" };
@@ -1042,6 +1123,62 @@ export class ClassroomApp {
     try { await this.saveClientRoutePreferences(); } catch { /* Route health remains visible. */ }
   }
 
+  private async startClaudeCodeRoute(): Promise<void> {
+    const runtime = this.deps.clientRouteRuntime;
+    if (!runtime) return;
+    const route = this.clientRoutes.claudeCode;
+    if (!this.detectedClients.claude) {
+      route.mode = "native";
+      route.health = "gray";
+      route.restart = "ready";
+      this.clientModes.claude = "native";
+      return;
+    }
+    const alreadyRunning = runtime.current?.("claudeCode")?.health === "green";
+    let health: "green" | "red" = "red";
+    try {
+      const started = await runtime.start("claudeCode");
+      this.clientRouteOrigins.claudeCode = started.origin;
+      health = started.health === "green" ? "green" : "red";
+    } catch { health = "red"; }
+    if (health === "red") {
+      route.mode = "native";
+      route.health = "red";
+      route.restart = "ready";
+      this.clientModes.claude = "native";
+      try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
+      try { await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl); }
+      catch { /* Retried on reload. */ }
+      return;
+    }
+    if (route.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      route.mode = "native";
+      try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
+    }
+    route.health = "green";
+    route.restart = "ready";
+    this.clientModes.claude = route.mode === "classroom" && this.connected && this.modelIds.length > 0
+      ? "classroom"
+      : "native";
+    if (alreadyRunning) return;
+    try {
+      await this.deps.routes.setClaudeCodeRoute(
+        this.clientModes.claude === "classroom",
+        this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl,
+      );
+      if (this.clientModes.claude === "classroom") {
+        route.health = "yellow";
+        route.restart = "restart-required";
+      }
+    } catch {
+      route.mode = "native";
+      route.health = "red";
+      route.restart = "ready";
+      this.clientModes.claude = "native";
+      try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
+    }
+  }
+
   private async detectClients(): Promise<void> {
     await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(async client => {
       try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
@@ -1058,7 +1195,13 @@ export class ClassroomApp {
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     await this.loadModels(apiKey);
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
-    if (previous !== current) this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
+    if (previous !== current) {
+      this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
+      if (this.deps.clientRouteRuntime && this.clientRoutes.claudeCode.mode === "classroom") {
+        this.clientRoutes.claudeCode.health = "yellow";
+        this.clientRoutes.claudeCode.restart = "restart-required";
+      }
+    }
   }
 
   private async loadModels(apiKey: string): Promise<void> {
@@ -1083,6 +1226,22 @@ export class ClassroomApp {
       this.modelIds = [];
       this.modelProviders = [];
       this.mode = "native";
+      if (this.deps.clientRouteRuntime) {
+        this.clientRoutes.codex.mode = "native";
+        this.clientRoutes.claudeCode.mode = "native";
+        this.clientRoutes.codex.restart = "ready";
+        this.clientRoutes.claudeCode.restart = "ready";
+        try { await this.saveClientRoutePreferences(); } catch {
+          this.clientRoutes.codex.health = "red";
+          this.clientRoutes.claudeCode.health = "red";
+        }
+        try {
+          await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+          if (this.clientRoutes.claudeCode.health !== "red") {
+            this.clientRoutes.claudeCode.health = this.detectedClients.claude ? "green" : "gray";
+          }
+        } catch { this.clientRoutes.claudeCode.health = "red"; }
+      }
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
@@ -1161,18 +1320,38 @@ export class ClassroomApp {
     if (this.deps.clientRouteRuntime) {
       this.clientRoutes.codex.mode = "native";
       this.clientRoutes.codex.restart = "ready";
+      this.clientRoutes.claudeCode.mode = "native";
+      this.clientRoutes.claudeCode.restart = "ready";
       try { await this.saveClientRoutePreferences(); }
-      catch { this.clientRoutes.codex.health = "red"; }
+      catch {
+        this.clientRoutes.codex.health = "red";
+        this.clientRoutes.claudeCode.health = "red";
+      }
     }
     this.modelIds = [];
     this.forgetModelChoices();
+    let restoreFailed = false;
     try {
       await this.restoreModelOptions();
       if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
         this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
       }
     } catch {
+      restoreFailed = true;
       if (this.deps.clientRouteRuntime) this.clientRoutes.codex.health = "red";
+    }
+    if (this.deps.clientRouteRuntime) {
+      try {
+        await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+        if (this.clientRoutes.claudeCode.health !== "red") {
+          this.clientRoutes.claudeCode.health = this.detectedClients.claude ? "green" : "gray";
+        }
+      } catch {
+        restoreFailed = true;
+        this.clientRoutes.claudeCode.health = "red";
+      }
+    }
+    if (restoreFailed) {
       this.notice = this.connectionNotice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
     }
   }
@@ -1196,6 +1375,7 @@ export class ClassroomApp {
             vsCodeChat: { ...this.clientRoutes.vsCodeChat, ...settings.vsCodeChat },
           };
           this.adapters = { ...this.adapters, codex: settings.codex.adapter as "responses" | "chat" };
+          this.adapters = { ...this.adapters, claude: settings.claudeCode.adapter };
         } catch {
           this.clientRoutes = defaultClientRoutes();
         }
@@ -1203,6 +1383,7 @@ export class ClassroomApp {
       await this.restoreConnection();
       await this.detectClients();
       await this.startCodexRoute();
+      await this.startClaudeCodeRoute();
       await this.startVsCodeRoute();
     })();
     await this.initialization;
@@ -1282,8 +1463,24 @@ export class ClassroomApp {
   private async stopNow(): Promise<void> {
     this.proxyRunning = false;
     this.deps.proxy.stop();
-    await this.restoreModelOptions();
-    await this.deps.clientRouteRuntime?.stop("codex");
+    let failure: unknown;
+    try {
+      await this.restoreModelOptions();
+      await this.deps.clientRouteRuntime?.stop("codex");
+    } catch (error) {
+      failure = error;
+      if (this.deps.clientRouteRuntime) this.clientRoutes.codex.health = "red";
+    }
+    try {
+      if (this.deps.clientRouteRuntime) {
+        await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+        await this.deps.clientRouteRuntime.stop("claudeCode");
+      }
+    } catch (error) {
+      failure ??= error;
+      this.clientRoutes.claudeCode.health = "red";
+    }
+    if (failure) throw failure;
   }
 
   private noteRestart(client: MustRestartClient): void {

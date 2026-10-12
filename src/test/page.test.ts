@@ -47,9 +47,9 @@ describe("VansPod page", () => {
     }));
     const adapters = [...html.matchAll(/<form[^>]*action="\/adapter"[\s\S]*?<\/form>/g)].map(item => item[0]);
     assert.doesNotMatch(adapters[0], /<select[^>]*disabled/);
-    assert.doesNotMatch(adapters[1], /<select[^>]*disabled/);
+    assert.match(adapters[1], /<select[^>]*disabled/);
     assert.match(html, /class="client-light detected"[^>]*title="Codex 已偵測"/);
-    assert.match(html, /class="client-light"[^>]*title="Claude Code 未偵測"/);
+    assert.match(html, /class="client-light"[^>]*title="Claude Code CLI 未偵測"/);
     assert.equal((html.match(/<form[^>]*action="\/switch"/g) ?? []).length, 3);
     assert.match(html, /<li>lesson&lt;&amp;two<\/li>/);
   });
