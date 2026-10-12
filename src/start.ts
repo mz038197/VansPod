@@ -441,7 +441,8 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
   const slot = responseSlot.getStore();
   if (!slot) return;
   if (upstream.target === "router" && upstream.client !== "copilot") {
-    slot.response = await sendRouter(upstream, routerBaseUrl());
+    // Temporary #23 diagnostic, off unless the directory is named: docs/verification/search-request-capture.md.
+    slot.response = await sendRouter(upstream, routerBaseUrl(), process.env.CLASSROOM_APP_CAPTURE_SEARCH_DIR || undefined);
     return;
   }
   try {

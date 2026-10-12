@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import http from "node:http";
 import { once } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import nodePath from "node:path";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
 
@@ -758,6 +761,55 @@ test("Codex built-in web search gets a clear classroom refusal and never reaches
     assert.match((await other.json() as { error: { message: string } }).error.message, /尚未支援所選 adapter：\/v1\/responses\/compact/);
     assert.equal(calls.length, 0);
   }, {});
+});
+
+async function captured(run: (directory: string) => Promise<void>): Promise<Array<Record<string, unknown>>> {
+  const directory = await fs.mkdtemp(nodePath.join(os.tmpdir(), "vanspod-capture-"));
+  try {
+    await run(directory);
+    const names = (await fs.readdir(directory)).sort();
+    return await Promise.all(names.map(async name => JSON.parse(await fs.readFile(nodePath.join(directory, name), "utf8"))));
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+}
+
+test("Search request capture records any Codex search command without credentials and leaves the refusal unchanged", async () => {
+  const commands = [{ commands: { search_query: [{ q: "台中活動" }] } }, { commands: { open: [{ ref_id: "https://example.com/?token=synthetic-key" }] } }];
+  await withRouter(async (routerBaseUrl, calls) => {
+    const send = (body: string, directory?: string) => sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: "/v1/alpha/search?key=synthetic-key", apiKey: "synthetic-key",
+      headers: { authorization: "Bearer synthetic-bearer", cookie: "session=synthetic-cookie" }, body: `${body.slice(0, -1)},"echo":"synthetic-bearer session=synthetic-cookie"}` }, routerBaseUrl, directory);
+    const plain = await (await send(JSON.stringify(commands[0]))).text();
+    const records = await captured(async directory => {
+      for (const body of commands) {
+        const response = await send(JSON.stringify(body), directory);
+        assert.equal(response.status, 400);
+        assert.equal(await response.text(), plain);
+      }
+    });
+    assert.deepEqual(records.map(record => [record.client, record.path, record.body]), [
+      ["codex", "/v1/alpha/search?key=[redacted]", { ...commands[0], echo: "[redacted] [redacted]" }],
+      ["codex", "/v1/alpha/search?key=[redacted]", { commands: { open: [{ ref_id: "https://example.com/?token=[redacted]" }] }, echo: "[redacted] [redacted]" }],
+    ]);
+    assert.doesNotMatch(JSON.stringify(records), /synthetic-(key|bearer|cookie)|authorization/i);
+    assert.equal(calls.length, 0);
+  }, {});
+});
+
+test("Search request capture records only the Claude Code request that declares the server-side web search tool", async () => {
+  const search = { model: "claude-synthetic", max_tokens: 100, messages: [{ role: "user", content: "Perform a web search for the query: 台中活動" }], tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }] };
+  const ordinary = { ...search, tools: [{ name: "Read", description: "read a file", input_schema: { type: "object" } }] };
+  for (const adapter of ["chat", "responses"] as const) await withRouter(async (routerBaseUrl, calls) => {
+    const send = (body: unknown, directory?: string) => sendRouter({ client: "claude", target: "router", model: "allowed", adapter, path: "/v1/messages?beta=true", apiKey: "synthetic-key",
+      headers: { "x-api-key": "synthetic-header-key" }, body: JSON.stringify(body) }, routerBaseUrl, directory);
+    const plain = await send(search); const reached = calls.length;
+    const records = await captured(async directory => {
+      const response = await send(search, directory);
+      assert.equal(response.status, plain.status);
+      assert.equal(await response.text(), await plain.text());
+      assert.equal(calls.length, reached * 2);
+      await (await send(ordinary, directory)).text();
+    });
+    assert.deepEqual(records.map(record => [record.client, record.path, record.body]), [["claude", "/v1/messages?beta=true", search]]);
+  }, { choices: [{ message: { content: "hello" }, finish_reason: "stop" }], status: "completed", output: [] });
 });
 
 test("Chat keeps a compacted or extended Codex history usable instead of rejecting it", async () => {
