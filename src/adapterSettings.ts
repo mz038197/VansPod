@@ -1,7 +1,5 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 import type { AdapterClient, AdapterId } from "./adapters";
+import { createClientRouteSettingsStorage } from "./clientRoutes";
 
 export type AdapterSettings = { codex: "chat" | "responses"; claude: AdapterId };
 export interface AdapterSettingsStorage {
@@ -21,21 +19,20 @@ function settings(value: unknown): AdapterSettings {
 
 // Non-secret app preferences are separate from Classroom Connection and survive its removal.
 export function createAdapterSettingsStorage(filename: string): AdapterSettingsStorage {
+  const routes = createClientRouteSettingsStorage(filename);
   return {
     async load() {
-      let raw: string;
-      try { raw = await fs.readFile(filename, "utf8"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaultAdapters(); throw new Error("無法讀取 adapter 設定。"); }
-      const document = JSON.parse(raw) as { version?: unknown; adapters?: unknown };
-      if (document?.version !== 1) throw new Error("adapter 設定版本無效。");
-      return settings(document.adapters);
+      const saved = await routes.load();
+      return settings({ codex: saved.codex.adapter, claude: saved.claudeCode.adapter });
     },
     async save(next) {
       const value = settings(next);
-      await fs.mkdir(path.dirname(filename), { recursive: true });
-      const temporary = `${filename}.${randomUUID()}.tmp`;
-      try { await fs.writeFile(temporary, JSON.stringify({ version: 1, adapters: value }) + "\n", "utf8"); await fs.rename(temporary, filename); }
-      finally { await fs.rm(temporary, { force: true }); }
+      const saved = await routes.load();
+      await routes.save({
+        ...saved,
+        codex: { ...saved.codex, adapter: value.codex },
+        claudeCode: { ...saved.claudeCode, adapter: value.claude },
+      });
     },
   };
 }
