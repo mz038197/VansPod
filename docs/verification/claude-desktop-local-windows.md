@@ -14,7 +14,7 @@ Claude Code 官方文件支援以 `~/.claude/settings.json` 的 `env.ANTHROPIC_B
 
 ## 測試環境與乾淨起點
 
-2026-10-13（Asia/Taipei）盤點：
+2026-10-13（Asia/Taipei）盤點及執行：
 
 - Windows 10 Pro，build `26300`，x64。
 - Claude Desktop `2.31226.1.0`，安裝於 Microsoft Store package `Claude_2.31226.1.0_x64__pzs8sxrjxfjjc`。
@@ -24,7 +24,7 @@ Claude Code 官方文件支援以 `~/.claude/settings.json` 的 `env.ANTHROPIC_B
 - `127.0.0.1:47821`、`:47822`、`:47823` 均無 listener。
 - `~/.claude/settings.json` 是有效 JSON，沒有 root 或 `env` 中的 `ANTHROPIC_BASE_URL`；盤點時 SHA-256 為 `EE051BAFB1AFE29F24C06A7FE0741426E1784E00BAA5E5F7032830D1B07A19B2`。只記錄雜湊、欄位存在性與檔案大小，不記錄設定內容或憑證。
 - VansPod 的受保護 Classroom Connection 已存在；沒有讀取、解密或輸出 Classroom API Key。
-- Claude Desktop 尚未退出：盤點時有主 app 與五個既有 Desktop Code worker，因此這一刻不是可執行驗收的乾淨 Desktop 起點。
+- 第一次盤點時 Claude Desktop 有主 app 與五個既有 Desktop Code worker。取得使用者明確同意關閉及重開後，使用者先正常退出；`2026-10-13T00:04:34+08:00` 再確認 Desktop app 與 Desktop Code worker 均為 0，形成乾淨 Desktop 起點。
 - UI 原始碼仍顯示 `Claude Code CLI`；本次結果通過全部準則前不得改名。
 
 ## 可重跑程序
@@ -43,6 +43,26 @@ Claude Code 官方文件支援以 `~/.claude/settings.json` 的 `env.ANTHROPIC_B
 
 ## 結果
 
-尚未執行會終止／重啟 Claude Desktop 或建立、送出 Desktop 對話的步驟。這些動作會中斷現有使用者 session 並產生外部對話，須取得使用者明確授權後才能繼續。現階段不滿足 #20 的 Desktop 通過條件，產品名稱與文件聲明維持 `Claude Code CLI`。
+結果為 **未通過，維持 CLI-only**。阻擋發生在建立 Desktop session 之前，沒有安全或受支援的下一步可繞過：
+
+1. 從上述乾淨 Desktop 起點啟動整合基準的 VansPod。三個正式 listener 分別在 `127.0.0.1:47821`、`:47822`、`:47823` 正常監聽，Codex、Claude Code CLI、VS Code 三路均顯示可用。
+2. 受保護的 Classroom Connection 能恢復，但 Session Model Allowlist 為 0。按 Reload 後 VansPod 明確回報「重新載入課堂模型失敗，已保留上次成功的模型清單」，而上次成功清單也是空的。
+3. Router origin 可連通（未帶憑證的 `HEAD` 回覆 HTTP 405，而不是 DNS、TLS 或連線失敗）；Claude listener 的 `GET /v1/models` 回覆 HTTP 200，但 `data` 為 0 筆。驗證沒有讀取或輸出 Classroom API Key，也沒有直接帶憑證探測 Router。
+4. 依 Client Route 規格，沒有有效 allowlist 時 Classroom 按鈕保持停用，VansPod 不得寫入 Claude gateway 設定。因此沒有偽造模型、強行 POST 模式、啟動假 Router、使用內建模型別名，亦沒有建立一個其實未套用 Classroom routing 的 Desktop session 冒充驗收。
+5. 本機 Windows computer-use RPC 也未配置：app/browser inventory 為空，bundled helper 回報 `Trusted RPC service is not configured: sky`。即使 allowlist 可用，picker、Desktop request 與普通 Chat 仍需使用者手動操作或先修復該驗證環境；CLI 流量不得取代 Desktop 證據。
+6. 透過 VansPod Stop 完成清理後，47821～47823 全部停止監聽；`~/.claude/settings.json` SHA-256 仍為 `EE051BAFB1AFE29F24C06A7FE0741426E1784E00BAA5E5F7032830D1B07A19B2`，且仍沒有 `ANTHROPIC_BASE_URL`；受保護 connection 檔案 SHA-256 亦與起點相同。VansPod settings 只完成 ADR-0006 的 versioned route 初始化，三路皆為 Native／Responses。最後重新啟動 Claude Desktop，恢復使用者原本的 app 狀態。
+
+| #20 驗收項目 | 結果 |
+| --- | --- |
+| 記錄 Windows、Desktop、Code 版本與乾淨起點 | 通過 |
+| Classroom routing 後建立新的 Desktop Code Local session | 未執行：沒有有效 allowlist，routing 依法不可套用 |
+| Desktop picker 顯示 classroom models | 未執行 |
+| Desktop 選定模型經 Claude Client Route 成功 | 未執行 |
+| 普通 Desktop Chat 保持官方連線 | 未執行；未建立測試對話 |
+| Native restoration 後新 Desktop session 回官方行為 | 不適用：從未離開 Native；設定與 connection 完整性已驗證 |
+| 無 CA／TLS interception／cookie proxy／picker rewrite／alias impersonation | 通過 |
+| 未全數通過時維持 CLI-only 並留下可重跑限制 | 通過 |
+
+這個結果不表示 Claude Desktop 已被證明不相容；它表示本次指定實機環境無法建立具有效 Session Model Allowlist 的 Classroom 前置條件，因此不能對 Desktop 支援做正面聲明。產品名稱與文件聲明維持 `Claude Code CLI`。
 
 程式回歸基線：`npm test` 為 273/273 通過（另 2 個 retired seam skip），`npm run typecheck` 通過。
