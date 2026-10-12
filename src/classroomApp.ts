@@ -346,6 +346,12 @@ export class ClassroomApp {
     return JSON.parse(rendered) as ClassroomAppView;
   }
 
+  private redactSecrets(value: string): string {
+    let redacted = value;
+    for (const key of this.hiddenKeys) redacted = redacted.split(key).join("[redacted]");
+    return redacted;
+  }
+
   private clientRouteView(): ClientRoutes {
     return {
       codex: { ...this.clientRoutes.codex },
@@ -455,6 +461,17 @@ export class ClassroomApp {
   }
 
   private async forwardUpstream(request: ClientForward): Promise<UpstreamSend> {
+    if (this.deps.clientRouteRuntime && !this.proxyRunning) {
+      if (request.client === "codex" && this.clientRoutes.codex.health === "red") {
+        throw new Error("Codex Client Route 尚未恢復。請重開 Codex 後再試。");
+      }
+      if (request.client === "claude" && this.clientRoutes.claudeCode.health === "red") {
+        throw new Error("Claude Code Client Route 尚未恢復。請重開 Claude Code CLI 後再試。");
+      }
+      if (request.client === "copilot" && this.clientRoutes.vsCodeChat.health === "red") {
+        throw new Error("VS Code Client Route 尚未恢復。請重開 VS Code 後再試。");
+      }
+    }
     if (!this.proxyRunning) {
       throw new Error(
         request.client === "copilot"
@@ -651,6 +668,11 @@ export class ClassroomApp {
   private async restoreModelOptions(): Promise<void> {
     await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
     await this.deps.routes.setClaudeRoute(false, this.deps.proxyBaseUrl);
+    await this.deps.routes.setModelOptions(null);
+  }
+
+  private async restoreCodexRouteSettings(): Promise<void> {
+    await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
     await this.deps.routes.setModelOptions(null);
   }
 
@@ -1080,6 +1102,7 @@ export class ClassroomApp {
   private async startCodexRoute(): Promise<void> {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
+    const retryingNativeRecovery = this.clientRoutes.codex.health === "red" && this.clientRoutes.codex.mode === "native";
     let health: "green" | "red" = "red";
     try {
       const started = await runtime.start("codex");
@@ -1103,6 +1126,14 @@ export class ClassroomApp {
       this.clientRoutes.codex.mode = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
+    if (retryingNativeRecovery) {
+      try { await this.restoreCodexRouteSettings(); }
+      catch {
+        this.clientRoutes.codex.health = "red";
+        this.clientRoutes.codex.restart = "ready";
+        return;
+      }
+    }
     // Listener recovery never restores Classroom automatically after a red failure.
     this.clientRoutes.codex.health = "green";
     this.clientRoutes.codex.restart = "ready";
@@ -1114,6 +1145,7 @@ export class ClassroomApp {
   private async startVsCodeRoute(): Promise<void> {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
+    const retryingNativeRecovery = this.clientRoutes.vsCodeChat.health === "red" && this.clientRoutes.vsCodeChat.mode === "native";
     if (!this.detectedClients.vsCodeChat) {
       this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "gray", restart: "ready" };
       return;
@@ -1130,6 +1162,17 @@ export class ClassroomApp {
     this.vsCodeOrigin = started.origin;
     if (started.health !== "green") {
       await this.failVsCodeRouteStart();
+      return;
+    }
+    if (retryingNativeRecovery) {
+      try {
+        await this.deps.vsCodeRouteSettings?.restore();
+        this.clientRoutes.vsCodeChat.health = "green";
+        this.clientRoutes.vsCodeChat.restart = "ready";
+      } catch {
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.clientRoutes.vsCodeChat.restart = "ready";
+      }
       return;
     }
     if (alreadyRunning) return;
@@ -1168,6 +1211,7 @@ export class ClassroomApp {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
     const route = this.clientRoutes.claudeCode;
+    const retryingNativeRecovery = route.health === "red" && route.mode === "native";
     if (!this.detectedClients.claude) {
       route.mode = "native";
       route.health = "gray";
@@ -1195,6 +1239,15 @@ export class ClassroomApp {
     if (route.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
       route.mode = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
+    }
+    if (retryingNativeRecovery) {
+      try {
+        await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+      } catch {
+        route.health = "red";
+        route.restart = "ready";
+        return;
+      }
     }
     route.health = "green";
     route.restart = "ready";
@@ -1293,7 +1346,8 @@ export class ClassroomApp {
         } catch { this.clientRoutes.vsCodeChat.health = "red"; }
       }
       this.forgetModelChoices();
-      await this.restoreModelOptions();
+      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
+      else await this.restoreModelOptions();
       return;
     }
     const previous = this.modelIds;
@@ -1403,7 +1457,8 @@ export class ClassroomApp {
     this.forgetModelChoices();
     let restoreFailed = false;
     try {
-      await this.restoreModelOptions();
+      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
+      else await this.restoreModelOptions();
       if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
         this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
       }
@@ -1545,7 +1600,8 @@ export class ClassroomApp {
     this.deps.proxy.stop();
     let failure: unknown;
     try {
-      await this.restoreModelOptions();
+      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
+      else await this.restoreModelOptions();
       await this.deps.clientRouteRuntime?.stop("codex");
     } catch (error) {
       failure = error;
@@ -1569,7 +1625,10 @@ export class ClassroomApp {
       failure ??= error;
       this.clientRoutes.vsCodeChat.health = "red";
     }
-    if (failure) throw failure;
+    if (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      throw new Error(this.redactSecrets(message || "無法停止 Client Route。"));
+    }
   }
 
   private noteRestart(client: MustRestartClient): void {
