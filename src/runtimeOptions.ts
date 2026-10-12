@@ -2,7 +2,8 @@
 export function readRuntimeOptions(environment: Record<string, string | undefined>) {
   const rawPort = environment.CLASSROOM_APP_PORT;
   const port = rawPort === undefined ? 47821 : Number(rawPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || rawPort === "") {
+  // The base reserves itself and the next two ports for the three Client Routes.
+  if (!Number.isInteger(port) || port < 1 || port > 65533 || rawPort === "") {
     throw new Error("VansPod 連接埠設定無效。");
   }
   const desktop = environment.CLASSROOM_APP_HEADLESS !== "1";

@@ -10,5 +10,5 @@ it("headless runtime uses a private port and disables desktop actions and client
 
 it("normal runtime preserves the established desktop defaults and rejects invalid ports", () => {
   assert.deepEqual(readRuntimeOptions({}), { port: 47821, desktop: true, restartClients: true });
-  for (const port of ["0", "65536", "bad", "47821.5"]) assert.throws(() => readRuntimeOptions({ CLASSROOM_APP_PORT: port }), /連接埠/);
+  for (const port of ["0", "65534", "65535", "65536", "bad", "47821.5"]) assert.throws(() => readRuntimeOptions({ CLASSROOM_APP_PORT: port }), /連接埠/);
 });

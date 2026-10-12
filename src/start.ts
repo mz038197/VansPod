@@ -26,6 +26,7 @@ import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody } from "./responsesChat";
 import { createAdapterSettingsStorage } from "./adapterSettings";
 import { createClientRouteSettingsStorage } from "./clientRoutes";
+import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { sendRouter, relayResponse } from "./modelProxy";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -433,17 +434,6 @@ function createProxy() {
   };
 }
 
-function clientOf(req: http.IncomingMessage, pathname: string): ProxyClient {
-  if (pathname.endsWith("/messages") || req.headers["anthropic-version"]) {
-    return "claude";
-  }
-  const agent = String(req.headers["user-agent"] ?? "");
-  if (/copilot/i.test(agent)) {
-    return "copilot";
-  }
-  return "codex";
-}
-
 function modelFromBody(body: string): string {
   try {
     const parsed: unknown = JSON.parse(body);
@@ -517,10 +507,20 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
 async function main(): Promise<void> {
   const routeFiles = createRouteFiles(routePaths());
   const settingsFile = path.join(os.homedir(), ".vanspod", "settings.json");
+  let dispatch!: (
+    accepted: AcceptedClientRoute,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ) => Promise<void>;
+  const clientRouteRuntime = createClientRouteRuntime({
+    basePort: port,
+    handle: (accepted, req, res) => dispatch(accepted, req, res),
+  });
   const app = new ClassroomApp({
     detectClient,
     adapterSettings: createAdapterSettingsStorage(settingsFile),
     clientRouteSettings: createClientRouteSettingsStorage(settingsFile),
+    clientRouteRuntime,
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
     projectFiles: { readClassroomInstalls },
@@ -553,9 +553,7 @@ async function main(): Promise<void> {
     proxy: createProxy(),
     send: sendUpstream,
   });
-  await app.start();
-
-  const server = http.createServer(async (req, res) => {
+  dispatch = async (accepted, req, res) => {
     const parsed = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
     const pathname = parsed.pathname;
     const goHome = (params?: URLSearchParams) => {
@@ -734,12 +732,17 @@ async function main(): Promise<void> {
         (req.method === "POST" || req.method === "PUT") &&
         (pathname.startsWith("/v1/") || pathname.startsWith("/backend-api/"))
       ) {
+        if (accepted.route !== "codex") {
+          res.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ error: { message: "Codex Client Route 目前無法使用。" } }));
+          return;
+        }
         const controller = new AbortController(); activeRequests.add(controller);
         const aborted = () => controller.abort();
         req.once("aborted", aborted);
         const closed = () => { if (!res.writableFinished) controller.abort(); };
         res.once("close", closed);
-        const client = clientOf(req, pathname);
+        const client: ProxyClient = "codex";
         try {
           const body = await readBody(req, 20_971_520);
           const slot: { response?: Response } = {};
@@ -747,8 +750,14 @@ async function main(): Promise<void> {
           for (const name of ["anthropic-version", "anthropic-beta"]) {
             const value = req.headers[name]; if (typeof value === "string") headers[name] = value;
           }
-          await responseSlot.run(slot, () => app.forward({ client, model: modelFromBody(body), method: req.method, path: pathname, body, headers, signal: controller.signal }));
-          if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, client === "claude" ? "claude" : "codex", controller.signal);
+          try {
+            await responseSlot.run(slot, () => app.forward({ client, model: modelFromBody(body), method: req.method, path: pathname, body, headers, signal: controller.signal }));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            if (!message.includes("重開 Codex")) throw error;
+            slot.response = Response.json({ error: { message } }, { status: 409 });
+          }
+          if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, "codex", controller.signal);
         } finally {
           controller.abort(); activeRequests.delete(controller);
           req.removeListener("aborted", aborted); res.removeListener("close", closed);
@@ -775,29 +784,21 @@ async function main(): Promise<void> {
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("VansPod 暫時無法完成這個動作。");
     }
-  });
+  };
 
-  server.on("error", () => {
-    process.stderr.write(`無法在 127.0.0.1:${port} 開啟 VansPod。\n`);
-    process.exit(1);
-  });
-  server.listen(port, "127.0.0.1", () => {
-    void app.start().catch(() => {
-      process.stderr.write("無法寫入 VCRouter。\n");
-    });
-    const home = pageUrl;
-    const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
-    if (runtimeOptions.desktop) openBrowser(home);
-    const shutdown = () => {
-      abortRequests();
-      tray?.kill();
-      server.close();
-      process.exit(0);
-    };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-    process.stdout.write(`VansPod: ${home}\n`);
-  });
+  await app.start();
+  const started = clientRouteRuntime.current?.("codex") ?? await clientRouteRuntime.start("codex");
+  const home = `${started.origin}/`;
+  const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
+  if (runtimeOptions.desktop) openBrowser(home);
+  const shutdown = () => {
+    abortRequests();
+    tray?.kill();
+    void clientRouteRuntime.stop().finally(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.stdout.write(`VansPod: ${home}\n`);
 }
 
 void main();

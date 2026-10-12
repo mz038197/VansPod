@@ -44,12 +44,29 @@ describe("VansPod page", () => {
       allowedModels: ["lesson-one", "lesson<&two"],
     }));
     const adapters = [...html.matchAll(/<form[^>]*action="\/adapter"[\s\S]*?<\/form>/g)].map(item => item[0]);
-    assert.match(adapters[0], /<select[^>]*disabled/);
+    assert.doesNotMatch(adapters[0], /<select[^>]*disabled/);
     assert.doesNotMatch(adapters[1], /<select[^>]*disabled/);
     assert.match(html, /class="client-light detected"[^>]*title="Codex 已偵測"/);
     assert.match(html, /class="client-light"[^>]*title="Claude Code 未偵測"/);
     assert.equal((html.match(/<form[^>]*action="\/switch"/g) ?? []).length, 2);
     assert.match(html, /<li>lesson&lt;&amp;two<\/li>/);
+  });
+  it("shows red Codex health and disables its Classroom controls", () => {
+    const html = renderPage(view({
+      connected: true,
+      allowedModels: ["lesson-one"],
+      detectedClients: { codex: true, claude: false },
+      clientRoutes: {
+        codex: { id: "codex", mode: "native", adapter: "responses", health: "red", restart: "ready" },
+        claudeCode: { id: "claudeCode", mode: "native", adapter: "responses", health: "gray", restart: "ready" },
+        vsCodeChat: { id: "vsCodeChat", mode: "native", adapter: "responses", health: "gray", restart: "ready" },
+      },
+    }));
+    const codexSwitch = html.match(/<form class="modes client-modes"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? "";
+    const codexAdapter = html.match(/<form class="adapter-row"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? "";
+    assert.match(html, /class="client-light health-red"[^>]*title="Codex 入口失敗"/);
+    assert.match(codexSwitch, /value="classroom"[^>]*disabled/);
+    assert.match(codexAdapter, /<select[^>]*disabled/);
   });
   it("keeps all connection feedback inside the connection card above its actions, without duplicates", () => {
     const messages = [

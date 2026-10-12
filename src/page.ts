@@ -124,9 +124,15 @@ function adapterForms(view: ClassroomAppView): string {
     const options = choices.map(id => `<option value="${id}"${selected[client] === id ? " selected" : ""}>${id === "responses" ? "Responses" : id === "chat" ? "Chat" : "Messages"}</option>`).join("");
     const mode = view.clientModes?.[client] ?? view.mode;
     const detected = view.detectedClients?.[client] ?? false;
-    const status = `${clientLabel(client)} ${detected ? "已偵測" : "未偵測"}`;
+    const route = client === "codex" ? view.clientRoutes?.codex : view.clientRoutes?.claudeCode;
+    const health = route && route.health !== "gray" ? route.health : detected ? "green" : "gray";
+    const healthText = health === "red" ? "入口失敗" : health === "yellow" ? "等待重開" : health === "green" ? "可用" : "未偵測";
+    const status = `${clientLabel(client)} ${route && route.health !== "gray" ? healthText : detected ? "已偵測" : "未偵測"}`;
+    const lightClass = health === "green" ? " detected" : health === "red" || health === "yellow" ? ` health-${health}` : "";
+    const codexHealthy = client !== "codex" || health === "green" || health === "yellow";
     const available = view.connected && (view.allowedModels?.length ?? (view.modelId ? 1 : 0)) > 0;
-    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${detected ? " detected" : ""}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${mode !== "classroom" || view.commandRunning ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
+    const adapterDisabled = view.commandRunning || !codexHealthy || (client !== "codex" && mode !== "classroom");
+    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${lightClass}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !codexHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
   }).join("");
   return forms + (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
@@ -925,6 +931,8 @@ export function renderPage(view: ClassroomAppView): string {
     .client-light { position: relative; display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: light-dark(#b58a39, #c5a15b); box-shadow: 0 0 0 2px light-dark(rgba(181, 138, 57, 0.08), rgba(197, 161, 91, 0.09)); }
     .client-light:focus-visible::after { content: attr(title); position: absolute; top: 14px; left: -6px; z-index: 10; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--tile); color: var(--text); font-size: 11px; white-space: nowrap; }
     .client-light.detected { background: light-dark(#4b9274, #70b697); box-shadow: 0 0 0 2px light-dark(rgba(75, 146, 116, 0.08), rgba(112, 182, 151, 0.09)); }
+    .client-light.health-yellow { background: #c9932b; }
+    .client-light.health-red { background: #c95757; }
     main .client-modes button { min-height: 30px; padding: 5px 10px; font-size: 12px; }
     @container (max-width: 330px) {
       .model-client { grid-template-columns: minmax(0, 1fr) auto; }
