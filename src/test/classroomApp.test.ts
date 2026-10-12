@@ -6,6 +6,7 @@ import { createConnectionStorage, createMemorySecureStorage, type ConnectionStor
 import { withVsCodeBaseUrl, withoutVsCodeBaseUrl, anthropicBaseValues, type ModelOptions } from "../routeFiles";
 import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
+import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -320,6 +321,7 @@ function harness(
     detectClient?: (client: "codex" | "claude") => Promise<boolean>;
     adapterSettings?: AdapterSettingsStorage;
     clientRouteSettings?: ClientRouteSettingsStorage;
+    clientRouteRuntime?: ClientRouteRuntime;
     storage?: ConnectionStorage;
     send?: (upstream: UpstreamSend) => Promise<void>;
     redeemError?: Error;
@@ -376,6 +378,7 @@ function harness(
     detectClient: options?.detectClient,
     adapterSettings: options?.adapterSettings,
     clientRouteSettings: options?.clientRouteSettings,
+    clientRouteRuntime: options?.clientRouteRuntime,
     router: {
       async redeemNickname(body) {
         redeemCalls.push(body);
@@ -737,6 +740,130 @@ it("detects clients on startup and refresh without treating probe failure as a c
   assert.deepEqual(h.app.view().detectedClients, { codex: true, claude: false });
   found = false; await h.app.reloadAllowlist();
   assert.deepEqual(h.app.view().detectedClients, { codex: false, claude: false });
+});
+
+it("keeps a failed Codex listener red and Native without writing Classroom settings", async () => {
+  let saved = {
+    codex: { mode: "classroom" as const, adapter: "chat" as const },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as const, adapter: "responses" as const },
+  };
+  const starts: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route): Promise<ClientRouteStart> {
+      starts.push(route);
+      return { route, health: "red", origin: "http://127.0.0.1:54321" };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+  });
+
+  await h.app.start();
+
+  assert.deepEqual(starts, ["codex"]);
+  assert.equal(h.app.view().clientRoutes?.codex.health, "red");
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+  assert.equal(saved.codex.mode, "native");
+  assert.equal(h.docs.codex.openai_base_url, undefined);
+});
+
+it("a recovered Codex listener stays Native and allows adapter preparation", async () => {
+  let healthy = false;
+  let saved = {
+    codex: { mode: "classroom" as "native" | "classroom", adapter: "responses" as "responses" | "chat" },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as const, adapter: "responses" as const },
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: healthy ? "green" : "red", origin: "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+  });
+  await h.app.start();
+  healthy = true;
+
+  await h.app.reloadAllowlist();
+  await h.app.setAdapter("codex", "chat");
+
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.codex.adapter, "chat");
+  assert.equal(saved.codex.adapter, "chat");
+});
+
+it("switches healthy Codex through its independent route state and rejects stale Native requests", async () => {
+  let saved = {
+    codex: { mode: "native" as "native" | "classroom", adapter: "responses" as "responses" | "chat" },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as const, adapter: "responses" as const },
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+  });
+  await h.app.start();
+  await assert.rejects(h.app.forward({ client: "codex", model: "personal" }), /重開 Codex/);
+  await h.app.redeem("DEMO", "Student");
+
+  await h.app.setSwitch("classroom", "codex");
+
+  assert.equal(saved.codex.mode, "classroom");
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "classroom");
+  assert.equal(h.app.view().clientRoutes?.codex.health, "yellow");
+  assert.equal(h.docs.codex.openai_base_url, `${PROXY}/v1`);
+  await h.app.forward({ client: "codex", model: "later" });
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+
+  await h.app.setSwitch("native", "codex");
+  assert.equal(saved.codex.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  await assert.rejects(h.app.forward({ client: "codex", model: "later" }), /重開 Codex/);
+
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.clearConnection();
+  assert.equal(saved.codex.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+});
+
+it("stops the Codex listener only after restoring its Native settings", async () => {
+  const events: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: "http://127.0.0.1:47821" }; },
+    async stop(route) { events.push(`stop:${route}`); },
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex",
+    clientRouteRuntime: runtime,
+    async setModelOptions(value) { if (value === null) events.push("restore"); },
+  });
+  await h.app.start();
+  events.length = 0;
+
+  await h.app.stop();
+
+  assert.deepEqual(events, ["restore", "stop:codex"]);
 });
 
 it("switching adapters leaves an ongoing send unchanged and applies to the next request", async () => {

@@ -7,6 +7,7 @@ import {
   type ClientRoutes,
   type ClientRouteSettingsStorage,
 } from "./clientRoutes";
+import type { ClientRouteRuntime } from "./clientRouteRuntime";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -53,6 +54,7 @@ export type ClassroomAppDeps = {
   detectClient?(client: AdapterClient): Promise<boolean>;
   adapterSettings?: AdapterSettingsStorage;
   clientRouteSettings?: ClientRouteSettingsStorage;
+  clientRouteRuntime?: ClientRouteRuntime;
   router: {
     redeemNickname(body: {
       invite_code: string;
@@ -432,6 +434,10 @@ export class ClassroomApp {
     // Only select a coherent connection and permissions under the lock; streaming stays concurrent.
     const upstream = await this.serialConnectionOperation(() => this.forwardUpstream(request));
     await this.deps.send(withHttp(upstream, request));
+    if (this.deps.clientRouteRuntime && request.client === "codex" && this.clientModes.codex === "classroom") {
+      this.clientRoutes.codex.health = "green";
+      this.clientRoutes.codex.restart = "ready";
+    }
     return forwardedRecord(upstream);
   }
 
@@ -450,6 +456,9 @@ export class ClassroomApp {
         throw new Error("沒有上課模型。");
       }
       return upstream;
+    }
+    if (request.client === "codex" && this.deps.clientRouteRuntime && this.clientModes.codex === "native") {
+      throw new Error("Codex 已切回 Native。請重開 Codex 後再試。");
     }
     if (this.clientModes[request.client] === "classroom") {
       const upstream = await this.classroomUpstream(request.client, request.model);
@@ -486,6 +495,27 @@ export class ClassroomApp {
   async setAdapter(client: AdapterClient, id: string): Promise<void> {
     if (!isAdapterChoice(client, id)) throw new Error(`無效的 ${client === "codex" ? "Codex" : "Claude Code"} adapter。`);
     await this.serialConnectionOperation(async () => {
+      if (client === "codex" && this.deps.clientRouteRuntime) {
+        if (this.clientRoutes.codex.health === "red" || this.clientRoutes.codex.health === "gray") {
+          this.adapterNotice = "Codex Client Route 目前無法變更 adapter。";
+          return;
+        }
+        const previous = this.clientRoutes.codex.adapter;
+        this.clientRoutes.codex.adapter = id;
+        try { await this.saveClientRoutePreferences(); }
+        catch {
+          this.clientRoutes.codex.adapter = previous;
+          this.adapterNotice = "無法儲存 adapter 選擇，已保留原本設定。";
+          return;
+        }
+        this.adapters = { ...this.adapters, codex: id === "messages" ? "responses" : id };
+        if (this.clientRoutes.codex.mode === "classroom") {
+          this.clientRoutes.codex.health = "yellow";
+          this.clientRoutes.codex.restart = "restart-required";
+        }
+        this.adapterNotice = undefined;
+        return;
+      }
       if (this.clientModes[client] !== "classroom") {
         this.adapterNotice = "請先將這個客戶端切換到課堂模式。";
         return;
@@ -723,6 +753,10 @@ export class ClassroomApp {
   }
 
   private async setClientSwitch(mode: ModelSwitchMode, client: AdapterClient): Promise<void> {
+    if (client === "codex" && this.deps.clientRouteRuntime) {
+      await this.setCodexClientRouteSwitch(mode);
+      return;
+    }
     if (mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
       this.notice = "請先連線到有可用模型的課堂。";
       return;
@@ -752,6 +786,41 @@ export class ClassroomApp {
       this.notice = "無法更新客戶端模型設定，請稍後再試。" +
         (restored ? " 已保留原本模式。" : " 目前使用個人模式，部分客戶端設定需要重新檢查。") +
         (persisted ? "" : " 無法儲存恢復後的模式，請重試。");
+    }
+  }
+
+  private async setCodexClientRouteSwitch(mode: ModelSwitchMode): Promise<void> {
+    const route = this.clientRoutes.codex;
+    if (route.health === "red" || route.health === "gray") {
+      this.notice = "Codex Client Route 目前無法切換 Classroom。";
+      return;
+    }
+    if (mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.notice = "請先連線到有可用模型的課堂。";
+      return;
+    }
+    if (route.mode === mode) return;
+    const previousRoute = { ...route };
+    const previousModes = { ...this.clientModes };
+    route.mode = mode;
+    this.clientModes.codex = mode;
+    try {
+      // Preference persistence and the route-file journal both precede the client write.
+      await this.saveClientRoutePreferences();
+      const aggregate = Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
+      if (!await this.saveMode(aggregate, this.clientModes)) throw new Error("mode persistence failed");
+      await this.publishModelOptions("codex");
+      route.health = mode === "classroom" ? "yellow" : "green";
+      route.restart = mode === "classroom" ? "restart-required" : "ready";
+      route.adapter = this.adapters.codex;
+      this.notice = undefined;
+      this.adapterNotice = undefined;
+    } catch {
+      this.clientRoutes.codex = previousRoute;
+      this.clientModes = previousModes;
+      try { await this.saveClientRoutePreferences(); } catch { /* Keep the rollback visible in memory. */ }
+      try { await this.publishModelOptions("codex"); } catch { /* The route remains non-Classroom. */ }
+      this.notice = "無法更新 Codex Client Route，已保留原本模式。";
     }
   }
 
@@ -796,7 +865,46 @@ export class ClassroomApp {
 
   async reloadAllowlist(): Promise<void> {
     await this.detectClients();
+    if (this.deps.clientRouteRuntime) await this.startCodexRoute();
     return this.serialConnectionOperation(() => this.reloadAllowlistNow());
+  }
+
+  private async saveClientRoutePreferences(): Promise<void> {
+    await this.deps.clientRouteSettings?.save({
+      codex: { mode: this.clientRoutes.codex.mode, adapter: this.clientRoutes.codex.adapter },
+      claudeCode: { mode: this.clientRoutes.claudeCode.mode, adapter: this.clientRoutes.claudeCode.adapter },
+      vsCodeChat: { mode: this.clientRoutes.vsCodeChat.mode, adapter: this.clientRoutes.vsCodeChat.adapter },
+    });
+  }
+
+  private async startCodexRoute(): Promise<void> {
+    const runtime = this.deps.clientRouteRuntime;
+    if (!runtime) return;
+    let health: "green" | "red" = "red";
+    try { health = (await runtime.start("codex")).health === "green" ? "green" : "red"; }
+    catch { health = "red"; }
+    if (health === "red") {
+      this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "red", restart: "ready" };
+      this.clientModes.codex = "native";
+      try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
+      try { await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl); } catch { /* Retried on reload. */ }
+      return;
+    }
+    if (!this.detectedClients.codex) {
+      this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "gray", restart: "ready" };
+      this.clientModes.codex = "native";
+      return;
+    }
+    if (this.clientRoutes.codex.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.clientRoutes.codex.mode = "native";
+      try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
+    }
+    // Listener recovery never restores Classroom automatically after a red failure.
+    this.clientRoutes.codex.health = "green";
+    this.clientRoutes.codex.restart = "ready";
+    this.clientModes.codex = this.clientRoutes.codex.mode === "classroom" && this.connected && this.modelIds.length > 0
+      ? "classroom"
+      : "native";
   }
 
   private async detectClients(): Promise<void> {
@@ -902,11 +1010,21 @@ export class ClassroomApp {
     this.catalogError = undefined;
     this.remoteCatalogHeld = false;
     this.mode = "native";
+    if (this.deps.clientRouteRuntime) {
+      this.clientRoutes.codex.mode = "native";
+      this.clientRoutes.codex.restart = "ready";
+      try { await this.saveClientRoutePreferences(); }
+      catch { this.clientRoutes.codex.health = "red"; }
+    }
     this.modelIds = [];
     this.forgetModelChoices();
     try {
       await this.restoreModelOptions();
+      if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
+        this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
+      }
     } catch {
+      if (this.deps.clientRouteRuntime) this.clientRoutes.codex.health = "red";
       this.notice = this.connectionNotice = "課堂連線已清除，但無法恢復客戶端的 Native 模型設定。請稍後重試或重新啟動。";
     }
   }
@@ -929,12 +1047,14 @@ export class ClassroomApp {
             claudeCode: { ...this.clientRoutes.claudeCode, ...settings.claudeCode },
             vsCodeChat: { ...this.clientRoutes.vsCodeChat, ...settings.vsCodeChat },
           };
+          this.adapters = { ...this.adapters, codex: settings.codex.adapter as "responses" | "chat" };
         } catch {
           this.clientRoutes = defaultClientRoutes();
         }
       }
       await this.restoreConnection();
       await this.detectClients();
+      await this.startCodexRoute();
     })();
     await this.initialization;
     const codex = await this.deps.routes.readCodex();
@@ -1014,6 +1134,7 @@ export class ClassroomApp {
     this.proxyRunning = false;
     this.deps.proxy.stop();
     await this.restoreModelOptions();
+    await this.deps.clientRouteRuntime?.stop("codex");
   }
 
   private noteRestart(client: MustRestartClient): void {
