@@ -29,6 +29,7 @@ import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { sendRouter, relayResponse } from "./modelProxy";
+import { fetchSessionModelProviders } from "./routerSessionModels";
 
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
@@ -113,20 +114,7 @@ async function writeCopilotProviders(doc: {
 }
 
 async function fetchSessionModels(apiKey: string): Promise<VsCodeProvider[]> {
-  const root = routerBaseUrl();
-  const response = await fetch(`${root}/extension/chat-language-models`, {
-    signal: AbortSignal.timeout(5_000),
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-  });
-  if (!response.ok) {
-    throw new Error("session models failed");
-  }
-  const payload: unknown = await response.json();
-  if (!Array.isArray(payload)) return [];
-  return payload.filter(isProviderRecord);
+  return fetchSessionModelProviders({ root: routerBaseUrl(), apiKey });
 }
 
 function isRedeemResult(value: unknown): value is NicknameRedeemResult {
