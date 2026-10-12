@@ -750,6 +750,9 @@ test("Codex built-in web search gets a clear classroom refusal and never reaches
     const message = (await search.json() as { error: { message: string } }).error.message;
     assert.match(message, /課堂模式不支援 Codex 內建的網路搜尋/);
     assert.match(message, /Do not retry/);
+    assert.match(message, /tell the user directly/i);
+    assert.match(message, /Do not use shell commands/);
+    assert.doesNotMatch(message, /another way|other way|instead|alternative|其他方式|改用/i);
     const other = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: "/v1/responses/compact", apiKey: "synthetic-key", body: "{}" }, routerBaseUrl);
     assert.equal(other.status, 400);
     assert.match((await other.json() as { error: { message: string } }).error.message, /尚未支援所選 adapter：\/v1\/responses\/compact/);
