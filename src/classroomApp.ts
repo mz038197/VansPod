@@ -16,11 +16,7 @@ import {
   type LessonSnippet,
 } from "./courseCatalog";
 import type { CommandResult } from "./commandRunner";
-import {
-  VS_CODE_ENV,
-  anthropicBaseValues,
-  type ModelOptions,
-} from "./routeFiles";
+import type { CodexRouteOptions } from "./routeFiles";
 
 export type NicknameRedeemResult = {
   api_key: string;
@@ -95,16 +91,9 @@ export type ClassroomAppDeps = {
   stopProcess(): void;
   proxyBaseUrl: string;
   routes: {
-    setCodexRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
-    setClaudeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
+    migrateLegacyState(proxyBaseUrl: string): Promise<void>;
+    setCodexRoute(options: CodexRouteOptions): Promise<void>;
     setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
-    readCodex(): Promise<Record<string, unknown>>;
-    writeCodex(doc: Record<string, unknown>): Promise<void>;
-    readClaudeTerminal(): Promise<Record<string, unknown>>;
-    writeClaudeTerminal(doc: Record<string, unknown>): Promise<void>;
-    readVsCodeClaude(): Promise<Record<string, unknown>>;
-    writeVsCodeClaude(doc: Record<string, unknown>): Promise<void>;
-    setModelOptions(options: ModelOptions | null): Promise<void>;
   };
   copilot: {
     read(): Promise<CopilotDocument>;
@@ -645,34 +634,25 @@ export class ClassroomApp {
       await this.restoreModelOptions();
       return;
     }
-    const options: ModelOptions = {
+    const options: CodexRouteOptions = {
+      mode: "classroom",
       ids: [...this.modelIds],
-      codexModel: this.sending.get("codex") ?? first,
-      claudeModel: this.sending.get("claude") ?? first,
+      selectedModel: this.sending.get("codex") ?? first,
       proxyBaseUrl: this.deps.proxyBaseUrl,
-      restartCodex: true,
-      clients: {
-        codex: this.clientModes.codex === "classroom",
-        claude: !this.deps.clientRouteRuntime && this.clientModes.claude === "classroom",
-      },
-      updateClient,
+      restart: true,
     };
-    if (updateClient !== "claude") await this.deps.routes.setCodexRoute(this.clientModes.codex === "classroom", this.deps.proxyBaseUrl);
-    if (!this.deps.clientRouteRuntime && updateClient !== "codex") {
-      await this.deps.routes.setClaudeRoute(this.clientModes.claude === "classroom", this.deps.proxyBaseUrl);
+    if (updateClient !== "claude") {
+      const mode = this.deps.clientRouteRuntime ? this.clientRoutes.codex.mode : this.clientModes.codex;
+      await this.deps.routes.setCodexRoute(mode === "classroom" ? options : { mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
     }
-    await this.deps.routes.setModelOptions(options);
   }
 
   private async restoreModelOptions(): Promise<void> {
-    await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
-    await this.deps.routes.setClaudeRoute(false, this.deps.proxyBaseUrl);
-    await this.deps.routes.setModelOptions(null);
+    await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
   }
 
   private async restoreCodexRouteSettings(): Promise<void> {
-    await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl);
-    await this.deps.routes.setModelOptions(null);
+    await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
   }
 
   prepare(actionId: string): void {
@@ -760,7 +740,7 @@ export class ClassroomApp {
       }
       return;
     }
-    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name, mode: this.mode, clientModes: { ...this.clientModes } };
+    const connection = { version: 1 as const, apiKey: redeemed?.api_key, session: redeemed?.session, nickname: name };
     if (!isClassroomConnection(connection)) {
       this.notice = this.connectionNotice = "兌換回應資料格式不正確，已保留原有課堂連線。請稍後再試。";
       return;
@@ -1067,7 +1047,9 @@ export class ClassroomApp {
   private async saveMode(mode: ModelSwitchMode, clientModes: ClientModes = { codex: mode, claude: mode }): Promise<boolean> {
     try {
       const connection = await this.deps.storage.getConnection();
-      if (connection) await this.deps.storage.setConnection({ ...connection, mode, clientModes }, { allowTemporary: false });
+      if (connection && !this.deps.clientRouteSettings) {
+        await this.deps.storage.setConnection({ ...connection, mode, clientModes }, { allowTemporary: false });
+      }
       this.notice = undefined;
       return true;
     } catch {
@@ -1116,7 +1098,7 @@ export class ClassroomApp {
       this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "red", restart: "ready" };
       this.clientModes.codex = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
-      try { await this.deps.routes.setCodexRoute(false, this.deps.proxyBaseUrl); } catch { /* Retried on reload. */ }
+      try { await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl }); } catch { /* Retried on reload. */ }
       return;
     }
     if (!this.detectedClients.codex) {
@@ -1549,6 +1531,7 @@ export class ClassroomApp {
           this.clientRoutes = defaultClientRoutes();
         }
       }
+      await this.deps.routes.migrateLegacyState(this.deps.proxyBaseUrl);
       await this.restoreConnection();
       await this.detectClients();
       await this.startCodexRoute();
@@ -1556,43 +1539,23 @@ export class ClassroomApp {
       await this.startVsCodeRoute();
     })();
     await this.initialization;
-    const codex = await this.deps.routes.readCodex();
-    const claude = await this.deps.routes.readClaudeTerminal();
-    const vsCode = await this.deps.routes.readVsCodeClaude();
-    const url = this.deps.proxyBaseUrl;
-    const hosts = previousHosts(url, [
-      codex.openai_base_url,
-      claude.ANTHROPIC_BASE_URL,
-      ...anthropicBaseValues(vsCode[VS_CODE_ENV]),
-    ]);
-    const doc = this.deps.vsCodeRouteSettings ? { providers: [] } : await this.deps.copilot.read();
-    const providers = Array.isArray(doc.providers) ? doc.providers : [];
-    const already = this.deps.vsCodeRouteSettings || providers.some((provider) => provider?.name === "VCRouter");
     this.deps.proxy.start();
     this.proxyRunning = true;
-    if (hosts.length > 0) {
-      this.notice = `路由原先指向 ${hosts.join("、")}。`;
-    }
     if (!this.routeRestartNoted) {
       this.noteRestart("codex");
       this.noteRestart("claude");
       this.routeRestartNoted = true;
     }
-    try {
-      if (this.mode === "classroom") await this.publishModelOptions();
-      else await this.restoreModelOptions();
-    } catch {
-      this.mode = "native";
-      this.notice = "無法完成客戶端設定恢復。備份已保留，請重試切換個人模式。";
-    }
-    if (!already) {
-      await this.deps.copilot.write({
-        providers: [
-          ...providers,
-          { name: "VCRouter", url },
-        ],
-      });
-      this.noteRestart("vscode");
+    // Embedders created before the route runtime existed still receive the Codex
+    // projection. The shipped app always supplies the independent runtime.
+    if (!this.deps.clientRouteRuntime) {
+      try {
+        if (this.mode === "classroom") await this.publishModelOptions();
+        else await this.restoreModelOptions();
+      } catch {
+        this.mode = "native";
+        this.notice = "無法完成客戶端設定恢復。備份已保留，請重試切換個人模式。";
+      }
     }
   }
 
@@ -1739,37 +1702,6 @@ export class ClassroomApp {
     this.catalog = catalogView(parsed.actions, parsed.snippets, "local");
     this.catalogError = undefined;
   }
-}
-
-function hostnameOf(value: string): string | undefined {
-  try {
-    const host = new URL(value).hostname;
-    return host || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function sameProxy(value: string, proxyBaseUrl: string): boolean {
-  try {
-    return new URL(value).origin === new URL(proxyBaseUrl).origin;
-  } catch {
-    return false;
-  }
-}
-
-function previousHosts(proxyBaseUrl: string, values: unknown[]): string[] {
-  const hosts: string[] = [];
-  for (const value of values) {
-    if (typeof value !== "string" || sameProxy(value, proxyBaseUrl)) {
-      continue;
-    }
-    const host = hostnameOf(value);
-    if (host && !hosts.includes(host)) {
-      hosts.push(host);
-    }
-  }
-  return hosts;
 }
 
 function environmentInstallSucceeded(result: {

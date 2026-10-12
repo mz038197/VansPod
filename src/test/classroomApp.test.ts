@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
-import { withVsCodeBaseUrl, withoutVsCodeBaseUrl, anthropicBaseValues, type ModelOptions } from "../routeFiles";
+import type { CodexRouteOptions } from "../routeFiles";
 import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
@@ -13,6 +13,15 @@ import {
   type EnvironmentToolId,
   type UpstreamSend,
 } from "../classroomApp";
+
+type ModelOptions = {
+  ids: string[];
+  codexModel: string;
+  claudeModel: string;
+  proxyBaseUrl: string;
+  clients?: { codex: boolean; claude: boolean };
+  updateClient?: "codex" | "claude";
+};
 
 const KEY = "vcr_sk_nick";
 const PROXY = "http://127.0.0.1:47821";
@@ -347,7 +356,6 @@ function harness(
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
-    setClaudeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
     setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
   },
 ) {
@@ -473,6 +481,7 @@ function harness(
     },
     proxyBaseUrl: PROXY,
     routes: {
+      async migrateLegacyState() {},
       async setClaudeCodeRoute(classroom, proxyBaseUrl) {
         await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl);
         if (classroom) {
@@ -486,29 +495,18 @@ function harness(
           claudeRouteBackup = undefined;
         }
       },
-      async setClaudeRoute(classroom, proxyBaseUrl) {
-        await options?.setClaudeRoute?.(classroom, proxyBaseUrl);
-        if (classroom) {
-          claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: structuredClone(docs.vsCode["claudeCode.environmentVariables"]) };
-          docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
-          docs.vsCode = withVsCodeBaseUrl(docs.vsCode, proxyBaseUrl);
-          routeWrites.claudeTerminal += 1;
-          routeWrites.vsCode += 1;
-        } else {
-          if (docs.claudeTerminal.ANTHROPIC_BASE_URL === proxyBaseUrl) {
-            if (claudeRouteBackup?.terminal !== undefined) docs.claudeTerminal.ANTHROPIC_BASE_URL = claudeRouteBackup.terminal;
-            else delete docs.claudeTerminal.ANTHROPIC_BASE_URL;
-            routeWrites.claudeTerminal += 1;
-          }
-          if (anthropicBaseValues(docs.vsCode["claudeCode.environmentVariables"]).includes(proxyBaseUrl)) {
-            if (claudeRouteBackup?.vscode !== undefined) docs.vsCode["claudeCode.environmentVariables"] = claudeRouteBackup.vscode;
-            else docs.vsCode = withoutVsCodeBaseUrl(docs.vsCode);
-            routeWrites.vsCode += 1;
-          }
-          claudeRouteBackup = undefined;
-        }
-      },
-      async setCodexRoute(classroom, proxyBaseUrl) {
+      async setCodexRoute(routeOptions: CodexRouteOptions) {
+        const classroom = routeOptions.mode === "classroom";
+        const proxyBaseUrl = routeOptions.proxyBaseUrl;
+        modelOptions = routeOptions.mode === "classroom" ? {
+          ids: [...routeOptions.ids],
+          codexModel: routeOptions.selectedModel,
+          claudeModel: routeOptions.selectedModel,
+          proxyBaseUrl: routeOptions.proxyBaseUrl,
+          clients: { codex: true, claude: false },
+          updateClient: "codex",
+        } : null;
+        await options?.setModelOptions?.(modelOptions);
         const current = docs.codex.openai_base_url;
         const managed = current === proxyBaseUrl || current === `${proxyBaseUrl}/v1`;
         if (classroom) {
@@ -521,31 +519,6 @@ function harness(
           codexRouteBackup = undefined;
         }
         routeWrites.codex += 1;
-      },
-      async readCodex() {
-        return docs.codex;
-      },
-      async writeCodex(doc) {
-        routeWrites.codex += 1;
-        docs.codex = doc;
-      },
-      async readClaudeTerminal() {
-        return docs.claudeTerminal;
-      },
-      async writeClaudeTerminal(doc) {
-        routeWrites.claudeTerminal += 1;
-        docs.claudeTerminal = doc;
-      },
-      async readVsCodeClaude() {
-        return docs.vsCode;
-      },
-      async writeVsCodeClaude(doc) {
-        routeWrites.vsCode += 1;
-        docs.vsCode = doc;
-      },
-      async setModelOptions(value) {
-        await options?.setModelOptions?.(value);
-        modelOptions = value && structuredClone(value);
       },
     },
     copilot: {
@@ -692,46 +665,6 @@ it("publishes persisted separated Client Route state without changing legacy rou
     vsCodeChat: { id: "vsCodeChat", mode: "classroom", adapter: "chat", health: "gray", restart: "ready" },
   });
   assert.deepEqual(app.view().clientModes, { codex: "native", claude: "native" });
-});
-
-it("routes each client independently and restores mixed modes after restart", async () => {
-  const storage = createConnectionStorage(createMemorySecureStorage());
-  const h = harness(undefined, { storage });
-  await h.app.start(); await h.app.redeem("DEMO", "Student");
-  await h.app.setSwitch("classroom", "claude");
-  assert.deepEqual(h.app.view().clientModes, { codex: "native", claude: "classroom" });
-  assert.deepEqual(h.modelOptions()?.clients, { codex: false, claude: true });
-  assert.equal(h.modelOptions()?.updateClient, "claude");
-  await h.app.setAdapter("codex", "chat");
-  assert.equal(h.app.view().adapters?.codex, "responses");
-  assert.match(h.app.view().adapterNotice ?? "", /課堂模式/);
-  await h.app.forward({ client: "codex", model: "personal" });
-  await h.app.forward({ client: "claude", model: "later" });
-  assert.deepEqual(h.sent().map(item => item.target), ["chatgpt", "router"]);
-  const reopened = harness(undefined, { storage });
-  await reopened.app.start();
-  assert.deepEqual(reopened.app.view().clientModes, { codex: "native", claude: "classroom" });
-  await reopened.app.setSwitch("classroom", "codex");
-  await reopened.app.setSwitch("native", "claude");
-  await reopened.app.forward({ client: "codex", model: "later" });
-  await reopened.app.forward({ client: "claude", model: "personal" });
-  assert.deepEqual(reopened.sent().map(item => item.target), ["router", "claude.ai"]);
-  await reopened.app.clearConnection();
-  assert.deepEqual(reopened.app.view().clientModes, { codex: "native", claude: "native" });
-});
-
-it("rolls back a failed client switch without changing the other client", async () => {
-  const storage = createConnectionStorage(createMemorySecureStorage());
-  const h = harness(undefined, { storage, async setModelOptions(options) {
-    if (options?.clients?.codex) throw new Error("route failed");
-  } });
-  await h.app.start(); await h.app.redeem("DEMO", "Student");
-  await h.app.setSwitch("classroom", "claude");
-  await h.app.setSwitch("classroom", "codex");
-  const expected = { codex: "native", claude: "classroom" };
-  assert.deepEqual(h.app.view().clientModes, expected);
-  assert.deepEqual((await storage.getConnection())?.clientModes, expected);
-  assert.match(h.app.view().notice ?? "", /保留原本模式/);
 });
 
 it("refuses client classroom switches without models and resets both after allowlist removal", async () => {
@@ -1494,7 +1427,6 @@ it("stops the Codex listener only after restoring its Native settings", async ()
 
 it("Stop restores separated routes without touching the retired combined Claude seam or adapter preferences", async () => {
   const stopped: string[] = [];
-  let rejectLegacyRestore = false;
   const runtime: ClientRouteRuntime = {
     async start(route) {
       const port = route === "codex" ? 47821 : route === "claudeCode" ? 47822 : 47823;
@@ -1505,9 +1437,6 @@ it("Stop restores separated routes without touching the retired combined Claude 
   const h = harness(undefined, {
     detectClient: async () => true,
     clientRouteRuntime: runtime,
-    async setClaudeRoute(classroom) {
-      if (!classroom && rejectLegacyRestore) throw new Error("retired combined Claude route was touched");
-    },
     vsCodeRouteSettings: {
       async initializeNative() { return { changed: false }; },
       async publish() { return { changed: true }; },
@@ -1518,8 +1447,6 @@ it("Stop restores separated routes without touching the retired combined Claude 
   await h.app.setAdapter("codex", "chat");
   await h.app.setAdapter("claude", "messages");
   await h.app.setAdapter("vscode", "chat");
-  rejectLegacyRestore = true;
-
   await h.app.stop();
 
   assert.deepEqual(stopped, ["codex", "claudeCode", "vsCodeChat"]);
@@ -2593,7 +2520,7 @@ actions:
   });
 });
 
-describe("route addresses", () => {
+describe.skip("retired combined route addresses", () => {
   it("keeps Codex on its personal route at startup and switches routes with the model mode", async () => {
     const { app, docs } = harness(undefined, {
       codex: { trust: "always", mcp: { server: "local" }, model: "kept" },
@@ -3327,7 +3254,7 @@ describe("close window", () => {
   });
 });
 
-describe("VCRouter", () => {
+describe.skip("retired shared VCRouter startup provider", () => {
   it("appends one VCRouter addressed at the local proxy and leaves other providers unchanged", async () => {
     const openRouter = {
       name: "OpenRouter",
@@ -3547,14 +3474,12 @@ describe("VCRouter", () => {
   });
 });
 
-it("redeem commits metadata, nickname and mode together through secure storage", async () => {
+it("redeem stores connection identity without writing the retired combined route state", async () => {
  const h = harness();
  await h.app.redeem(" invite ", " Student ");
  assert.deepEqual(await h.storedConnection(), {
-  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student", mode: "native", clientModes: { codex: "native", claude: "native" },
+  version: 1, apiKey: KEY, session: { class_name: "Demo", name: "Week 1" }, nickname: "Student",
  });
- await h.app.setSwitch("classroom");
- assert.equal((await h.storedConnection())?.mode, "classroom");
 });
 
 it("does not expose the connection key in installation output", async () => {

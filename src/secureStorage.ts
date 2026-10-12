@@ -15,7 +15,8 @@ export type ClassroomConnection = {
   apiKey: string;
   session: NicknameRedeemResult["session"];
   nickname?: string;
-  mode: ModelSwitchMode;
+  /** Legacy v1 migration fields. New route preferences are stored separately. */
+  mode?: ModelSwitchMode;
   clientModes?: { codex: ModelSwitchMode; claude: ModelSwitchMode };
 };
 
@@ -65,7 +66,7 @@ export function isClassroomConnection(value: unknown): value is ClassroomConnect
     !["native", "classroom"].includes(record.clientModes.codex) ||
     !["native", "classroom"].includes(record.clientModes.claude))) return false;
   if (record.version !== 1 || typeof record.apiKey !== "string" || !record.apiKey ||
-    (record.mode !== "native" && record.mode !== "classroom") ||
+    (record.mode !== undefined && record.mode !== "native" && record.mode !== "classroom") ||
     (record.nickname !== undefined && typeof record.nickname !== "string") ||
     !record.session || typeof record.session !== "object" || Array.isArray(record.session)) return false;
   return ["class_name", "name", "invite_code", "expires_at"].every(field => {
