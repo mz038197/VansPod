@@ -20,6 +20,7 @@ export type ClientRouteRuntime = {
 
 export function createClientRouteRuntime(options: {
   basePort: number;
+  models?(route: ClientRouteId): readonly string[] | undefined;
   handle(
     accepted: AcceptedClientRoute,
     request: http.IncomingMessage,
@@ -38,6 +39,24 @@ export function createClientRouteRuntime(options: {
 
   const open = async (route: ClientRouteId | undefined, port: number) => {
     const server = http.createServer((request, response) => {
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      if (route === "claudeCode" && request.method === "GET" && pathname === "/v1/models") {
+        const ids = options.models?.(route) ?? [];
+        const data = ids.map(id => ({
+          id,
+          display_name: id,
+          type: "model",
+          created_at: "2000-01-01T00:00:00Z",
+        }));
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(JSON.stringify({
+          data,
+          has_more: false,
+          first_id: data[0]?.id ?? null,
+          last_id: data.at(-1)?.id ?? null,
+        }));
+        return;
+      }
       void Promise.resolve(options.handle({ route }, request, response)).catch(() => {
         if (!response.headersSent) response.writeHead(500);
         response.end();
@@ -77,7 +96,10 @@ export function createClientRouteRuntime(options: {
         listeners.set(route, opened.server);
         return { route, health: "green", origin: opened.origin };
       } catch (error) {
-        if (route !== "codex" || (error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+        if (route !== "codex") {
+          return { route, health: "red", origin: `http://127.0.0.1:${routePort(route)}` };
+        }
         if (emergency) {
           const address = emergency.address();
           if (address && typeof address !== "string") {

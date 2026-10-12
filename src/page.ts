@@ -33,7 +33,7 @@ function locked(view: ClassroomAppView): string {
 
 function clientLabel(client: "codex" | "claude" | "vscode"): string {
   if (client === "codex") return "Codex";
-  if (client === "claude") return "Claude Code";
+  if (client === "claude") return "Claude Code CLI";
   return "VS Code";
 }
 
@@ -129,10 +129,10 @@ function adapterForms(view: ClassroomAppView): string {
     const healthText = health === "red" ? "入口失敗" : health === "yellow" ? "等待重開" : health === "green" ? "可用" : "未偵測";
     const status = `${clientLabel(client)} ${route && route.health !== "gray" ? healthText : detected ? "已偵測" : "未偵測"}`;
     const lightClass = health === "green" ? " detected" : health === "red" || health === "yellow" ? ` health-${health}` : "";
-    const codexHealthy = client !== "codex" || health === "green" || health === "yellow";
+    const routeHealthy = health === "green" || health === "yellow";
     const available = view.connected && (view.allowedModels?.length ?? (view.modelId ? 1 : 0)) > 0;
-    const adapterDisabled = view.commandRunning || !codexHealthy || (client !== "codex" && mode !== "classroom");
-    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${lightClass}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !codexHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
+    const adapterDisabled = view.commandRunning || !routeHealthy;
+    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${lightClass}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !routeHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
   }).join("");
   return forms + (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }

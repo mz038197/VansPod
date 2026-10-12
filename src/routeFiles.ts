@@ -119,6 +119,9 @@ export function createRouteFiles(paths: RouteFilePaths) {
     vscode: { file: paths.vsCode, restore: restoreJsonFields },
     gateway: { file: gatewayCachePath(paths.claude), restore: current => current },
   });
+  const claudeCodeBackup = clientSettingsBackup(path.join(path.dirname(paths.claude), "classroom-claude-code-settings-backup.json"), {
+    config: { file: paths.claude, restore: restoreJsonFields },
+  });
   async function migrate(proxy: string) {
     const saved = await readDiskBackup(paths);
     const route = await optionalText(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"));
@@ -226,6 +229,24 @@ export function createRouteFiles(paths: RouteFilePaths) {
       if (!vsDoc) throw new Error("Invalid VS Code settings");
       const original = anthropicBaseValues(vsDoc[VS_CODE_ENV]).some(value => isManagedUrl(value, proxyBaseUrl)) ? JSON.stringify(withoutManagedVsCodeBaseUrl(vsDoc, proxyBaseUrl), null, 2) + "\n" : vscode;
       await claudeBackup.write("vscode", replaceJsonProperty(vscode, VS_CODE_ENV, withVsCodeBaseUrl(vsDoc, proxyBaseUrl)[VS_CODE_ENV]), ["vscodeBase"], original === vscode ? undefined : original);
+    },
+    async setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void> {
+      if (!classroom) {
+        await claudeCodeBackup.restore();
+        const text = await optionalText(paths.claude);
+        if (text !== null) {
+          const next = personalClaudeText(text, proxyBaseUrl);
+          if (next !== text) await writeText(paths.claude, next);
+        }
+        return;
+      }
+      const text = await readText(paths.claude);
+      const doc = parseJsonObject(text);
+      if (!doc) throw new Error("Invalid Claude settings");
+      const env = { ...(asRecord(doc.env) ?? {}), ANTHROPIC_BASE_URL: proxyBaseUrl };
+      const next = replaceJsonProperty(text, "env", env);
+      const personal = personalClaudeText(text, proxyBaseUrl);
+      await claudeCodeBackup.write("config", next, ["env.ANTHROPIC_BASE_URL"], personal === text ? undefined : personal);
     },
     async readCodex(): Promise<Record<string, unknown>> {
       const url = readRootTomlString(await readText(paths.codex), "openai_base_url");
