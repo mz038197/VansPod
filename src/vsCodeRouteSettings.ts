@@ -76,10 +76,10 @@ async function readJournal(filename: string): Promise<Journal | undefined> {
   return parsed;
 }
 
-function ownedIndexes(providers: VsCodeProvider[]): number[] {
+function namedIndexes(providers: VsCodeProvider[]): number[] {
   const result: number[] = [];
   providers.forEach((provider, index) => {
-    if (provider.name === "VCRouter" && provider.vendor === "customendpoint") result.push(index);
+    if (provider.name === "VCRouter") result.push(index);
   });
   return result;
 }
@@ -94,9 +94,38 @@ function classroomTemplate(providers: VsCodeProvider[]): VsCodeProvider {
   return found;
 }
 
+const CREDENTIAL_KEYS = new Set([
+  "apikey",
+  "xapikey",
+  "authorization",
+  "proxyauthorization",
+  "token",
+  "accesstoken",
+  "credential",
+  "credentials",
+  "password",
+  "secret",
+  "secretref",
+]);
+
+function withoutCredentials(value: unknown): unknown {
+  if (typeof value === "string" && value.includes("${input:chat.lm.secret.")) return undefined;
+  if (Array.isArray(value)) {
+    return value.map(withoutCredentials).filter(item => item !== undefined);
+  }
+  if (!value || typeof value !== "object") return value;
+  const clean: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (CREDENTIAL_KEYS.has(normalized)) continue;
+    const sanitized = withoutCredentials(item);
+    if (sanitized !== undefined) clean[key] = sanitized;
+  }
+  return clean;
+}
+
 function intendedProvider(template: VsCodeProvider, adapter: "responses" | "chat", origin: string): VsCodeProvider {
-  const provider = structuredClone(template);
-  delete provider.apiKey;
+  const provider = withoutCredentials(structuredClone(template)) as VsCodeProvider;
   provider.name = "VCRouter";
   provider.vendor = "customendpoint";
   provider.apiType = adapter;
@@ -115,7 +144,7 @@ export function createVsCodeRouteSettings(options: { settingsFile: string; journ
     const journal = await readJournal(options.journalFile);
     if (!journal) return { changed: false };
     const current = await readProviders(options.settingsFile);
-    const indexes = ownedIndexes(current);
+    const indexes = namedIndexes(current);
     if (indexes.length !== 1 || !isDeepStrictEqual(current[indexes[0]!], journal.intended)) {
       throw new Error("VS Code 的 VCRouter provider 已被其他程式修改，VansPod 不會覆寫。");
     }
@@ -132,14 +161,14 @@ export function createVsCodeRouteSettings(options: { settingsFile: string; journ
       let original: VsCodeProvider | null = null;
       let next: VsCodeProvider[];
       if (journal) {
-        const indexes = ownedIndexes(current);
+        const indexes = namedIndexes(current);
         if (indexes.length !== 1 || !isDeepStrictEqual(current[indexes[0]!], journal.intended)) {
           throw new Error("VS Code 的 VCRouter provider 已被其他程式修改，VansPod 不會覆寫。");
         }
         original = journal.original;
         next = current.map((provider, index) => index === indexes[0] ? intended : provider);
       } else {
-        const existing = ownedIndexes(current).map(index => current[index]!);
+        const existing = namedIndexes(current).map(index => current[index]!);
         if (existing.some(containsOldExtensionSecret)) {
           throw new Error("偵測到舊擴充的 VCRouter provider。請先在舊擴充清除舊擴充的 Classroom Connection，再回到 VansPod 重新載入。");
         }

@@ -9,6 +9,7 @@ import {
 } from "./clientRoutes";
 import type { ClientRouteRuntime } from "./clientRouteRuntime";
 import type { VsCodeProvider, VsCodeRouteSettings } from "./vsCodeRouteSettings";
+import { isDeepStrictEqual } from "node:util";
 import {
   parseCourseCatalog,
   type InstallAction,
@@ -752,9 +753,13 @@ export class ClassroomApp {
     }
     const desiredMode = this.mode;
     const desiredClientModes = { ...this.clientModes };
+    const desiredVsCodeMode = this.clientRoutes.vsCodeChat.mode;
     // A committed new session must never inherit permissions or resources from the old one.
     this.mode = "native";
+    this.clientRoutes.vsCodeChat.mode = "native";
+    this.clientRoutes.vsCodeChat.restart = "ready";
     this.modelIds = [];
+    this.modelProviders = [];
     this.forgetModelChoices();
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -766,6 +771,7 @@ export class ClassroomApp {
     this.notice = undefined;
     // Storage is committed: publish its identity before any client-file operation can fail.
     try {
+      if (desiredVsCodeMode === "classroom") await this.deps.vsCodeRouteSettings?.restore();
       await this.restoreModelOptions();
     } catch {
       this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
@@ -785,6 +791,25 @@ export class ClassroomApp {
         try { await this.restoreModelOptions(); } catch { /* Keep proxy routing safely Native. */ }
         this.notice = this.connectionNotice = "新課堂連線已建立，但無法更新模型設定。目前使用 Native，請稍後再試。";
       }
+    }
+    if (desiredVsCodeMode === "classroom" && this.modelIds.length > 0 && this.vsCodeOrigin) {
+      this.clientRoutes.vsCodeChat.mode = "classroom";
+      try {
+        const result = await this.deps.vsCodeRouteSettings?.publish({
+          providers: this.modelProviders,
+          adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
+          origin: this.vsCodeOrigin,
+        });
+        this.clientRoutes.vsCodeChat.health = result?.changed ? "yellow" : "green";
+        this.clientRoutes.vsCodeChat.restart = result?.changed ? "restart-required" : "ready";
+        if (result?.changed) this.noteModelRestart("vscode");
+      } catch (error) {
+        this.clientRoutes.vsCodeChat.mode = "native";
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.clientRoutes.vsCodeChat.restart = "ready";
+        this.notice = this.connectionNotice = error instanceof Error ? error.message : "新課堂連線已建立，但無法更新 VS Code 設定。";
+      }
+      try { await this.saveClientRoutePreferences(); } catch { this.clientRoutes.vsCodeChat.health = "red"; }
     }
   }
 
@@ -1085,19 +1110,19 @@ export class ClassroomApp {
       this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "gray", restart: "ready" };
       return;
     }
+    const alreadyRunning = this.vsCodeOrigin !== undefined && (runtime.current?.("vsCodeChat")?.health ?? "green") === "green";
     let started;
     try { started = await runtime.start("vsCodeChat"); }
     catch {
-      this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "red", restart: "ready" };
-      try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
+      await this.failVsCodeRouteStart();
       return;
     }
     this.vsCodeOrigin = started.origin;
     if (started.health !== "green") {
-      this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "red", restart: "ready" };
-      try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
+      await this.failVsCodeRouteStart();
       return;
     }
+    if (alreadyRunning) return;
     try {
       if (this.clientRoutes.vsCodeChat.mode === "classroom" && this.connected && this.modelIds.length > 0) {
         const result = await this.deps.vsCodeRouteSettings?.publish({
@@ -1121,6 +1146,12 @@ export class ClassroomApp {
       this.notice = error instanceof Error ? error.message : "VS Code Chat Client Route 設定失敗。";
     }
     try { await this.saveClientRoutePreferences(); } catch { /* Route health remains visible. */ }
+  }
+
+  private async failVsCodeRouteStart(): Promise<void> {
+    try { await this.deps.vsCodeRouteSettings?.restore(); } catch { /* Journal remains available for retry. */ }
+    this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "red", restart: "ready" };
+    try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
   }
 
   private async startClaudeCodeRoute(): Promise<void> {
@@ -1229,11 +1260,14 @@ export class ClassroomApp {
       if (this.deps.clientRouteRuntime) {
         this.clientRoutes.codex.mode = "native";
         this.clientRoutes.claudeCode.mode = "native";
+        this.clientRoutes.vsCodeChat.mode = "native";
         this.clientRoutes.codex.restart = "ready";
         this.clientRoutes.claudeCode.restart = "ready";
+        this.clientRoutes.vsCodeChat.restart = "ready";
         try { await this.saveClientRoutePreferences(); } catch {
           this.clientRoutes.codex.health = "red";
           this.clientRoutes.claudeCode.health = "red";
+          this.clientRoutes.vsCodeChat.health = "red";
         }
         try {
           await this.deps.routes.setClaudeCodeRoute(false, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
@@ -1241,18 +1275,42 @@ export class ClassroomApp {
             this.clientRoutes.claudeCode.health = this.detectedClients.claude ? "green" : "gray";
           }
         } catch { this.clientRoutes.claudeCode.health = "red"; }
+        try {
+          await this.deps.vsCodeRouteSettings?.restore();
+          if (this.clientRoutes.vsCodeChat.health !== "red") {
+            this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
+          }
+        } catch { this.clientRoutes.vsCodeChat.health = "red"; }
       }
       this.forgetModelChoices();
       await this.restoreModelOptions();
       return;
     }
     const previous = this.modelIds;
+    const providersChanged = !isDeepStrictEqual(this.modelProviders, providers);
     const changed = previous.join("\0") !== ids.join("\0");
     if (changed) {
       this.modelNotice.clear();
     }
     this.modelIds = ids;
     this.modelProviders = structuredClone(providers);
+    if (providersChanged && this.deps.clientRouteRuntime && this.clientRoutes.vsCodeChat.mode === "classroom" && this.vsCodeOrigin) {
+      try {
+        const result = await this.deps.vsCodeRouteSettings?.publish({
+          providers: this.modelProviders,
+          adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
+          origin: this.vsCodeOrigin,
+        });
+        if (result?.changed) {
+          this.clientRoutes.vsCodeChat.health = "yellow";
+          this.clientRoutes.vsCodeChat.restart = "restart-required";
+          this.noteModelRestart("vscode");
+        }
+      } catch (error) {
+        this.clientRoutes.vsCodeChat.health = "red";
+        this.notice = error instanceof Error ? error.message : "VS Code Chat Client Route 設定失敗。";
+      }
+    }
     if (!changed || this.mode !== "classroom") {
       return;
     }
@@ -1322,10 +1380,13 @@ export class ClassroomApp {
       this.clientRoutes.codex.restart = "ready";
       this.clientRoutes.claudeCode.mode = "native";
       this.clientRoutes.claudeCode.restart = "ready";
+      this.clientRoutes.vsCodeChat.mode = "native";
+      this.clientRoutes.vsCodeChat.restart = "ready";
       try { await this.saveClientRoutePreferences(); }
       catch {
         this.clientRoutes.codex.health = "red";
         this.clientRoutes.claudeCode.health = "red";
+        this.clientRoutes.vsCodeChat.health = "red";
       }
     }
     this.modelIds = [];
@@ -1349,6 +1410,15 @@ export class ClassroomApp {
       } catch {
         restoreFailed = true;
         this.clientRoutes.claudeCode.health = "red";
+      }
+      try {
+        await this.deps.vsCodeRouteSettings?.restore();
+        if (this.clientRoutes.vsCodeChat.health !== "red") {
+          this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
+        }
+      } catch {
+        restoreFailed = true;
+        this.clientRoutes.vsCodeChat.health = "red";
       }
     }
     if (restoreFailed) {
@@ -1479,6 +1549,15 @@ export class ClassroomApp {
     } catch (error) {
       failure ??= error;
       this.clientRoutes.claudeCode.health = "red";
+    }
+    try {
+      if (this.deps.clientRouteRuntime) {
+        await this.deps.vsCodeRouteSettings?.restore();
+        await this.deps.clientRouteRuntime.stop("vsCodeChat");
+      }
+    } catch (error) {
+      failure ??= error;
+      this.clientRoutes.vsCodeChat.health = "red";
     }
     if (failure) throw failure;
   }

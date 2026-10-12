@@ -946,6 +946,194 @@ it("marks only VS Code red when its listener collides", async () => {
   assert.equal(h.app.view().clientRoutes?.claudeCode.health, "gray");
 });
 
+it("a failed VS Code listener restores its owned provider before persisting Native", async () => {
+  const events: string[] = [];
+  let saved = {
+    codex: { mode: "native" as const, adapter: "responses" as const },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "classroom" as "native" | "classroom", adapter: "responses" as const },
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: route === "vsCodeChat" ? "red" : "green", origin: "http://127.0.0.1:47823" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { events.push(`save:${next.vsCodeChat.mode}`); saved = structuredClone(next) as typeof saved; },
+    },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: false }; },
+      async restore() { events.push("restore:vscode"); return { changed: true }; },
+    },
+  });
+
+  await h.app.start();
+
+  assert.deepEqual(events.slice(0, 2), ["restore:vscode", "save:native"]);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "red");
+});
+
+it("Stop restores the journal-owned VS Code provider before closing its listener", async () => {
+  const events: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" };
+    },
+    async stop(route) { events.push(`stop:${route}`); },
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { events.push("publish:vscode"); return { changed: true }; },
+      async restore() { events.push("restore:vscode"); return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  events.length = 0;
+
+  await h.app.stop();
+
+  assert.deepEqual(events.filter(event => event.toLowerCase().includes("vscode")), ["restore:vscode", "stop:vsCodeChat"]);
+});
+
+it("Clear removes the journal-owned VS Code provider and returns the route to healthy Native", async () => {
+  let restored = 0;
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { restored += 1; return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+
+  await h.app.clearConnection();
+
+  assert.equal(restored, 1);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "ready");
+});
+
+it("an authoritative empty allowlist restores VS Code to Native", async () => {
+  let providers: Array<Record<string, unknown>> = [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }];
+  let restored = 0;
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => providers,
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { restored += 1; return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  providers = [];
+
+  await h.app.reloadAllowlist();
+
+  assert.equal(restored, 1);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+});
+
+it("Reload republishes same-ID VS Code capability changes and leaves identical content green", async () => {
+  let vision = false;
+  let intended = "";
+  const writes: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson", vision }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish(value) {
+        const next = JSON.stringify(value);
+        const changed = next !== intended;
+        intended = next;
+        writes.push(next);
+        return { changed };
+      },
+      async restore() { return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  await h.app.forward({ client: "copilot", model: "lesson" });
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  vision = true;
+
+  await h.app.reloadAllowlist();
+
+  assert.equal(writes.length, 2);
+  assert.match(writes[1]!, /"vision":true/);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  await h.app.forward({ client: "copilot", model: "lesson" });
+  await h.app.reloadAllowlist();
+  assert.equal(writes.length, 2);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+});
+
+it("session replacement restores the old VS provider and publishes the new classroom catalog", async () => {
+  let id = "old-model";
+  const events: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish(value) { events.push(`publish:${((value.providers[0]!.models as Array<Record<string, unknown>>)[0]!.id)}`); return { changed: true }; },
+      async restore() { events.push("restore:vscode"); return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("OLD", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  events.length = 0;
+  id = "new-model";
+
+  await h.app.redeem("NEW", "Student");
+
+  assert.deepEqual(events, ["restore:vscode", "publish:new-model"]);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "classroom");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+});
+
 it("stops the Codex listener only after restoring its Native settings", async () => {
   const events: string[] = [];
   const runtime: ClientRouteRuntime = {
@@ -962,7 +1150,7 @@ it("stops the Codex listener only after restoring its Native settings", async ()
 
   await h.app.stop();
 
-  assert.deepEqual(events, ["restore", "stop:codex", "stop:claudeCode"]);
+  assert.deepEqual(events, ["restore", "stop:codex", "stop:claudeCode", "stop:vsCodeChat"]);
 });
 
 it("keeps a failed Claude Code listener red and Native without affecting Codex", async () => {
@@ -1014,7 +1202,7 @@ it("stops healthy routes while retaining a Claude listener whose Native restorat
 
   await assert.rejects(h.app.stop(), /synthetic restore denial/);
 
-  assert.deepEqual(stopped, ["codex"]);
+  assert.deepEqual(stopped, ["codex", "vsCodeChat"]);
   assert.equal(h.app.view().clientRoutes?.claudeCode.health, "red");
 });
 

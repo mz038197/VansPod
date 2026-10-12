@@ -84,6 +84,8 @@ it("reports old-extension and unproven same-name providers as conflicts without 
   for (const existing of [
     { name: "VCRouter", vendor: "customendpoint", apiKey: "${input:chat.lm.secret.-7a55c1a5}", models: [] },
     { name: "VCRouter", vendor: "customendpoint", models: [{ id: "personal" }] },
+    { name: "VCRouter", models: [{ id: "personal-without-vendor" }] },
+    { name: "VCRouter", vendor: "other", models: [{ id: "personal-other-vendor" }] },
   ]) {
     const target = await files([existing]);
     const before = await fs.readFile(target.settingsFile, "utf8");
@@ -127,4 +129,28 @@ it("first Native initialization removes only the exact legacy VansPod localhost 
 
   assert.deepEqual(JSON.parse(await fs.readFile(target.settingsFile, "utf8")), [personalSameName, oldExtension, { name: "Other" }]);
   await assert.rejects(fs.stat(target.journalFile), /ENOENT/);
+});
+
+it("recursively removes credential fields and secret references from Router metadata", async () => {
+  const target = await files();
+  const route = createVsCodeRouteSettings(target);
+  const secretRef = "${input:chat.lm.secret.router}";
+  await route.publish({
+    adapter: "responses",
+    origin: "http://127.0.0.1:47823",
+    providers: [{
+      name: "VCRouter",
+      vendor: "customendpoint",
+      apiKey: "vcr_sk_provider",
+      requestHeaders: { Authorization: "Bearer vcr_sk_header", "x-api-key": "vcr_sk_x", "x-capability": "keep" },
+      nested: { secretRef, safe: "keep-nested" },
+      models: [{ id: "lesson", api_key: "vcr_sk_model", headers: { authorization: "Bearer nested", accept: "application/json" } }],
+    }],
+  });
+
+  const raw = await fs.readFile(target.settingsFile, "utf8");
+  assert.doesNotMatch(raw, /vcr_sk_|chat\.lm\.secret|authorization|apiKey|api_key|x-api-key/i);
+  assert.match(raw, /x-capability/);
+  assert.match(raw, /keep-nested/);
+  assert.match(raw, /application\/json/);
 });
