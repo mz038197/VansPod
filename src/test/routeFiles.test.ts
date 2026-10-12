@@ -368,6 +368,49 @@ it("restores Claude CLI and VS Code across restarts without accumulating backups
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+it("journals and restores the independent Claude Code CLI route without touching VS Code or credentials", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    const originalCli = {
+      env: {
+        ANTHROPIC_BASE_URL: "https://personal.example",
+        ANTHROPIC_API_KEY: "personal-official-key",
+        KEEP: "yes",
+      },
+      theme: "dark",
+    };
+    const originalVsCode = {
+      "claudeCode.environmentVariables": [
+        { name: "ANTHROPIC_BASE_URL", value: "https://vscode-personal.example" },
+      ],
+      "editor.fontSize": 17,
+    };
+    await fs.writeFile(paths.claude, JSON.stringify(originalCli));
+    await fs.writeFile(paths.vsCode, JSON.stringify(originalVsCode));
+
+    await routes.setClaudeCodeRoute(true, "http://127.0.0.1:47822");
+
+    const managed = JSON.parse(await fs.readFile(paths.claude, "utf8"));
+    assert.equal(managed.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:47822");
+    assert.equal(managed.env.ANTHROPIC_API_KEY, "personal-official-key");
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8")), originalVsCode);
+    assert.ok(await fs.stat(path.join(root, "classroom-claude-code-settings-backup.json")));
+
+    managed.theme = "light";
+    managed.env.KEEP = "changed";
+    await fs.writeFile(paths.claude, JSON.stringify(managed));
+    await routes.setClaudeCodeRoute(false, "http://127.0.0.1:47822");
+
+    const restored = JSON.parse(await fs.readFile(paths.claude, "utf8"));
+    assert.equal(restored.env.ANTHROPIC_BASE_URL, "https://personal.example");
+    assert.equal(restored.env.ANTHROPIC_API_KEY, "personal-official-key");
+    assert.equal(restored.env.KEEP, "changed");
+    assert.equal(restored.theme, "light");
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8")), originalVsCode);
+    await assert.rejects(fs.stat(path.join(root, "classroom-claude-code-settings-backup.json")), { code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it("keeps externally replaced managed fields when restoring both clients", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {

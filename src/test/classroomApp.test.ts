@@ -344,6 +344,7 @@ function harness(
     ) => Promise<{ exitCode: number | undefined; output: string }>;
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
+    setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
   },
 ) {
   const redeemCalls: { invite_code: string; nickname: string }[] = [];
@@ -467,6 +468,19 @@ function harness(
     },
     proxyBaseUrl: PROXY,
     routes: {
+      async setClaudeCodeRoute(classroom, proxyBaseUrl) {
+        await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl);
+        if (classroom) {
+          claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: undefined };
+          docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
+          routeWrites.claudeTerminal += 1;
+        } else if (docs.claudeTerminal.ANTHROPIC_BASE_URL === proxyBaseUrl) {
+          if (claudeRouteBackup?.terminal !== undefined) docs.claudeTerminal.ANTHROPIC_BASE_URL = claudeRouteBackup.terminal;
+          else delete docs.claudeTerminal.ANTHROPIC_BASE_URL;
+          routeWrites.claudeTerminal += 1;
+          claudeRouteBackup = undefined;
+        }
+      },
       async setClaudeRoute(classroom, proxyBaseUrl) {
         if (classroom) {
           claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: structuredClone(docs.vsCode["claudeCode.environmentVariables"]) };
@@ -863,7 +877,105 @@ it("stops the Codex listener only after restoring its Native settings", async ()
 
   await h.app.stop();
 
-  assert.deepEqual(events, ["restore", "stop:codex"]);
+  assert.deepEqual(events, ["restore", "stop:codex", "stop:claudeCode"]);
+});
+
+it("keeps a failed Claude Code listener red and Native without affecting Codex", async () => {
+  const starts: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      starts.push(route);
+      return {
+        route,
+        health: route === "claudeCode" ? "red" : "green",
+        origin: route === "claudeCode" ? "http://127.0.0.1:47822" : "http://127.0.0.1:47821",
+      };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+  });
+
+  await h.app.start();
+
+  assert.deepEqual(starts, ["codex", "claudeCode"]);
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "red");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.mode, "native");
+  assert.equal(h.docs.claudeTerminal.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(h.docs.vsCode["claudeCode.environmentVariables"], undefined);
+});
+
+it("stops healthy routes while retaining a Claude listener whose Native restoration fails", async () => {
+  const stopped: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      return { route, health: "green", origin: route === "claudeCode" ? "http://127.0.0.1:47822" : "http://127.0.0.1:47821" };
+    },
+    async stop(route) { if (route) stopped.push(route); },
+  };
+  let failRestore = false;
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    async setClaudeCodeRoute(classroom) {
+      if (!classroom && failRestore) throw new Error("synthetic restore denial");
+    },
+  });
+  await h.app.start();
+  failRestore = true;
+
+  await assert.rejects(h.app.stop(), /synthetic restore denial/);
+
+  assert.deepEqual(stopped, ["codex"]);
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "red");
+});
+
+it("switches Claude Code independently, supports all three adapters, and rejects stale or disallowed requests", async () => {
+  let saved = {
+    codex: { mode: "native" as const, adapter: "responses" as const },
+    claudeCode: { mode: "native" as "native" | "classroom", adapter: "responses" as "responses" | "chat" | "messages" },
+    vsCodeChat: { mode: "native" as const, adapter: "responses" as const },
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      return { route, health: "green", origin: route === "claudeCode" ? "http://127.0.0.1:47822" : "http://127.0.0.1:47821" };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "claude",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+  });
+  await h.app.start();
+  await assert.rejects(h.app.forward({ client: "claude", model: "personal" }), /重開 Claude Code/);
+  await h.app.redeem("DEMO", "Student");
+
+  await h.app.setAdapter("claude", "messages");
+  await h.app.setSwitch("classroom", "claude");
+
+  assert.equal(saved.claudeCode.mode, "classroom");
+  assert.equal(saved.claudeCode.adapter, "messages");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "yellow");
+  assert.equal(h.docs.claudeTerminal.ANTHROPIC_BASE_URL, "http://127.0.0.1:47822");
+  assert.equal(h.docs.vsCode["claudeCode.environmentVariables"], undefined);
+  await assert.rejects(h.app.forward({ client: "claude", model: "not-allowed" }), /不在課堂允許清單/);
+  await h.app.forward({ client: "claude", model: "later" });
+  assert.equal(h.sent().at(-1)?.adapter, "messages");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "green");
+
+  await h.app.setAdapter("claude", "chat");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "yellow");
+  await h.app.setSwitch("native", "claude");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "green");
+  assert.equal(h.docs.claudeTerminal.ANTHROPIC_BASE_URL, undefined);
+  await assert.rejects(h.app.forward({ client: "claude", model: "later" }), /重開 Claude Code/);
 });
 
 it("switching adapters leaves an ongoing send unchanged and applies to the next request", async () => {
