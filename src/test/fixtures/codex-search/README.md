@@ -1,6 +1,6 @@
 # Codex 搜尋請求樣本（GitHub #23）
 
-2026-10-13 以 `codex-cli 0.162.1` 在 Classroom 模式（模型 `VCRouter/vcr-auto`）實際送出、由 VansPod 的暫時性紀錄功能擷取的請求。`{ client, method, path, body }` 是紀錄功能的外層；`body` 是 Codex 送出的正文。
+2026-10-13 以 `codex-cli 0.162.1` 在 Classroom 模式（模型 `VCRouter/vcr-auto`）實際送出的請求，由 VansPod 當時一個僅供取樣、現已移除的診斷紀錄擷取。`{ client, method, path, body }` 是擷取時加的外層；`body` 是 Codex 送出的正文。
 
 - `search-query.json`：`commands.search_query`
 - `open.json`：`commands.open`

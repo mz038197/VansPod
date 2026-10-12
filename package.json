@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "description": "本機 VansPod。學生用系統瀏覽器兌換課堂連線。",
   "scripts": {
-    "test": "tsc -p . && node --test dist/test/classroomApp.test.js dist/test/clientRouteRuntime.test.js dist/test/routerSessionModels.test.js dist/test/vsCodeRouteSettings.test.js dist/test/routeFiles.test.js dist/test/page.test.js dist/test/appearance.test.js dist/test/responsesChat.test.js dist/test/modelApiAdapters.test.js dist/test/searchRequestCapture.test.js dist/test/claudeWebSearch.test.js dist/test/adapterSettings.test.js dist/test/folderPicker.test.js dist/test/installProgress.test.js dist/test/commandRunner.test.js dist/test/windowsSecureStorage.test.js dist/test/legacyMigration.test.js dist/test/storageLocation.test.js dist/test/runtimeOptions.test.js",
+    "test": "tsc -p . && node --test dist/test/classroomApp.test.js dist/test/clientRouteRuntime.test.js dist/test/routerSessionModels.test.js dist/test/vsCodeRouteSettings.test.js dist/test/routeFiles.test.js dist/test/page.test.js dist/test/appearance.test.js dist/test/responsesChat.test.js dist/test/modelApiAdapters.test.js dist/test/claudeWebSearch.test.js dist/test/adapterSettings.test.js dist/test/folderPicker.test.js dist/test/installProgress.test.js dist/test/commandRunner.test.js dist/test/windowsSecureStorage.test.js dist/test/legacyMigration.test.js dist/test/storageLocation.test.js dist/test/runtimeOptions.test.js",
     "typecheck": "tsc -p . --noEmit",
     "start": "tsc -p . && node dist/start.js",
     "dist": "node scripts/dist.mjs",

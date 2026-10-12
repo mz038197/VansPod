@@ -29,7 +29,6 @@ import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { sendRouter, relayResponse } from "./modelProxy";
-import { captureSearchRequest } from "./searchRequestCapture";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -719,12 +718,6 @@ async function main(): Promise<void> {
         const client: ProxyClient = accepted.route === "claudeCode" ? "claude" : accepted.route === "vsCodeChat" ? "copilot" : "codex";
         try {
           const body = await readBody(req, 20_971_520);
-          // Temporary #23 diagnostic, off unless the directory is named: docs/verification/search-request-capture.md.
-          const captureDirectory = process.env.CLASSROOM_APP_CAPTURE_SEARCH_DIR;
-          if (captureDirectory && client !== "copilot" && app.view().clientRoutes?.[accepted.route].mode === "classroom") {
-            await captureSearchRequest(captureDirectory, { client, method: req.method, url: req.url, headers: req.headers, body,
-              classroomApiKey: async () => (await storage.getConnection())?.apiKey });
-          }
           const slot: { response?: Response } = {};
           const headers: Record<string, string> = {};
           for (const name of ["anthropic-version", "anthropic-beta"]) {
