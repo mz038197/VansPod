@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { it } from "node:test";
+import { it, mock } from "node:test";
 import { createRouteFiles } from "../routeFiles";
 
 const CODEX_ORIGIN = "http://127.0.0.1:47821";
@@ -114,4 +114,38 @@ it("legacy migration removes only recognized VansPod values without a journal", 
       { name: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:9999" },
     ]);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it("legacy model migration restores the saved personal gateway before removing its retry source", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  const legacyBackup = path.join(root, "classroom-model-backup.json");
+  const gatewayFile = path.join(root, "cache", "gateway-models.json");
+  const personalGateway = JSON.stringify({ baseUrl: "https://api.anthropic.com", models: [{ id: "personal" }] });
+  let intercepted: ReturnType<typeof mock.method> | undefined;
+  try {
+    await fs.mkdir(path.dirname(gatewayFile), { recursive: true });
+    await fs.writeFile(paths.claude, JSON.stringify({ model: "lesson", env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN } }));
+    await fs.writeFile(gatewayFile, JSON.stringify({ baseUrl: CODEX_ORIGIN, models: [{ id: "lesson" }] }));
+    await fs.writeFile(legacyBackup, JSON.stringify({
+      clients: { codex: false, claude: true },
+      claudeFile: JSON.stringify({ model: "personal", env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN } }),
+      gateway: personalGateway,
+    }));
+    const write = fs.writeFile;
+    intercepted = mock.method(fs, "writeFile", async (...args: Parameters<typeof fs.writeFile>) => {
+      if (args[0] === gatewayFile) throw Object.assign(new Error("synthetic gateway denial"), { code: "EPERM" });
+      return write(...args);
+    });
+    await assert.rejects(routes.migrateLegacyState(CODEX_ORIGIN), /synthetic gateway denial/);
+    assert.equal(await fs.readFile(legacyBackup, "utf8").then(Boolean), true);
+    intercepted.mock.restore();
+    intercepted = undefined;
+
+    await createRouteFiles(paths).migrateLegacyState(CODEX_ORIGIN);
+    assert.deepEqual(JSON.parse(await fs.readFile(gatewayFile, "utf8")), JSON.parse(personalGateway));
+    await assert.rejects(fs.access(legacyBackup), { code: "ENOENT" });
+  } finally {
+    intercepted?.mock.restore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

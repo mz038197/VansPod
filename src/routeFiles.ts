@@ -133,6 +133,11 @@ export function createRouteFiles(paths: RouteFilePaths) {
       if (isManagedUrl(doc.ANTHROPIC_BASE_URL, proxy)) keys.push("ANTHROPIC_BASE_URL");
       if (isManagedUrl(gateway?.baseUrl, proxy)) {
         if (Array.isArray(gateway?.models) && gateway.models.some(value => asRecord(value)?.id === doc.model)) keys.push("model");
+        if (typeof saved.gateway === "string") {
+          await writeText(gatewayCachePath(paths.claude), saved.gateway);
+        } else {
+          await fs.rm(gatewayCachePath(paths.claude), { force: true });
+        }
       }
       const original = restoreJsonFields(current, personalClaudeText(saved.claudeFile ?? "", proxy), current, keys);
       await claudeCodeBackup.seed("config", original, keys);
