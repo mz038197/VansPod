@@ -36,6 +36,10 @@ _Avoid_: 在畫面上展示 API Key、只顯示學生暱稱而稱為課堂名稱
 老師為單一 Class Session 指定、由 Router 回傳並強制執行的可用模型清單。VansPod 不以本機預設清單取代它。
 _Avoid_: Router Model Template 全集、App 內建模型表、把 Allowlist 塞進 Course Catalog
 
+**Web Search**:
+Router 在一個 Class Session 內，代學生的 Coding Agent 執行的網路搜尋。它不是模型，不屬於 Session Model Allowlist；是否開放由老師對每個 Class Session 個別決定，預設不開放，並由 Router 強制執行。未開放時，Coding Agent 應直接告知學生，而不是自行改用其他方式抓取網頁。它只決定 Router 是否代為搜尋，不限制學生電腦自己的連網能力。
+_Avoid_: 搜尋模型、把搜尋列進 Session Model Allowlist、學生自己的搜尋帳號、未開放時用 shell 抓網頁替代、把關閉 Web Search 當成斷網
+
 **Model Switch**:
 每個客戶端各自的本機開關，讓 Codex 與 Claude Code 獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個客戶端不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該客戶端原有的個人設定。
 _Avoid_: 全域強制一起切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
