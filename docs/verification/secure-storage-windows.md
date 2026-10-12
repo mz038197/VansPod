@@ -7,7 +7,7 @@
 - Windows `10.0.26300`、x64；Node.js `v24.19.0`。
 - 系統內建 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，版本 `5.1.26100.9444`。
 - 來源包含 Client Route 整合基準 `f40a9bd` 與 #19 封裝驗證提交 `7075ad7`。
-- `npm test`：273／273 通過；10 組自訂基準埠 multi-route 與 25 組 secure-storage／adapter 真實 EXE 驗證通過。另已加入不可略過的預設三埠 phase；本次工作機的 47821 被工作前已存在的真實 VansPod 占用，因此該 phase 依設計 fail-fast，不能記為通過。
+- `npm test`：273／273 通過；1 組預設三埠、10 組自訂基準埠 multi-route 與 25 組 secure-storage／adapter 真實 EXE 驗證全部通過。
 - `npm run test:windows-exe` 先執行 `npm run dist`，再啟動真正的 `dist/VansPod.exe`；加解密使用真實 DPAPI CurrentUser，沒有替代加密器。
 - 本次驗證 EXE 的 SHA-256：`57095780342A70CC64F71DA2C00BC4AFB2C213545C8923A10572D08B404EE37E`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
 
