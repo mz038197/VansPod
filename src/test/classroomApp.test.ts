@@ -111,7 +111,7 @@ it("clear during startup waits for restoration and leaves both memory and persis
   assert.equal(h.app.view().connected, false);
 });
 
-it("a request arriving during replacement uses the new key and new allowlist together", async () => {
+it("a request arriving during replacement is validated against the new allowlist", async () => {
   const disk = persistentStorageFake();
   await disk.setConnection({ version: 1, apiKey: "old-key", session: { class_name: "Old" }, mode: "native" });
   let release!: () => void;
@@ -136,8 +136,9 @@ it("a request arriving during replacement uses the new key and new allowlist tog
   await started;
   const forward = h.app.forward({ client: "codex", model: "old-only-model" });
   release();
-  await Promise.all([redeem, forward]);
-  assert.deepEqual(h.sent(), [{ client: "codex", target: "router", model: "new-only-model", apiKey: KEY, adapter: "responses" }]);
+  await redeem;
+  await assert.rejects(forward, /old-only-model.*不在課堂允許清單/);
+  assert.deepEqual(h.sent(), []);
 });
 
 it("an in-flight Router response does not block clear or authorize later requests", async () => {
@@ -759,6 +760,37 @@ it("detects clients on startup and refresh without treating probe failure as a c
   assert.deepEqual(h.app.view().detectedClients, { codex: false, claude: false });
 });
 
+it("Reload re-detects gray clients and enables every recovered route as Native", async () => {
+  let installed = false;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async () => installed,
+    clientRouteRuntime: runtime,
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: false }; },
+      async restore() { return { changed: false }; },
+    },
+  });
+  await h.app.start();
+  assert.deepEqual(Object.values(h.app.view().clientRoutes!).map(route => route.health), ["gray", "gray", "gray"]);
+  installed = true;
+
+  await h.app.reloadAllowlist();
+
+  for (const route of Object.values(h.app.view().clientRoutes!)) {
+    assert.equal(route.mode, "native");
+    assert.equal(route.health, "green");
+    assert.equal(route.restart, "ready");
+  }
+});
+
 it("keeps a failed Codex listener red and Native without writing Classroom settings", async () => {
   let saved = {
     codex: { mode: "classroom" as const, adapter: "chat" as const },
@@ -1090,6 +1122,53 @@ it("an authoritative empty allowlist restores VS Code to Native", async () => {
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
 });
 
+it("an authoritative empty allowlist independently restores every Classroom route to healthy Native", async () => {
+  let ids = ["lesson"];
+  const restored: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    current(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", models: ids.map(id => ({ id })) }],
+    setModelOptions: async value => { if (value === null) restored.push("codex"); },
+    setClaudeCodeRoute: async classroom => { if (!classroom) restored.push("claudeCode"); },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { restored.push("vsCodeChat"); return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.setSwitch("classroom", "vscode");
+  restored.length = 0;
+  ids = [];
+
+  await h.app.reloadAllowlist();
+
+  assert.deepEqual(h.app.view().allowedModels, []);
+  for (const route of Object.values(h.app.view().clientRoutes!)) {
+    assert.equal(route.mode, "native");
+    assert.equal(route.health, "green");
+    assert.equal(route.restart, "ready");
+  }
+  assert.equal(restored.includes("codex"), true);
+  assert.equal(restored.includes("claudeCode"), true);
+  assert.equal(restored.includes("vsCodeChat"), true);
+});
+
 it("Reload republishes same-ID VS Code capability changes and leaves identical content green", async () => {
   let vision = false;
   let intended = "";
@@ -1130,6 +1209,55 @@ it("Reload republishes same-ID VS Code capability changes and leaves identical c
   await h.app.reloadAllowlist();
   assert.equal(writes.length, 2);
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+});
+
+it("Reload marks only Classroom routes with changed native catalogs yellow", async () => {
+  let ids = ["lesson"];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    current(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client !== "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => ids,
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.forward({ client: "codex", model: "lesson" });
+  await h.app.forward({ client: "claude", model: "lesson" });
+
+  await h.app.reloadAllowlist();
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "green");
+
+  ids = ["lesson", "new-model"];
+  await h.app.reloadAllowlist();
+
+  assert.equal(h.app.view().clientRoutes?.codex.health, "yellow");
+  assert.equal(h.app.view().clientRoutes?.codex.restart, "restart-required");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "yellow");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.restart, "restart-required");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "gray");
+
+  await h.app.reloadAllowlist();
+  assert.equal(h.app.view().clientRoutes?.codex.health, "yellow");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "yellow");
+
+  await h.app.forward({ client: "codex", model: "new-model" });
+  await h.app.forward({ client: "claude", model: "new-model" });
+  await h.app.reloadAllowlist();
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "green");
 });
 
 it("session replacement restores the old VS provider and publishes the new classroom catalog", async () => {
@@ -1328,6 +1456,65 @@ it("switching adapters leaves an ongoing send unchanged and applies to the next 
   await h.app.setAdapter("codex", "chat");
   await h.app.forward({ client: "codex", model: "later" }); release(); await ongoing;
   assert.deepEqual(choices, ["responses", "chat"]);
+});
+
+it("simultaneous route traffic keeps each route model and adapter snapshot across Reload", async () => {
+  let ids = ["shared"];
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const allSending = new Promise<void>(resolve => { entered = resolve; });
+  let active = 0;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    current(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", models: ids.map(id => ({ id })) }],
+    send: async () => { active += 1; if (active === 3) entered(); await gate; },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setAdapter("codex", "chat");
+  await h.app.setAdapter("claude", "messages");
+  await h.app.setAdapter("vscode", "chat");
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.setSwitch("classroom", "vscode");
+
+  const requests = [
+    h.app.forward({ client: "codex", model: "shared" }),
+    h.app.forward({ client: "claude", model: "shared" }),
+    h.app.forward({ client: "copilot", model: "shared" }),
+  ];
+  await allSending;
+  ids = ["next"];
+  await h.app.reloadAllowlist();
+
+  assert.deepEqual(h.sent().map(({ client, model, adapter }) => ({ client, model, adapter })), [
+    { client: "codex", model: "shared", adapter: "chat" },
+    { client: "claude", model: "shared", adapter: "messages" },
+    { client: "copilot", model: "shared", adapter: "chat" },
+  ]);
+  for (const client of ["codex", "claude", "copilot"] as const) {
+    await assert.rejects(h.app.forward({ client, model: "shared" }), /shared.*不在課堂允許清單/);
+  }
+  release();
+  await Promise.all(requests);
 });
 
 it("failed adapter persistence keeps the old preference and shows a safe notice", async () => {
@@ -1703,26 +1890,16 @@ describe("Model Switch", () => {
     assert.equal(app.view().modelId, "fresh-session-first");
   });
 
-  it("sends an allowlist id the client picked and substitutes the first id once", async () => {
+  it("sends an allowlist id the client picked and explicitly rejects foreign ids", async () => {
     const { app } = harness();
     await app.redeem("ABC12345", "Ada");
     await app.start();
     await app.setSwitch("classroom");
     const picked = await app.forward({ client: "codex", model: "later" });
-    const foreign = await app.forward({
-      client: "claude",
-      model: "claude-incoming",
-    });
     assert.equal(picked.model, "later");
-    assert.equal(foreign.model, "second-looking-but-first");
-    assert.equal(
-      app.view().notice,
-      "正在用的模型不在清單裡，已改送第一個。",
-    );
-    await app.forward({ client: "claude", model: "claude-incoming" });
-    assert.equal(
-      app.view().notice,
-      "正在用的模型不在清單裡，已改送第一個。",
+    await assert.rejects(
+      app.forward({ client: "claude", model: "claude-incoming" }),
+      /claude-incoming.*不在課堂允許清單/,
     );
     await app.forward({ client: "claude", model: "later" });
     assert.equal(app.view().notice, undefined);
@@ -1750,7 +1927,7 @@ describe("Model Switch", () => {
     assert.equal(kept.model, "later");
   });
 
-  it("says once when the id a client was sending leaves the allowlist", async () => {
+  it("rejects an id as soon as Reload removes it from the allowlist", async () => {
     let call = 0;
     const { app } = harness(undefined, {
       async sessionModels() {
@@ -1766,19 +1943,17 @@ describe("Model Switch", () => {
     await app.setSwitch("classroom");
     await app.forward({ client: "codex", model: "later" });
     await app.reloadAllowlist();
-    assert.equal(app.view().notice, "正在用的模型不在清單裡，已改送第一個。");
+    assert.equal(app.view().notice, undefined);
     assert.equal(app.view().modelId, "fresh");
     await app.reloadAllowlist();
-    assert.equal(app.view().notice, "正在用的模型不在清單裡，已改送第一個。");
-    const sent = await app.forward({ client: "codex", model: "later" });
-    assert.equal(sent.model, "fresh");
+    await assert.rejects(app.forward({ client: "codex", model: "later" }), /later.*不在課堂允許清單/);
     await app.forward({ client: "codex", model: "fresh" });
     await app.forward({ client: "claude", model: "fresh" });
     await app.forward({ client: "copilot", model: "fresh" });
     assert.equal(app.view().notice, undefined);
   });
 
-  it("drops the substitution note when the list changes or the switch returns Native", async () => {
+  it("never substitutes invalid ids across Reload or mode switches", async () => {
     let call = 0;
     const { app } = harness(undefined, {
       async sessionModels() {
@@ -1792,11 +1967,11 @@ describe("Model Switch", () => {
     await app.redeem("ABC12345", "Ada");
     await app.start();
     await app.setSwitch("classroom");
-    await app.forward({ client: "codex", model: "gpt-incoming" });
-    assert.equal(app.view().notice, "正在用的模型不在清單裡，已改送第一個。");
+    await assert.rejects(app.forward({ client: "codex", model: "gpt-incoming" }), /gpt-incoming.*不在課堂允許清單/);
+    assert.equal(app.view().notice, undefined);
     await app.reloadAllowlist();
     assert.equal(app.view().notice, undefined);
-    await app.forward({ client: "claude", model: "gpt-incoming" });
+    await assert.rejects(app.forward({ client: "claude", model: "gpt-incoming" }), /gpt-incoming.*不在課堂允許清單/);
     await app.setSwitch("native");
     assert.equal(app.view().notice, undefined);
     await app.setSwitch("classroom");
@@ -3066,15 +3241,15 @@ describe("VCRouter", () => {
     assert.deepEqual(proxyReceived(), ["VCRouter"]);
   });
 
-  it("forwards classroom Codex and Claude to the router with the first id and the key", async () => {
+  it("forwards allowed classroom Codex and Claude models to the router with the key", async () => {
     const { app, sent } = harness();
     await app.redeem("ABC12345", "Ada");
     await app.start();
     await app.setSwitch("classroom");
-    const codex = await app.forward({ client: "codex", model: "gpt-incoming" });
+    const codex = await app.forward({ client: "codex", model: "second-looking-but-first" });
     const claude = await app.forward({
       client: "claude",
-      model: "claude-incoming",
+      model: "later",
     });
     assert.deepEqual(codex, {
       client: "codex",
@@ -3084,12 +3259,12 @@ describe("VCRouter", () => {
     assert.deepEqual(claude, {
       client: "claude",
       target: "router",
-      model: "second-looking-but-first",
+      model: "later",
     });
     assert.equal(sent()[0]?.target, "router");
     assert.equal(sent()[0]?.apiKey, KEY);
     assert.equal(sent()[1]?.target, "router");
-    assert.equal(sent()[1]?.model, "second-looking-but-first");
+    assert.equal(sent()[1]?.model, "later");
     assert.equal(sent()[1]?.apiKey, KEY);
     assert.equal(JSON.stringify(codex).includes(KEY), false);
     assert.equal(JSON.stringify(claude).includes(KEY), false);
@@ -3306,7 +3481,7 @@ describe("saved Mode startup availability", () => {
   }
 });
 
-it("an authoritative missing allowlist revokes prior Classroom models without erasing the saved preference", async () => {
+it("a malformed Reload response preserves prior Classroom models as last-known-good", async () => {
   const storage = createConnectionStorage(createMemorySecureStorage());
   await storage.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Saved" }, mode: "classroom" });
   let missing = false;
@@ -3315,16 +3490,70 @@ it("an authoritative missing allowlist revokes prior Classroom models without er
   assert.equal(h.app.view().mode, "classroom");
   missing = true;
   await h.app.reloadAllowlist();
-  assert.equal(h.app.view().mode, "native");
-  assert.equal(h.app.view().modelId, undefined);
+  assert.equal(h.app.view().mode, "classroom");
+  assert.equal(h.app.view().modelId, "allowed");
+  assert.match(h.app.view().notice ?? "", /重新載入.*失敗|保留.*模型/);
   await h.app.forward({ client: "claude", model: "allowed" });
-  assert.equal(h.sent().at(-1)?.target, "claude.ai");
+  assert.equal(h.sent().at(-1)?.target, "router");
   assert.equal((await storage.getConnection())?.mode, "classroom");
   missing = false;
   await h.app.reloadAllowlist();
-  await h.app.setSwitch("classroom");
+  assert.equal(h.app.view().notice, undefined);
   await h.app.forward({ client: "claude", model: "allowed" });
   assert.equal(h.sent().at(-1)?.target, "router");
+});
+
+it("Reload preserves the last-known-good catalogs on refresh failure and reports the error", async () => {
+  let offline = false;
+  const h = harness(undefined, {
+    async sessionModels() {
+      if (offline) throw new Error("router unavailable");
+      return ["allowed", "other"];
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom");
+  offline = true;
+
+  await h.app.reloadAllowlist();
+
+  assert.deepEqual(h.app.view().allowedModels, ["allowed", "other"]);
+  assert.equal(h.app.view().mode, "classroom");
+  assert.match(h.app.view().notice ?? "", /重新載入.*失敗|保留.*模型/);
+  assert.equal((await h.app.forward({ client: "codex", model: "other" })).model, "other");
+});
+
+it("rejects a removed model on every route while an already-started request finishes its snapshot", async () => {
+  let ids = ["old", "kept"];
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sending = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(undefined, {
+    sessionModels: async () => ids,
+    send: async upstream => {
+      if (upstream.model === "old") {
+        entered();
+        await gate;
+      }
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom");
+  const inFlight = h.app.forward({ client: "codex", model: "old" });
+  await sending;
+  ids = ["kept"];
+
+  await h.app.reloadAllowlist();
+
+  for (const client of ["codex", "claude", "copilot"] as const) {
+    await assert.rejects(h.app.forward({ client, model: "old" }), /old.*不在課堂允許清單/);
+  }
+  await assert.rejects(h.app.forward({ client: "codex", model: "" }), /missing.*不在課堂允許清單/);
+  release();
+  assert.equal((await inFlight).model, "old");
 });
 
 

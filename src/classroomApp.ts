@@ -205,7 +205,6 @@ export type ClassroomAppView = {
 const LOCAL_LIST_NOTE = "這是本機清單。";
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
-const MODEL_SUBSTITUTED = "正在用的模型不在清單裡，已改送第一個。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private adapters = defaultAdapters();
@@ -256,10 +255,10 @@ export class ClassroomApp {
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
+  private allowlistError: string | undefined;
   private routeRestartNoted = false;
   private vsCodeOrigin: string | undefined;
   private sending = new Map<ProxyClient, string>();
-  private modelNotice = new Set<ProxyClient>();
 
   constructor(private readonly deps: ClassroomAppDeps) {}
 
@@ -467,6 +466,7 @@ export class ClassroomApp {
         throw new Error("VS Code 已切回 Native。請重開 VS Code 後再試。");
       }
       await this.deps.proxy.receive({ provider: "VCRouter" });
+      this.assertAllowedModel(request.model);
       const upstream = await this.classroomUpstream("copilot", request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
@@ -480,10 +480,7 @@ export class ClassroomApp {
       throw new Error("Claude Code 已切回 Native。請重開 Claude Code CLI 後再試。");
     }
     if (this.clientModes[request.client] === "classroom") {
-      if (request.client === "claude" && this.deps.clientRouteRuntime &&
-        (!request.model || !this.modelIds.includes(request.model))) {
-        throw new Error(`模型 ${request.model || "(missing)"} 不在課堂允許清單。`);
-      }
+      this.assertAllowedModel(request.model);
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
@@ -498,6 +495,16 @@ export class ClassroomApp {
       model: request.model,
     };
     return upstream;
+  }
+
+  private assertAllowedModel(requested: string | undefined): void {
+    if (this.modelIds.length === 0) return;
+    const id = requested?.startsWith("VCRouter/")
+      ? requested.slice("VCRouter/".length)
+      : requested;
+    if (!id || !this.modelIds.includes(id)) {
+      throw new Error(`模型 ${id || "(missing)"} 不在課堂允許清單。`);
+    }
   }
 
   private async classroomUpstream(
@@ -597,12 +604,7 @@ export class ClassroomApp {
       : requested;
     if (id && this.modelIds.includes(id)) {
       this.sending.set(client, id);
-      this.modelNotice.delete(client);
       return id;
-    }
-    if (id && !this.modelIds.includes(id)) {
-      this.modelNotice.add(client);
-      return first;
     }
     return this.sending.get(client) ?? first;
   }
@@ -612,15 +614,12 @@ export class ClassroomApp {
     if (this.notice) {
       parts.push(this.notice);
     }
-    if (this.modelNotice.size > 0) {
-      parts.push(MODEL_SUBSTITUTED);
-    }
+    if (this.allowlistError) parts.push(this.allowlistError);
     return parts.length > 0 ? parts.join(" ") : undefined;
   }
 
   private forgetModelChoices(): void {
     this.sending.clear();
-    this.modelNotice.clear();
   }
 
   private async publishModelOptions(updateClient?: AdapterClient): Promise<void> {
@@ -760,6 +759,7 @@ export class ClassroomApp {
     this.clientRoutes.vsCodeChat.restart = "ready";
     this.modelIds = [];
     this.modelProviders = [];
+    this.allowlistError = undefined;
     this.forgetModelChoices();
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -869,7 +869,6 @@ export class ClassroomApp {
     if (!await this.saveMode(aggregate, next)) return;
     this.clientModes = next;
     this.sending.delete(client);
-    this.modelNotice.delete(client);
     try {
       await this.publishModelOptions(client);
       this.notice = undefined;
@@ -1080,6 +1079,9 @@ export class ClassroomApp {
   private async startCodexRoute(): Promise<void> {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
+    const alreadyRunning = runtime.current?.("codex")?.health === "green";
+    const restartPending = this.clientRoutes.codex.health === "yellow" &&
+      this.clientRoutes.codex.restart === "restart-required";
     let health: "green" | "red" = "red";
     try {
       const started = await runtime.start("codex");
@@ -1103,12 +1105,13 @@ export class ClassroomApp {
       this.clientRoutes.codex.mode = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
-    // Listener recovery never restores Classroom automatically after a red failure.
-    this.clientRoutes.codex.health = "green";
-    this.clientRoutes.codex.restart = "ready";
     this.clientModes.codex = this.clientRoutes.codex.mode === "classroom" && this.connected && this.modelIds.length > 0
       ? "classroom"
       : "native";
+    if (alreadyRunning && restartPending && this.clientModes.codex === "classroom") return;
+    // Listener recovery never restores Classroom automatically after a red failure.
+    this.clientRoutes.codex.health = "green";
+    this.clientRoutes.codex.restart = "ready";
   }
 
   private async startVsCodeRoute(): Promise<void> {
@@ -1176,6 +1179,7 @@ export class ClassroomApp {
       return;
     }
     const alreadyRunning = runtime.current?.("claudeCode")?.health === "green";
+    const restartPending = route.health === "yellow" && route.restart === "restart-required";
     let health: "green" | "red" = "red";
     try {
       const started = await runtime.start("claudeCode");
@@ -1196,11 +1200,12 @@ export class ClassroomApp {
       route.mode = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
-    route.health = "green";
-    route.restart = "ready";
     this.clientModes.claude = route.mode === "classroom" && this.connected && this.modelIds.length > 0
       ? "classroom"
       : "native";
+    if (alreadyRunning && restartPending && this.clientModes.claude === "classroom") return;
+    route.health = "green";
+    route.restart = "ready";
     if (alreadyRunning) return;
     try {
       await this.deps.routes.setClaudeCodeRoute(
@@ -1234,36 +1239,57 @@ export class ClassroomApp {
       return;
     }
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
-    await this.loadModels(apiKey);
+    const refreshed = await this.loadModels(apiKey);
+    this.allowlistError = refreshed
+      ? undefined
+      : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     if (previous !== current) {
       this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
-      if (this.deps.clientRouteRuntime && this.clientRoutes.claudeCode.mode === "classroom") {
-        this.clientRoutes.claudeCode.health = "yellow";
-        this.clientRoutes.claudeCode.restart = "restart-required";
+      if (this.deps.clientRouteRuntime) {
+        if (this.clientRoutes.codex.mode === "classroom") {
+          this.clientRoutes.codex.health = "yellow";
+          this.clientRoutes.codex.restart = "restart-required";
+        }
+        if (this.clientRoutes.claudeCode.mode === "classroom") {
+          this.clientRoutes.claudeCode.health = "yellow";
+          this.clientRoutes.claudeCode.restart = "restart-required";
+        }
       }
     }
   }
 
-  private async loadModels(apiKey: string): Promise<void> {
+  private async loadModels(apiKey: string): Promise<boolean> {
     let payload: string[] | VsCodeProvider[];
     try {
       payload = await this.deps.router.fetchSessionModels(apiKey);
     } catch {
-      return;
+      return false;
     }
-    const items: unknown[] = Array.isArray(payload) ? payload : [];
+    if (!Array.isArray(payload)) return false;
+    const items: unknown[] = payload;
     const stringPayload = items.every(item => typeof item === "string");
-    const providers = stringPayload ? [] : items.filter(
-      (item): item is VsCodeProvider => !!item && typeof item === "object" && !Array.isArray(item),
+    const providerPayload = items.every(
+      item => !!item && typeof item === "object" && !Array.isArray(item),
     );
-    const ids = providers.length > 0
-      ? providers.flatMap(provider => Array.isArray(provider.models) ? provider.models.flatMap(model => {
-        const id = model && typeof model === "object" && !Array.isArray(model) ? (model as Record<string, unknown>).id : undefined;
-        return typeof id === "string" && id ? [id] : [];
-      }) : [])
-      : items as string[];
-    if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string" || !id.trim())) {
+    if (!stringPayload && !providerPayload) return false;
+    const providers = stringPayload ? [] : items as VsCodeProvider[];
+    const ids: string[] = [];
+    if (stringPayload) {
+      ids.push(...items as string[]);
+    } else {
+      for (const provider of providers) {
+        if (!Array.isArray(provider.models)) return false;
+        for (const model of provider.models) {
+          const id = model && typeof model === "object" && !Array.isArray(model)
+            ? (model as Record<string, unknown>).id
+            : undefined;
+          if (typeof id !== "string" || !id.trim()) return false;
+          ids.push(id);
+        }
+      }
+    }
+    if (ids.length === 0 || ids.some(id => !id.trim())) {
       this.modelIds = [];
       this.modelProviders = [];
       this.mode = "native";
@@ -1294,14 +1320,14 @@ export class ClassroomApp {
       }
       this.forgetModelChoices();
       await this.restoreModelOptions();
-      return;
+      if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
+        this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
+      }
+      return true;
     }
     const previous = this.modelIds;
     const providersChanged = !isDeepStrictEqual(this.modelProviders, providers);
     const changed = previous.join("\0") !== ids.join("\0");
-    if (changed) {
-      this.modelNotice.clear();
-    }
     this.modelIds = ids;
     this.modelProviders = structuredClone(providers);
     if (providersChanged && this.deps.clientRouteRuntime && this.clientRoutes.vsCodeChat.mode === "classroom" && this.vsCodeOrigin) {
@@ -1322,7 +1348,7 @@ export class ClassroomApp {
       }
     }
     if (!changed || this.mode !== "classroom") {
-      return;
+      return true;
     }
     for (const client of PROXY_CLIENTS) {
       const current = this.sending.get(client);
@@ -1330,9 +1356,9 @@ export class ClassroomApp {
         continue;
       }
       this.sending.delete(client);
-      this.modelNotice.add(client);
     }
     await this.publishModelOptions();
+    return true;
   }
 
   async copyKey(): Promise<void> {
@@ -1381,6 +1407,7 @@ export class ClassroomApp {
     this.connectionError = undefined;
     this.connectionDraft = undefined;
     this.notice = undefined;
+    this.allowlistError = undefined;
     this.catalog = undefined;
     this.catalogError = undefined;
     this.remoteCatalogHeld = false;
