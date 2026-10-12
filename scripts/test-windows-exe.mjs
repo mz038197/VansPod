@@ -114,12 +114,15 @@ async function assertPrivateDisk(root) { for (const filename of await allFiles(r
 function assertPrivateOutput(text) { for (const secret of sensitive) safeAssert(!text.includes(secret), 'Sensitive data found in child output'); }
 
 async function startExe(exe, box, router, port, overrides = {}) {
-  const child = spawn(exe, [], { cwd: box.root, env: { ...box.env, CLASSROOM_APP_PORT: String(port), CLASSROOM_ROUTER_BASE_URL: router.url, ...overrides }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const basePort = port ?? 47821;
+  const runtimeEnv = { ...box.env, CLASSROOM_ROUTER_BASE_URL: router.url, ...overrides };
+  if (port !== undefined) runtimeEnv.CLASSROOM_APP_PORT = String(port);
+  const child = spawn(exe, [], { cwd: box.root, env: runtimeEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let output = '', spawnFailed = false;
   child.on('error', () => { spawnFailed = true; });
   child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
-  let url = `http://127.0.0.1:${port}`;
-  const handle = { child, get url() { return url; }, routeUrl(route) { return `http://127.0.0.1:${port + ({ codex: 0, claude: 1, vscode: 2 }[route] ?? 0)}`; }, output: () => output, async stop() {
+  let url = `http://127.0.0.1:${basePort}`;
+  const handle = { child, get url() { return url; }, routeUrl(route) { return `http://127.0.0.1:${basePort + ({ codex: 0, claude: 1, vscode: 2 }[route] ?? 0)}`; }, output: () => output, async stop() {
     if (!spawnFailed && child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit'); child.kill(); await exited;
     }
@@ -290,6 +293,34 @@ async function freeBasePort() {
     }
   }
   throw new Error('No three-port verification range is available');
+}
+
+export async function runDefaultPortContract({ exe }) {
+  safeAssert(process.platform === 'win32', 'Packaged default-port verification requires Windows');
+  const restoreCheck = await personalSettingsSnapshot();
+  const router = await fakeRouter();
+  const box = await sandbox();
+  let app;
+  try {
+    app = await startExe(path.resolve(exe), box, router, undefined);
+    safeAssert(app.url === 'http://127.0.0.1:47821', 'Packaged EXE did not use default Codex/UI port 47821');
+    for (const [route, port] of [['codex', 47821], ['claude', 47822], ['vscode', 47823]]) {
+      safeAssert(app.routeUrl(route) === `http://127.0.0.1:${port}`, `${route} default origin was not ${port}`);
+      const response = await fetch(app.routeUrl(route), { signal: AbortSignal.timeout(2000) });
+      safeAssert(response.status === 200, `${route} default port ${port} did not serve the packaged EXE`);
+    }
+    const html = await page(app);
+    for (const client of ['codex', 'claude', 'vscode']) assertRoute(html, client, 'green', 'native');
+    await assertPrivateDisk(box.root);
+    console.log('PASS packaged default ports: Codex/UI 47821, Claude Code 47822, VS Code Chat 47823');
+    return { ports: { codex: 47821, claudeCode: 47822, vsCodeChat: 47823 } };
+  } finally {
+    const failures = [];
+    for (const [name, cleanup] of Object.entries({ app: () => app?.stop(), router: () => router.close(), sandbox: () => box.cleanup(), personalSettings: () => restoreCheck() })) {
+      try { await cleanup(); } catch (error) { failures.push(name + ':' + String(error)); }
+    }
+    if (failures.length) throw new Error('Default-port cleanup failed: ' + failures.join(', '));
+  }
 }
 
 export async function runMultiRouteLifecycle({ exe }) {
@@ -642,7 +673,8 @@ export async function runLifecycle({ exe }) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const exe = path.join(path.dirname(fileURLToPath(import.meta.url)), '../dist/VansPod.exe');
+  const defaultPorts = await runDefaultPortContract({ exe });
   const multiRoute = await runMultiRouteLifecycle({ exe });
   const secureStorage = await runLifecycle({ exe });
-  console.log(JSON.stringify({ multiRoute, secureStorage }, null, 2));
+  console.log(JSON.stringify({ defaultPorts, multiRoute, secureStorage }, null, 2));
 }

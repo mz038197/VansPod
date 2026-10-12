@@ -6,10 +6,10 @@
 
 - Windows `10.0.26300`、x64；Node.js `v24.19.0`。
 - 系統內建 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，版本 `5.1.26100.9444`。
-- 包含整合提交 `65925ea`，以及 #1 review 的資料驗證、模式寫入失敗補償與身分欄位共用 helper 修正。`npm test`：156／156 通過，無略過。
-- 真實 SEA 驗證完成 21 組情境，全部通過，包含實際 Copy Key 與原剪貼簿完整還原。
+- 來源包含 Client Route 整合基準 `f40a9bd` 與 #19 封裝驗證提交 `7075ad7`。
+- `npm test`：273／273 通過；10 組自訂基準埠 multi-route 與 25 組 secure-storage／adapter 真實 EXE 驗證通過。另已加入不可略過的預設三埠 phase；本次工作機的 47821 被工作前已存在的真實 VansPod 占用，因此該 phase 依設計 fail-fast，不能記為通過。
 - `npm run test:windows-exe` 先執行 `npm run dist`，再啟動真正的 `dist/VansPod.exe`；加解密使用真實 DPAPI CurrentUser，沒有替代加密器。
-- 本次驗證 EXE 的 SHA-256：`ED50E817EA512F4C312B3AFEAA16D398071E38E31AB8120CED27A2F327D9C4FD`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
+- 本次驗證 EXE 的 SHA-256：`57095780342A70CC64F71DA2C00BC4AFB2C213545C8923A10572D08B404EE37E`。打包包含建置路徑，其他目錄重新建置的雜湊可能不同。
 
 在 Windows 安裝專案依賴後，可重跑：
 
@@ -21,6 +21,8 @@ npm run test:windows-exe
 測試在獨立暫存根目錄建立 Home、APPDATA、LOCALAPPDATA、TEMP、TMP 與三個可控的合成 client command，僅覆寫 EXE 子行程的環境。所有設定／儲存／ACL 目標均先確認位於該根目錄內。假 Router 只使用合成憑證，保留 Nickname Redeem、Course Catalog、Session Model Allowlist 與模型請求的既有 API 形狀。
 
 `CLASSROOM_APP_HEADLESS=1` 關閉瀏覽器、系統匣及全域 Codex app-server 重啟；`CLASSROOM_APP_PORT` 選擇三個連續且可用的獨立 loopback 連接埠，分別驗證 Codex、Claude Code 與 VS Code Chat。另以實際 port holder 驗證第二、第三路由碰撞及 base-port emergency UI。正常啟動仍使用 47821、47822、47823。Catalog／Allowlist／Redeem 的網路請求有 5 秒截止時間，卡住的 Router 不會無限阻止啟動。
+
+測試入口會先以真正的預設設定啟動 EXE，要求 UI／Codex、Claude Code、VS Code Chat 分別實際服務於 47821、47822、47823，且三路均為綠燈 Native；任何既有占用都會令驗證失敗，不會跳過或把 emergency UI 算成通過。該 phase 結束時只終止自己建立的 EXE 並清除合成 profile，不終止既有占用者。之後才執行自訂基準埠、碰撞與其餘生命週期。
 
 ## Packaged multi-route 結果
 
@@ -58,7 +60,7 @@ Clear 的部分恢復失敗以真實共享讀取檔案鎖驗證：失敗路由�
 
 在正常保存、換堂、遷移完成、可清除的失敗路徑、清除與終止／重啟之後，遞迴掃描沙盒中的每個檔案，確認沒有合成 Classroom API Key、Class／Session 名稱或 Nickname 明文。HTTP 頁面及錯誤／代理回應不含金鑰；子行程 stdout／stderr 亦掃描合成敏感字串。保護與解密之間的資料只在記憶體與 stdin 中傳遞。
 
-本次以 Windows 行程資訊實際觀察到 4 筆具備執行檔路徑與命令列的 PowerShell 子行程紀錄：均為系統內建路徑，命令列沒有合成憑證。行程取樣不能證明所有短命子行程均被觀察；此外，儲存邊界測試驗證 stdin 傳入、argv 不含秘密、錯誤輸出不外洩、輸出大小上限及逾時。
+本次以 Windows 行程資訊取樣具備執行檔路徑與命令列的 PowerShell 子行程：觀察到的行程均為系統內建路徑，命令列沒有合成憑證。取樣不能證明所有短命子行程均被觀察；此外，儲存邊界測試驗證 stdin 傳入、argv 不含秘密、錯誤輸出不外洩、輸出大小上限及逾時。
 
 實際 Copy 測試前，helper 已完整備份剪貼簿的七個 HGLOBAL 格式：HTML Format、UnicodeText、Chromium internal source RFH token、Chromium internal source URL、Locale、Text、OEMText。資料只保留於 helper 記憶體，未列印或寫磁碟；以有效隱藏 owner HWND 及正確的 handle 所有權規則恢復。成功結果為 `actualCopyKey: true` 與 `exactFormatsAndBytesRestored: true`。若遇到不支援的 GDI／不可鎖定格式，腳本會在變更前拒絕；恢復若需重試，helper 保留備份直到驗證成功，父行程不逾時終止它。其他應用程式仍可能同時操作剪貼簿，測試沒有凍結整個桌面。
 
@@ -76,15 +78,3 @@ Clear 的部分恢復失敗以真實共享讀取檔案鎖驗證：失敗路由�
 ## Review 回歸
 
 公共核心／儲存 seam 回歸涵蓋無效連線在保存或 fallback 前拒絕，以及模式客戶端寫入失敗後回到 Native、恢復設定、補償保存 Native，補償失敗時的受控部分失敗提示。嚴格模式保存失敗保留原模式；Copilot 的獨立 Classroom 路由行為維持原規格。
-
-## 設定頁與路由修改整合後驗證
-
-2026-10-11 將既有設定頁、安裝進度、Codex 個人路由還原修改（`dff869e`）及票單草稿（`749dbf3`）與 Secure Storage 的 `82a85f2` 整合。保留版本化連線保存、操作序列、金鑰隱藏及 Native 失敗補償，同時保留連線表單草稿與模型重啟提醒。
-
-- `npm test`：163／163 通過。
-- 重新打包的真實 Windows SEA EXE 完整 21 組情境通過；Copy 的原始剪貼簿格式、順序及位元組完整還原，真實個人設定檔雜湊未改變。
-- 本次 EXE SHA-256：`567B2514785DAAB64EE15D7D6396BD308376043D28D836359330740F5779C3B7`。
-- 實際觀察 6 筆系統內建 PowerShell 子行程命令列，未含合成金鑰。
-- EXE 測試改為檢查實際 Copy 表單，避免新增前端腳本的 `/copy` 選擇器或標籤大小寫造成誤判；代理、密文及重啟檢查保留。
-
-上述第二 Windows 帳號與所有精確中斷邊界的未驗證限制維持不變。
