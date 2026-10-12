@@ -7,6 +7,7 @@ import { withVsCodeBaseUrl, withoutVsCodeBaseUrl, anthropicBaseValues, type Mode
 import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
+import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -318,7 +319,7 @@ snippets:
 function harness(
   session?: { class_name?: string; name?: string },
   options?: {
-    detectClient?: (client: "codex" | "claude") => Promise<boolean>;
+    detectClient?: (client: "codex" | "claude" | "vsCodeChat") => Promise<boolean>;
     adapterSettings?: AdapterSettingsStorage;
     clientRouteSettings?: ClientRouteSettingsStorage;
     clientRouteRuntime?: ClientRouteRuntime;
@@ -333,7 +334,7 @@ function harness(
     run?: (cwd: string, command: string, onOutput?: (output: string) => void) => Promise<string>;
     runExitCode?: number;
     write?: (path: string, contents: string) => Promise<void>;
-    sessionModels?: (apiKey: string) => Promise<string[]>;
+    sessionModels?: (apiKey: string) => Promise<string[] | Array<Record<string, unknown>>>;
     codex?: Record<string, unknown>;
     claudeTerminal?: Record<string, unknown>;
     vsCode?: Record<string, unknown>;
@@ -344,6 +345,7 @@ function harness(
     ) => Promise<{ exitCode: number | undefined; output: string }>;
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
+    vsCodeRouteSettings?: VsCodeRouteSettings;
   },
 ) {
   const redeemCalls: { invite_code: string; nickname: string }[] = [];
@@ -379,6 +381,7 @@ function harness(
     adapterSettings: options?.adapterSettings,
     clientRouteSettings: options?.clientRouteSettings,
     clientRouteRuntime: options?.clientRouteRuntime,
+    vsCodeRouteSettings: options?.vsCodeRouteSettings,
     router: {
       async redeemNickname(body) {
         redeemCalls.push(body);
@@ -845,6 +848,88 @@ it("switches healthy Codex through its independent route state and rejects stale
   await h.app.clearConnection();
   assert.equal(saved.codex.mode, "native");
   assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+});
+
+it("switches VS Code independently, publishes its complete catalog, and becomes green after its first routed request", async () => {
+  let saved = {
+    codex: { mode: "native" as const, adapter: "responses" as const },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as "native" | "classroom", adapter: "responses" as "responses" | "chat" },
+  };
+  const starts: string[] = [];
+  const published: unknown[] = [];
+  let restored = 0;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      starts.push(route);
+      const port = route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex" || client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+    sessionModels: async () => [{
+      name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson", name: "Lesson", toolCalling: true, vision: true }],
+    }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish(value) { published.push(structuredClone(value)); return { changed: true }; },
+      async restore() { restored += 1; return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+
+  await h.app.setSwitch("classroom", "vscode");
+
+  assert.deepEqual(starts, ["codex", "vsCodeChat"]);
+  assert.equal(saved.vsCodeChat.mode, "classroom");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  assert.deepEqual(published[0], {
+    providers: [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson", name: "Lesson", toolCalling: true, vision: true }] }],
+    adapter: "responses",
+    origin: "http://127.0.0.1:47823",
+  });
+  await h.app.forward({ client: "copilot", model: "lesson" });
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  await h.app.setAdapter("vscode", "chat");
+  assert.equal(saved.vsCodeChat.adapter, "chat");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  await h.app.setSwitch("native", "vscode");
+  assert.equal(restored, 1);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  await assert.rejects(h.app.forward({ client: "copilot", model: "lesson" }), /重開 VS Code/);
+});
+
+it("marks only VS Code red when its listener collides", async () => {
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      if (route === "vsCodeChat") throw Object.assign(new Error("occupied"), { code: "EADDRINUSE" });
+      return { route, health: "green", origin: "http://127.0.0.1:47821" };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex" || client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: false }; },
+      async restore() { return { changed: false }; },
+    },
+  });
+
+  await h.app.start();
+
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "red");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "gray");
 });
 
 it("stops the Codex listener only after restoring its Native settings", async () => {

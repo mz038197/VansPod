@@ -29,10 +29,12 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
 it("renders independent adapter choices with Responses defaults and Claude Messages", () => {
   const html = renderPage(view());
   const forms = [...html.matchAll(/<form[^>]*action="\/adapter"[\s\S]*?<\/form>/g)].map(match => match[0]);
-  assert.equal(forms.length, 2);
-  assert.match(forms[0], /value="codex"/); assert.match(forms[1], /value="claude"/);
-  assert.match(forms[0], /value="responses" selected/); assert.match(forms[1], /value="responses" selected/);
-  assert.doesNotMatch(forms[0], /value="messages"/); assert.match(forms[1], /value="messages"/);
+  assert.equal(forms.length, 3);
+  assert.match(forms[0], /value="codex"/); assert.match(forms[1], /value="claude"/); assert.match(forms[2], /value="vscode"/);
+  assert.match(forms[0], /value="responses" selected/); assert.match(forms[1], /value="responses" selected/); assert.match(forms[2], /value="responses" selected/);
+  assert.doesNotMatch(forms[0], /value="messages"/); assert.match(forms[1], /value="messages"/); assert.doesNotMatch(forms[2], /value="messages"/);
+  assert.match(html, /不需要 GitHub 登入或 Copilot plan/);
+  assert.match(html, /inline completion、semantic search 與 embeddings 不在此路由範圍/);
   assert.match(settingsActionsScript, /form\[action="\/adapter"\]/);
 });
 
@@ -48,7 +50,7 @@ describe("VansPod page", () => {
     assert.doesNotMatch(adapters[1], /<select[^>]*disabled/);
     assert.match(html, /class="client-light detected"[^>]*title="Codex 已偵測"/);
     assert.match(html, /class="client-light"[^>]*title="Claude Code 未偵測"/);
-    assert.equal((html.match(/<form[^>]*action="\/switch"/g) ?? []).length, 2);
+    assert.equal((html.match(/<form[^>]*action="\/switch"/g) ?? []).length, 3);
     assert.match(html, /<li>lesson&lt;&amp;two<\/li>/);
   });
   it("shows red Codex health and disables its Classroom controls", () => {

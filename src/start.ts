@@ -27,6 +27,7 @@ import { decodeRequestBody } from "./responsesChat";
 import { createAdapterSettingsStorage } from "./adapterSettings";
 import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
+import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { sendRouter, relayResponse } from "./modelProxy";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -111,35 +112,7 @@ async function writeCopilotProviders(doc: {
   );
 }
 
-function modelIdsInRouterOrder(payload: unknown): string[] {
-  if (!Array.isArray(payload)) {
-    // A successfully received response without a list is authoritative unavailability,
-    // unlike a transport failure where an existing valid runtime list may be retained.
-    return [];
-  }
-  const ids: string[] = [];
-  for (const provider of payload) {
-    if (!provider || typeof provider !== "object") {
-      continue;
-    }
-    const models = (provider as { models?: unknown }).models;
-    if (!Array.isArray(models)) {
-      continue;
-    }
-    for (const model of models) {
-      if (!model || typeof model !== "object") {
-        continue;
-      }
-      const id = (model as { id?: unknown }).id;
-      if (typeof id === "string" && id) {
-        ids.push(id);
-      }
-    }
-  }
-  return ids;
-}
-
-async function fetchSessionModels(apiKey: string): Promise<string[]> {
+async function fetchSessionModels(apiKey: string): Promise<VsCodeProvider[]> {
   const root = routerBaseUrl();
   const response = await fetch(`${root}/extension/chat-language-models`, {
     signal: AbortSignal.timeout(5_000),
@@ -151,7 +124,9 @@ async function fetchSessionModels(apiKey: string): Promise<string[]> {
   if (!response.ok) {
     throw new Error("session models failed");
   }
-  return modelIdsInRouterOrder(await response.json());
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload)) return [];
+  return payload.filter(isProviderRecord);
 }
 
 function isRedeemResult(value: unknown): value is NicknameRedeemResult {
@@ -521,6 +496,11 @@ async function main(): Promise<void> {
     adapterSettings: createAdapterSettingsStorage(settingsFile),
     clientRouteSettings: createClientRouteSettingsStorage(settingsFile),
     clientRouteRuntime,
+    vsCodeRouteSettings: createVsCodeRouteSettings({
+      settingsFile: copilotModelsFile(),
+      journalFile: path.join(os.homedir(), ".vanspod", "vscode-route-journal.json"),
+      legacyOrigins: [pageUrl.replace(/\/$/, ""), "http://127.0.0.1:47821"],
+    }),
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
     projectFiles: { readClassroomInstalls },
@@ -704,7 +684,7 @@ async function main(): Promise<void> {
         const mode = params.get("mode");
         if (mode === "classroom" || mode === "native") {
           const client = params.get("client");
-          if (client !== null && client !== "codex" && client !== "claude") {
+          if (client !== null && client !== "codex" && client !== "claude" && client !== "vscode") {
             res.writeHead(400); res.end("無效的客戶端。"); return;
           }
           await app.setSwitch(mode, client ?? undefined);
@@ -715,7 +695,7 @@ async function main(): Promise<void> {
       if (req.method === "POST" && pathname === "/adapter") {
         const params = new URLSearchParams(await readBody(req));
         const client = params.get("client");
-        if (client !== "codex" && client !== "claude") {
+        if (client !== "codex" && client !== "claude" && client !== "vscode") {
           res.writeHead(400); res.end("無效的客戶端。"); return;
         }
         await app.setAdapter(client, params.get("adapter") ?? "");
@@ -732,9 +712,9 @@ async function main(): Promise<void> {
         (req.method === "POST" || req.method === "PUT") &&
         (pathname.startsWith("/v1/") || pathname.startsWith("/backend-api/"))
       ) {
-        if (accepted.route !== "codex") {
+        if (accepted.route !== "codex" && accepted.route !== "vsCodeChat") {
           res.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ error: { message: "Codex Client Route 目前無法使用。" } }));
+          res.end(JSON.stringify({ error: { message: "這個 Client Route 目前無法使用。" } }));
           return;
         }
         const controller = new AbortController(); activeRequests.add(controller);
@@ -742,7 +722,7 @@ async function main(): Promise<void> {
         req.once("aborted", aborted);
         const closed = () => { if (!res.writableFinished) controller.abort(); };
         res.once("close", closed);
-        const client: ProxyClient = "codex";
+        const client: ProxyClient = accepted.route === "vsCodeChat" ? "copilot" : "codex";
         try {
           const body = await readBody(req, 20_971_520);
           const slot: { response?: Response } = {};
@@ -754,7 +734,7 @@ async function main(): Promise<void> {
             await responseSlot.run(slot, () => app.forward({ client, model: modelFromBody(body), method: req.method, path: pathname, body, headers, signal: controller.signal }));
           } catch (error) {
             const message = error instanceof Error ? error.message : "";
-            if (!message.includes("重開 Codex")) throw error;
+            if (!message.includes("重開 Codex") && !message.includes("重開 VS Code")) throw error;
             slot.response = Response.json({ error: { message } }, { status: 409 });
           }
           if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, "codex", controller.signal);
