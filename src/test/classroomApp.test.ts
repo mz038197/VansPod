@@ -1257,6 +1257,63 @@ it("an authoritative empty allowlist independently restores every Classroom rout
   assert.equal(restored.includes("vsCodeChat"), true);
 });
 
+it("an empty allowlist keeps a failed Codex restoration red and retryable without blocking other routes", async () => {
+  let ids = ["lesson"];
+  let failCodexRestore = true;
+  const restored: string[] = [];
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    current(route) {
+      const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
+      return { route, health: "green", origin: `http://127.0.0.1:${port}` };
+    },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", models: ids.map(id => ({ id })) }],
+    setModelOptions: async value => {
+      if (value === null) {
+        restored.push("codex");
+        if (failCodexRestore) throw new Error("synthetic Codex restore failure");
+      }
+    },
+    setClaudeCodeRoute: async classroom => { if (!classroom) restored.push("claudeCode"); },
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { restored.push("vsCodeChat"); return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "codex");
+  await h.app.setSwitch("classroom", "claude");
+  await h.app.setSwitch("classroom", "vscode");
+  restored.length = 0;
+  ids = [];
+
+  await assert.doesNotReject(h.app.reloadAllowlist());
+
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.codex.health, "red");
+  assert.equal(h.app.view().clientRoutes?.claudeCode.health, "green");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  assert.equal(restored.includes("claudeCode"), true);
+  assert.equal(restored.includes("vsCodeChat"), true);
+
+  failCodexRestore = false;
+  await h.app.reloadAllowlist();
+
+  assert.equal(h.app.view().clientRoutes?.codex.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+  assert.equal(restored.filter(route => route === "codex").length >= 2, true);
+});
+
 it("Reload republishes same-ID VS Code capability changes and leaves identical content green", async () => {
   let vision = false;
   let intended = "";

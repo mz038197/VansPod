@@ -1372,10 +1372,17 @@ export class ClassroomApp {
         } catch { this.clientRoutes.vsCodeChat.health = "red"; }
       }
       this.forgetModelChoices();
-      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
-      else await this.restoreModelOptions();
-      if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
-        this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
+      if (this.deps.clientRouteRuntime) {
+        try {
+          await this.restoreCodexRouteSettings();
+          if (this.clientRoutes.codex.health !== "red") {
+            this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
+          }
+        } catch {
+          this.clientRoutes.codex.health = "red";
+        }
+      } else {
+        await this.restoreModelOptions();
       }
       return true;
     }
