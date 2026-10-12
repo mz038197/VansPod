@@ -2,561 +2,150 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, mock } from "node:test";
+import { it, mock } from "node:test";
 import { createRouteFiles } from "../routeFiles";
 
-const PROXY = "http://127.0.0.1:47821";
+const CODEX_ORIGIN = "http://127.0.0.1:47821";
+const CLAUDE_ORIGIN = "http://127.0.0.1:47822";
 
 async function tempRoutes() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "classroom-routes-"));
-  const paths = {
-    codex: path.join(root, "config.toml"),
-    claude: path.join(root, "settings.json"),
-    vsCode: path.join(root, "vscode.json"),
-  };
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-routes-"));
+  const paths = { codex: path.join(root, "config.toml"), claude: path.join(root, "settings.json"), vsCode: path.join(root, "vscode.json") };
   return { root, paths, routes: createRouteFiles(paths) };
 }
 
-describe("route files", () => {
-  it("isolates model files and backups when clients switch independently across restart", async () => {
-    const { routes, paths, root } = await tempRoutes();
-    try {
-      const originalCodex = 'model = "personal-codex"\n';
-      const originalClaude = '{"model":"personal-claude","theme":"dark"}\n';
-      await fs.writeFile(paths.codex, originalCodex);
-      await fs.writeFile(paths.claude, originalClaude);
-      const options = { ids: ["lesson"], codexModel: "lesson", claudeModel: "lesson", proxyBaseUrl: PROXY };
-      await routes.setModelOptions({ ...options, clients: { codex: true, claude: false }, updateClient: "codex" });
-      assert.equal(await fs.readFile(paths.claude, "utf8"), originalClaude);
-      const codexClassroom = await fs.readFile(paths.codex, "utf8");
-      const newerClaude = '{"model":"new-personal-claude","theme":"light"}\n';
-      await fs.writeFile(paths.claude, newerClaude);
-      const reopened = createRouteFiles(paths);
-      await reopened.setModelOptions({ ...options, clients: { codex: true, claude: true }, updateClient: "claude" });
-      assert.equal(await fs.readFile(paths.codex, "utf8"), codexClassroom);
-      await reopened.setModelOptions({ ...options, clients: { codex: false, claude: true }, updateClient: "codex" });
-      assert.equal(await fs.readFile(paths.codex, "utf8"), originalCodex);
-      const newerCodex = 'model = "new-personal-codex"\n';
-      await fs.writeFile(paths.codex, newerCodex);
-      await createRouteFiles(paths).setModelOptions(null);
-      assert.equal(await fs.readFile(paths.codex, "utf8"), newerCodex);
-      assert.equal(await fs.readFile(paths.claude, "utf8"), newerClaude);
-    } finally { await fs.rm(root, { recursive: true, force: true }); }
-  });
-  it("restores the personal Codex URL across process restarts and preserves other config edits", async () => {
-    for (const personalUrl of [undefined, "https://personal.example/v1"]) {
-      const { root, routes, paths } = await tempRoutes();
-      try {
-        await fs.writeFile(paths.codex, `# personal settings\nmodel = "personal"\n${personalUrl ? `openai_base_url = "${personalUrl}"\n` : ""}[mcp]\nserver = "keep"\n`);
-        await routes.setCodexRoute(false, PROXY);
-        assert.equal((await routes.readCodex()).openai_base_url, personalUrl);
-        await routes.setCodexRoute(true, PROXY);
-        assert.equal((await routes.readCodex()).openai_base_url, `${PROXY}/v1`);
-        const reopened = createRouteFiles(paths);
-        // Repeated classroom setup must not replace the original backup with the proxy URL.
-        await reopened.setCodexRoute(true, PROXY);
-        await fs.appendFile(paths.codex, 'new_setting = "keep-too"\n');
-        await reopened.setCodexRoute(false, PROXY);
-        assert.equal((await reopened.readCodex()).openai_base_url, personalUrl);
-        const restored = await fs.readFile(paths.codex, "utf8");
-        assert.match(restored, /# personal settings/);
-        assert.match(restored, /model = "personal"/);
-        assert.match(restored, /server = "keep"/);
-        assert.match(restored, /new_setting = "keep-too"/);
-        await reopened.setCodexRoute(true, PROXY);
-        await reopened.setCodexRoute(false, PROXY);
-        assert.equal((await reopened.readCodex()).openai_base_url, personalUrl);
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
-    }
-  });
-
-  it("cleans a legacy local proxy URL without a backup when restoring personal mode", async () => {
-    const { root, routes, paths } = await tempRoutes();
-    try {
-      for (const legacy of [PROXY, `${PROXY}/v1`]) {
-        await fs.writeFile(paths.codex, `openai_base_url = "${legacy}"\nmodel = "personal"\n`);
-        await routes.setCodexRoute(false, PROXY);
-        assert.equal((await routes.readCodex()).openai_base_url, undefined);
-        assert.match(await fs.readFile(paths.codex, "utf8"), /model = "personal"/);
-      }
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("changes only the Codex route line", async () => {
-    const { routes, paths } = await tempRoutes();
-    const original = [
-      "trust = \"always\"",
-      "openai_base_url = \"https://user:secret@old.example/v1?key=vcr_sk_secret\"",
-      "",
-      "[mcp]",
-      "server = \"local\"",
-      "",
-    ].join("\n");
-    await fs.writeFile(paths.codex, original, "utf8");
-    const before = await routes.readCodex();
-    assert.equal(
-      before.openai_base_url,
-      "https://user:secret@old.example/v1?key=vcr_sk_secret",
-    );
-    await routes.writeCodex({ ...before, openai_base_url: PROXY });
-    const written = await fs.readFile(paths.codex, "utf8");
-    assert.equal(written.includes(`openai_base_url = "${PROXY}"`), true);
-    assert.equal(written.includes('trust = "always"'), true);
-    assert.equal(written.includes("[mcp]"), true);
-    assert.equal(written.includes('server = "local"'), true);
-    assert.equal(written.includes("secret"), false);
-    assert.equal(written.includes("vcr_sk"), false);
-    await routes.writeCodex({});
-    const cleared = await fs.readFile(paths.codex, "utf8");
-    assert.equal(cleared.includes("openai_base_url"), false);
-    assert.equal(cleared.includes('trust = "always"'), true);
-    assert.equal(cleared.includes("[mcp]"), true);
-    assert.equal(cleared.includes("old.example"), false);
-  });
-
-  it("writes Claude ANTHROPIC_BASE_URL under env and leaves API key fields", async () => {
-    const { routes, paths } = await tempRoutes();
-    await fs.writeFile(
-      paths.claude,
-      JSON.stringify({
-        theme: "dark",
-        env: {
-          ANTHROPIC_API_KEY: "sk-ant-keep",
-          ANTHROPIC_BASE_URL: "https://claude.example",
-        },
-      }),
-      "utf8",
-    );
-    const before = await routes.readClaudeTerminal();
-    assert.equal(before.ANTHROPIC_BASE_URL, "https://claude.example");
-    await routes.writeClaudeTerminal({
-      ...before,
-      ANTHROPIC_BASE_URL: PROXY,
-    });
-    const written = JSON.parse(await fs.readFile(paths.claude, "utf8")) as {
-      theme: string;
-      env: Record<string, string>;
-      ANTHROPIC_BASE_URL?: string;
-    };
-    assert.equal(written.env.ANTHROPIC_BASE_URL, PROXY);
-    assert.equal(written.env.ANTHROPIC_API_KEY, "sk-ant-keep");
-    assert.equal(written.theme, "dark");
-    assert.equal(written.ANTHROPIC_BASE_URL, undefined);
-    const stopped = { ...before };
-    delete stopped.ANTHROPIC_BASE_URL;
-    await routes.writeClaudeTerminal(stopped);
-    const cleared = JSON.parse(await fs.readFile(paths.claude, "utf8")) as {
-      env: Record<string, string>;
-    };
-    assert.equal(cleared.env.ANTHROPIC_BASE_URL, undefined);
-    assert.equal(cleared.env.ANTHROPIC_API_KEY, "sk-ant-keep");
-    assert.equal(JSON.stringify(cleared).includes("claude.example"), false);
-  });
-
-  it("patches VS Code environment variables without dropping comments or other settings", async () => {
-    const { routes, paths } = await tempRoutes();
-    const original = `{
-  // keep this comment
-  "editor.fontSize": 14,
-  "claudeCode.environmentVariables": [
-    { "name": "OTHER", "value": "stay" },
-    { "name": "ANTHROPIC_API_KEY", "value": "sk-ant-keep" },
-    { "name": "ANTHROPIC_BASE_URL", "value": "https://claude.example" }
-  ]
-}
-`;
-    await fs.writeFile(paths.vsCode, original, "utf8");
-    const before = await routes.readVsCodeClaude();
-    const env = before["claudeCode.environmentVariables"] as Array<{
-      name: string;
-      value: string;
-    }>;
-    assert.equal(
-      env.find((entry) => entry.name === "ANTHROPIC_BASE_URL")?.value,
-      "https://claude.example",
-    );
-    await routes.writeVsCodeClaude({
-      ...before,
-      "claudeCode.environmentVariables": [
-        ...env.filter((entry) => entry.name !== "ANTHROPIC_BASE_URL"),
-        { name: "ANTHROPIC_BASE_URL", value: PROXY },
-      ],
-    });
-    const written = await fs.readFile(paths.vsCode, "utf8");
-    assert.equal(written.includes("// keep this comment"), true);
-    assert.equal(written.includes('"editor.fontSize": 14'), true);
-    assert.equal(written.includes(PROXY), true);
-    assert.equal(written.includes("sk-ant-keep"), true);
-    assert.equal(written.includes('"OTHER"'), true);
-    assert.equal(written.includes("claude.example"), false);
-  });
-
-  it("writes Codex catalog keys in the root and drops copies inside a later table", async () => {
-    const { routes, paths } = await tempRoutes();
-    const original = [
-      "trust = \"always\"",
-      "",
-      "[mcp]",
-      "server = \"local\"",
-      "",
-      "[shell_environment_policy.set]",
-      "openai_base_url = \"http://127.0.0.1:47821\"",
-      "model_catalog_json = \"C:\\\\wrong\\\\classroom-catalog.json\"",
-      "",
-    ].join("\n");
-    await fs.writeFile(paths.codex, original, "utf8");
-    await routes.setModelOptions({
-      ids: ["vcr-auto"],
-      codexModel: "vcr-auto",
-      claudeModel: "vcr-auto",
-      proxyBaseUrl: PROXY,
-    });
-    await routes.writeCodex({ openai_base_url: PROXY });
-    const toml = await fs.readFile(paths.codex, "utf8");
-    const root = toml.slice(0, toml.indexOf("[mcp]"));
-    const table = toml.slice(toml.indexOf("[shell_environment_policy.set]"));
-    assert.equal(root.includes("model_catalog_json = "), true);
-    assert.equal(root.includes('model = "VCRouter/vcr-auto"'), true);
-    assert.equal(root.includes('openai_base_url = "http://127.0.0.1:47821"'), true);
-    assert.equal(table.includes("openai_base_url"), false);
-    assert.equal(table.includes("model_catalog_json"), false);
-    assert.equal(toml.includes('server = "local"'), true);
-  });
-
-  it("publishes the allowlist as the Codex and Claude pickers, then restores", async () => {
-    const { routes, paths, root } = await tempRoutes();
-    await fs.writeFile(
-      paths.codex,
-      'model = "gpt-5.6-luna"\nmodel_catalog_json = "native.json"\ntrust = "always"\n',
-      "utf8",
-    );
-    await fs.writeFile(
-      path.join(root, "models_cache.json"),
-      '{"fetched_at":"2026-01-01T00:00:00Z","models":[{"slug":"gpt-5.6-luna","visibility":"list","shell_type":"shell_command","context_window":128000,"supported_reasoning_levels":[{"effort":"medium","description":"medium"}]}]}\n',
-      "utf8",
-    );
-    await fs.writeFile(
-      paths.claude,
-      `{
-  // keep claude
-  "theme": "dark",
-  "model": "claude-sonnet"
-}
-`,
-      "utf8",
-    );
-    await fs.mkdir(path.join(root, "cache"), { recursive: true });
-    await fs.writeFile(
-      path.join(root, "cache", "gateway-models.json"),
-      '{"baseUrl":"https://api.anthropic.com","models":[{"id":"claude-sonnet"}]}\n',
-      "utf8",
-    );
-    await routes.setModelOptions({
-      ids: ["ollama_cloud@minimax-m3:cloud", "later"],
-      codexModel: "ollama_cloud@minimax-m3:cloud",
-      claudeModel: "later",
-      proxyBaseUrl: PROXY,
-    });
-    const toml = await fs.readFile(paths.codex, "utf8");
-    assert.equal(toml.includes('trust = "always"'), true);
-    assert.equal(toml.includes('model = "VCRouter/ollama_cloud@minimax-m3:cloud"'), true);
-    assert.equal(toml.includes("classroom-catalog.json"), true);
-    assert.equal(toml.includes("native.json"), false);
-    const catalog = JSON.parse(
-      await fs.readFile(path.join(root, "classroom-catalog.json"), "utf8"),
-    ) as {
-      models: Array<{
-        slug: string;
-        visibility: string;
-        shell_type: string;
-        context_window: number;
-        supported_reasoning_levels: Array<{ effort: string }>;
-      }>;
-    };
-    assert.deepEqual(
-      catalog.models.map((model) => model.slug),
-      [
-        "VCRouter/ollama_cloud@minimax-m3:cloud",
-        "VCRouter/later",
-      ],
-    );
-    assert.equal(catalog.models[0]?.visibility, "list");
-    assert.equal(catalog.models[0]?.shell_type, "shell_command");
-    assert.equal(catalog.models[0]?.context_window, 128000);
-    assert.equal(
-      catalog.models.some((model) => model.slug === "gpt-5.6-luna"),
-      false,
-    );
-    const cache = JSON.parse(
-      await fs.readFile(path.join(root, "models_cache.json"), "utf8"),
-    ) as { fetched_at: string; models: Array<{ slug: string }> };
-    assert.equal(cache.fetched_at, "2000-01-01T00:00:00Z");
-    assert.deepEqual(
-      cache.models.map((model) => model.slug),
-      [
-        "VCRouter/ollama_cloud@minimax-m3:cloud",
-        "VCRouter/later",
-      ],
-    );
-    const claude = await fs.readFile(paths.claude, "utf8");
-    assert.equal(claude.includes("// keep claude"), true);
-    assert.equal(claude.includes('"theme": "dark"'), true);
-    assert.equal(claude.includes('"model": "later"'), true);
-    const gateway = JSON.parse(
-      await fs.readFile(path.join(root, "cache", "gateway-models.json"), "utf8"),
-    ) as { baseUrl: string; models: Array<{ id: string }> };
-    assert.equal(gateway.baseUrl, PROXY);
-    assert.deepEqual(
-      gateway.models.map((model) => model.id),
-      ["ollama_cloud@minimax-m3:cloud", "later"],
-    );
-    const reopened = createRouteFiles(paths);
-    await reopened.setModelOptions(null);
-    const restored = await fs.readFile(paths.codex, "utf8");
-    assert.equal(restored.includes('model = "gpt-5.6-luna"'), true);
-    assert.equal(restored.includes('model_catalog_json = "native.json"'), true);
-    assert.equal(restored.includes("classroom-catalog.json"), false);
-    assert.equal(restored.includes('trust = "always"'), true);
-    const restoredCache = await fs.readFile(
-      path.join(root, "models_cache.json"),
-      "utf8",
-    );
-    assert.equal(restoredCache.includes("gpt-5.6-luna"), true);
-    assert.equal(restoredCache.includes("2000-01-01"), false);
-    const restoredClaude = await fs.readFile(paths.claude, "utf8");
-    assert.equal(restoredClaude.includes("// keep claude"), true);
-    assert.equal(restoredClaude.includes('"model": "claude-sonnet"'), true);
-    assert.equal(restoredClaude.includes('"theme": "dark"'), true);
-    const restoredGateway = await fs.readFile(
-      path.join(root, "cache", "gateway-models.json"),
-      "utf8",
-    );
-    assert.equal(restoredGateway.includes("api.anthropic.com"), true);
-  });
-});
-
-it("restores Claude CLI and VS Code across restarts without accumulating backups or overwriting edits", async () => {
-  const { root, paths, routes } = await tempRoutes();
+it("exposes only independent route writers and the versioned legacy migration", async () => {
+  const { root, routes } = await tempRoutes();
   try {
-    await fs.writeFile(paths.claude, JSON.stringify({ model: "personal", env: { ANTHROPIC_BASE_URL: "https://personal.example", KEEP: "yes" }, theme: "dark" }));
-    await fs.writeFile(paths.vsCode, JSON.stringify({ "claudeCode.environmentVariables": [{ name: "OTHER", value: "old" }, { name: "ANTHROPIC_BASE_URL", value: "https://personal-vscode.example" }], "editor.fontSize": 14 }));
-    await routes.setClaudeRoute(true, PROXY);
-    const options = { ids: ["lesson"], codexModel: "lesson", claudeModel: "lesson", proxyBaseUrl: PROXY, clients: { codex: false, claude: true }, updateClient: "claude" as const };
-    await routes.setModelOptions(options);
-    const reopened = createRouteFiles(paths);
-    await reopened.setClaudeRoute(true, PROXY);
-    await reopened.setModelOptions(options);
-    assert.equal((await fs.readdir(root)).filter(name => name.includes("backup")).length, 1);
-    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8")); cli.theme = "light"; cli.env.KEEP = "new";
-    await fs.writeFile(paths.claude, JSON.stringify(cli));
-    const vs = JSON.parse(await fs.readFile(paths.vsCode, "utf8")); vs["editor.fontSize"] = 20; vs["claudeCode.environmentVariables"][0].value = "new";
-    await fs.writeFile(paths.vsCode, JSON.stringify(vs));
-    await reopened.setClaudeRoute(false, PROXY);
-    const restored = JSON.parse(await fs.readFile(paths.claude, "utf8"));
-    assert.equal(restored.env.ANTHROPIC_BASE_URL, "https://personal.example"); assert.equal(restored.model, "personal");
-    assert.equal(restored.theme, "light"); assert.equal(restored.env.KEEP, "new");
-    const restoredVs = JSON.parse(await fs.readFile(paths.vsCode, "utf8"));
-    assert.equal(restoredVs["editor.fontSize"], 20);
-    assert.deepEqual(restoredVs["claudeCode.environmentVariables"], [{ name: "OTHER", value: "new" }, { name: "ANTHROPIC_BASE_URL", value: "https://personal-vscode.example" }]);
-    assert.equal((await fs.readdir(root)).filter(name => name.includes("backup")).length, 0);
-    await reopened.setClaudeRoute(true, PROXY); await reopened.setClaudeRoute(false, PROXY);
-    assert.equal(JSON.parse(await fs.readFile(paths.claude, "utf8")).theme, "light");
+    assert.deepEqual(Object.keys(routes).sort(), ["migrateLegacyState", "setClaudeCodeRoute", "setCodexRoute"]);
+    assert.equal("setClaudeRoute" in routes, false);
+    assert.equal("setModelOptions" in routes, false);
+    assert.equal("readVsCodeClaude" in routes, false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it("journals and restores the independent Claude Code CLI route without touching VS Code or credentials", async () => {
+it("journals the complete Codex route and restores only fields VansPod still owns", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {
-    const originalCli = {
-      env: {
-        ANTHROPIC_BASE_URL: "https://personal.example",
-        ANTHROPIC_API_KEY: "personal-official-key",
-        KEEP: "yes",
-      },
-      theme: "dark",
-    };
-    const originalVsCode = {
-      "claudeCode.environmentVariables": [
-        { name: "ANTHROPIC_BASE_URL", value: "https://vscode-personal.example" },
-      ],
-      "editor.fontSize": 17,
-    };
-    await fs.writeFile(paths.claude, JSON.stringify(originalCli));
+    await fs.writeFile(paths.codex, 'model = "personal"\nopenai_base_url = "https://personal.example/v1"\ntrust = "old"\n');
+    await routes.setCodexRoute({ mode: "classroom", ids: ["lesson", "later"], selectedModel: "lesson", proxyBaseUrl: CODEX_ORIGIN });
+    const managed = await fs.readFile(paths.codex, "utf8");
+    assert.match(managed, /openai_base_url = "http:\/\/127\.0\.0\.1:47821\/v1"/);
+    assert.match(managed, /model = "VCRouter\/lesson"/);
+    assert.match(managed, /classroom-catalog\.json/);
+    await fs.appendFile(paths.codex, 'external = "keep"\n');
+    await routes.setCodexRoute({ mode: "native", proxyBaseUrl: CODEX_ORIGIN });
+    const restored = await fs.readFile(paths.codex, "utf8");
+    assert.match(restored, /model = "personal"/);
+    assert.match(restored, /openai_base_url = "https:\/\/personal\.example\/v1"/);
+    assert.match(restored, /external = "keep"/);
+    await assert.rejects(fs.access(path.join(root, "classroom-codex-settings-backup.json")), { code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it("Native cleanup uses the configured Codex listener origin when no journal exists", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    const customOrigin = "http://127.0.0.1:49123";
+    await fs.writeFile(paths.codex, `openai_base_url = "${customOrigin}/v1"\ntrust = "keep"\n`);
+    await routes.setCodexRoute({ mode: "native", proxyBaseUrl: customOrigin });
+    const restored = await fs.readFile(paths.codex, "utf8");
+    assert.doesNotMatch(restored, /openai_base_url/);
+    assert.match(restored, /trust = "keep"/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it("journals Claude Code without touching VS Code settings or official credentials", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    const originalVsCode = { "claudeCode.environmentVariables": [{ name: "ANTHROPIC_BASE_URL", value: "https://vscode.example" }] };
+    await fs.writeFile(paths.claude, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://personal.example", ANTHROPIC_API_KEY: "official", KEEP: "yes" }, theme: "dark" }));
     await fs.writeFile(paths.vsCode, JSON.stringify(originalVsCode));
-
-    await routes.setClaudeCodeRoute(true, "http://127.0.0.1:47822");
-
+    await routes.setClaudeCodeRoute(true, CLAUDE_ORIGIN);
     const managed = JSON.parse(await fs.readFile(paths.claude, "utf8"));
-    assert.equal(managed.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:47822");
-    assert.equal(managed.env.ANTHROPIC_API_KEY, "personal-official-key");
-    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8")), originalVsCode);
-    assert.ok(await fs.stat(path.join(root, "classroom-claude-code-settings-backup.json")));
-
+    assert.equal(managed.env.ANTHROPIC_BASE_URL, CLAUDE_ORIGIN);
+    assert.equal(managed.env.ANTHROPIC_API_KEY, "official");
     managed.theme = "light";
-    managed.env.KEEP = "changed";
     await fs.writeFile(paths.claude, JSON.stringify(managed));
-    await routes.setClaudeCodeRoute(false, "http://127.0.0.1:47822");
-
+    await routes.setClaudeCodeRoute(false, CLAUDE_ORIGIN);
     const restored = JSON.parse(await fs.readFile(paths.claude, "utf8"));
     assert.equal(restored.env.ANTHROPIC_BASE_URL, "https://personal.example");
-    assert.equal(restored.env.ANTHROPIC_API_KEY, "personal-official-key");
-    assert.equal(restored.env.KEEP, "changed");
+    assert.equal(restored.env.ANTHROPIC_API_KEY, "official");
     assert.equal(restored.theme, "light");
     assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8")), originalVsCode);
-    await assert.rejects(fs.stat(path.join(root, "classroom-claude-code-settings-backup.json")), { code: "ENOENT" });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it("keeps externally replaced managed fields when restoring both clients", async () => {
+it("migrates the old combined Claude journal once and initializes clean personal state", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {
-    await fs.writeFile(paths.codex, 'model = "personal"\n');
-    await fs.writeFile(paths.claude, '{"model":"personal"}\n');
-    await routes.setCodexRoute(true, PROXY); await routes.setClaudeRoute(true, PROXY);
-    await routes.setModelOptions({ ids: ["lesson"], codexModel: "lesson", claudeModel: "lesson", proxyBaseUrl: PROXY });
-    await fs.writeFile(paths.codex, 'model = "external"\nopenai_base_url = "https://external.example"\n');
-    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8")); cli.model = "external"; cli.env.ANTHROPIC_BASE_URL = "https://external.example";
-    await fs.writeFile(paths.claude, JSON.stringify(cli));
-    await routes.setModelOptions(null); await routes.setCodexRoute(false, PROXY); await routes.setClaudeRoute(false, PROXY);
-    assert.match(await fs.readFile(paths.codex, "utf8"), /model = "external"/);
-    assert.equal((await routes.readCodex()).openai_base_url, "https://external.example");
-    const restored = JSON.parse(await fs.readFile(paths.claude, "utf8"));
-    assert.equal(restored.model, "external"); assert.equal(restored.env.ANTHROPIC_BASE_URL, "https://external.example");
+    const personalCli = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://personal.example", KEEP: "old" }, theme: "dark" });
+    const managedCli = JSON.stringify({ env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN, KEEP: "old" }, theme: "dark" });
+    const personalVsCode = JSON.stringify({ "claudeCode.environmentVariables": [{ name: "OTHER", value: "keep" }] });
+    const managedVsCode = JSON.stringify({ "claudeCode.environmentVariables": [{ name: "OTHER", value: "keep" }, { name: "ANTHROPIC_BASE_URL", value: CODEX_ORIGIN }] });
+    await fs.writeFile(paths.claude, managedCli);
+    await fs.writeFile(paths.vsCode, managedVsCode);
+    await fs.writeFile(path.join(root, "classroom-claude-settings-backup.json"), JSON.stringify({
+      config: { original: personalCli, written: managedCli, keys: ["env.ANTHROPIC_BASE_URL"] },
+      vscode: { original: personalVsCode, written: managedVsCode, keys: ["vscodeBase"] },
+    }));
+    await routes.migrateLegacyState(CODEX_ORIGIN);
+    assert.equal(JSON.parse(await fs.readFile(paths.claude, "utf8")).env.ANTHROPIC_BASE_URL, "https://personal.example");
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["claudeCode.environmentVariables"], [{ name: "OTHER", value: "keep" }]);
+    await assert.rejects(fs.access(path.join(root, "classroom-claude-settings-backup.json")), { code: "ENOENT" });
+    await routes.migrateLegacyState(CODEX_ORIGIN);
+    assert.equal(JSON.parse(await fs.readFile(paths.claude, "utf8")).env.ANTHROPIC_BASE_URL, "https://personal.example");
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it("without a backup cleans only the known classroom proxy and preserves official login and other services", async () => {
+it("legacy migration removes only recognized VansPod values without a journal", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {
-    await fs.writeFile(paths.claude, JSON.stringify({ env: { ANTHROPIC_BASE_URL: PROXY, ANTHROPIC_API_KEY: "synthetic-personal", KEEP: "yes" } }));
-    await fs.writeFile(paths.vsCode, JSON.stringify({ "claudeCode.environmentVariables": { ANTHROPIC_BASE_URL: PROXY, OTHER: "keep" } }));
-    await routes.setClaudeRoute(false, PROXY);
-    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8")); assert.equal(cli.env.ANTHROPIC_BASE_URL, undefined); assert.equal(cli.env.ANTHROPIC_API_KEY, "synthetic-personal");
-    assert.equal(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["claudeCode.environmentVariables"].OTHER, "keep");
-    await fs.writeFile(paths.claude, '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"}}');
-    await routes.setClaudeRoute(false, PROXY);
-    assert.equal(JSON.parse(await fs.readFile(paths.claude, "utf8")).env.ANTHROPIC_BASE_URL, "http://127.0.0.1:9999");
+    await fs.writeFile(paths.claude, JSON.stringify({ env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN, ANTHROPIC_API_KEY: "official", KEEP: "yes" } }));
+    await fs.writeFile(paths.vsCode, JSON.stringify({ "claudeCode.environmentVariables": [
+      { name: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:9999" },
+      { name: "ANTHROPIC_BASE_URL", value: CODEX_ORIGIN },
+    ], "editor.fontSize": 17 }));
+    await routes.migrateLegacyState(CODEX_ORIGIN);
+    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8"));
+    assert.equal(cli.env.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(cli.env.ANTHROPIC_API_KEY, "official");
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["claudeCode.environmentVariables"], [
+      { name: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:9999" },
+    ]);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-it("failed backup blocks takeover and failed restoration retains a retryable backup", async () => {
+it("legacy model migration restores the saved personal gateway before removing its retry source", async () => {
   const { root, paths, routes } = await tempRoutes();
-  const backup = path.join(root, "classroom-claude-settings-backup.json");
-  try {
-    const original = '{"env":{"ANTHROPIC_BASE_URL":"https://personal.example"}}';
-    await fs.writeFile(paths.claude, original); await fs.mkdir(backup);
-    await assert.rejects(routes.setClaudeRoute(true, PROXY));
-    assert.equal(await fs.readFile(paths.claude, "utf8"), original);
-    await fs.rmdir(backup); await routes.setClaudeRoute(true, PROXY);
-    const managed = await fs.readFile(paths.claude, "utf8");
-    await fs.rm(paths.claude); await fs.mkdir(paths.claude);
-    await assert.rejects(createRouteFiles(paths).setClaudeRoute(false, PROXY));
-    assert.ok(await fs.readFile(backup, "utf8"));
-    await fs.rmdir(paths.claude); await fs.writeFile(paths.claude, managed);
-    await createRouteFiles(paths).setClaudeRoute(false, PROXY);
-    assert.equal(await fs.readFile(paths.claude, "utf8"), original);
-    await assert.rejects(fs.readFile(backup), { code: "ENOENT" });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-it("migrates legacy model backups without reviving the old proxy or overwriting later personal edits", async () => {
-  const { root, paths, routes } = await tempRoutes();
-  try {
-    await fs.writeFile(paths.claude, JSON.stringify({ model: "lesson", env: { ANTHROPIC_BASE_URL: PROXY, KEEP: "new" }, theme: "light" }));
-    await fs.mkdir(path.join(root, "cache"));
-    await fs.writeFile(path.join(root, "cache", "gateway-models.json"), JSON.stringify({ baseUrl: PROXY, models: [{ id: "lesson" }] }));
-    await fs.writeFile(path.join(root, "classroom-model-backup.json"), JSON.stringify({ clients: { codex: false, claude: true }, claudeFile: JSON.stringify({ model: "personal", env: { ANTHROPIC_BASE_URL: PROXY, KEEP: "old" }, theme: "dark" }) }));
-    await routes.setModelOptions(null); await routes.setClaudeRoute(false, PROXY);
-    const result = JSON.parse(await fs.readFile(paths.claude, "utf8"));
-    assert.equal(result.model, "personal"); assert.equal(result.env.ANTHROPIC_BASE_URL, undefined);
-    assert.equal(result.env.KEEP, "new"); assert.equal(result.theme, "light");
-    assert.equal((await fs.readdir(root)).filter(name => name.includes("backup")).length, 0);
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-it("preserves edits made before classroom replay and model reselection for both clients", async () => {
-  const { root, paths, routes } = await tempRoutes();
-  try {
-    await fs.writeFile(paths.codex, 'model = "personal"\ntrust = "old"\n');
-    await fs.writeFile(paths.claude, '{"model":"personal","theme":"dark"}');
-    await fs.writeFile(paths.vsCode, '{"editor.fontSize":14}');
-    const options = { ids: ["lesson", "next"], codexModel: "lesson", claudeModel: "lesson", proxyBaseUrl: PROXY };
-    await routes.setCodexRoute(true, PROXY); await routes.setClaudeRoute(true, PROXY); await routes.setModelOptions(options);
-    await fs.appendFile(paths.codex, 'external = "keep"\n');
-    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8")); cli.theme = "light"; cli.model = "external-personal";
-    await fs.writeFile(paths.claude, JSON.stringify(cli));
-    const vs = JSON.parse(await fs.readFile(paths.vsCode, "utf8")); vs["editor.fontSize"] = 20;
-    await fs.writeFile(paths.vsCode, JSON.stringify(vs));
-    const reopened = createRouteFiles(paths);
-    await reopened.setCodexRoute(true, PROXY); await reopened.setClaudeRoute(true, PROXY);
-    await reopened.setModelOptions({ ...options, codexModel: "next", claudeModel: "next" });
-    await reopened.setModelOptions(null); await reopened.setCodexRoute(false, PROXY); await reopened.setClaudeRoute(false, PROXY);
-    assert.match(await fs.readFile(paths.codex, "utf8"), /external = "keep"/);
-    const result = JSON.parse(await fs.readFile(paths.claude, "utf8")); assert.equal(result.theme, "light"); assert.equal(result.model, "external-personal");
-    assert.equal(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["editor.fontSize"], 20);
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-it("official fallback also removes identifiable classroom model and catalog overrides", async () => {
-  const { root, paths, routes } = await tempRoutes();
-  try {
-    await fs.writeFile(paths.codex, `model = "VCRouter/lesson"\nmodel_catalog_json = "${path.join(root, "classroom-catalog.json").replaceAll("\\", "\\\\")}"\nopenai_base_url = "${PROXY}/v1"\ntrust = "keep"\n`);
-    await fs.writeFile(paths.claude, JSON.stringify({ model: "lesson", env: { ANTHROPIC_BASE_URL: PROXY, KEEP: "yes" } }));
-    await fs.mkdir(path.join(root, "cache")); await fs.writeFile(path.join(root, "cache", "gateway-models.json"), JSON.stringify({ baseUrl: PROXY, models: [{ id: "lesson" }] }));
-    await routes.setCodexRoute(false, PROXY); await routes.setClaudeRoute(false, PROXY);
-    const codex = await fs.readFile(paths.codex, "utf8"); assert.doesNotMatch(codex, /openai_base_url|model_catalog_json|VCRouter/); assert.match(codex, /trust = "keep"/);
-    const cli = JSON.parse(await fs.readFile(paths.claude, "utf8")); assert.equal(cli.model, undefined); assert.equal(cli.env.ANTHROPIC_BASE_URL, undefined); assert.equal(cli.env.KEEP, "yes");
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-it("Native migration uses the actual runtime port when restoring a legacy personal Codex URL", async () => {
-  const { root, paths, routes } = await tempRoutes();
-  try {
-    const proxy = "http://127.0.0.1:49123";
-    await fs.writeFile(paths.codex, `openai_base_url = "${proxy}/v1"\ntrust = "keep"\n`);
-    await fs.writeFile(path.join(root, "classroom-codex-route-backup.json"), JSON.stringify({ baseUrl: "https://personal.example/v1" }));
-    await routes.setCodexRoute(false, proxy); await routes.setModelOptions(null);
-    assert.equal((await routes.readCodex()).openai_base_url, "https://personal.example/v1");
-    assert.match(await fs.readFile(paths.codex, "utf8"), /trust = "keep"/);
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-it("failed official fallback retains gateway evidence so the next retry restores the official model too", async () => {
-  const { root, paths, routes } = await tempRoutes();
+  const legacyBackup = path.join(root, "classroom-model-backup.json");
+  const gatewayFile = path.join(root, "cache", "gateway-models.json");
+  const personalGateway = JSON.stringify({ baseUrl: "https://api.anthropic.com", models: [{ id: "personal" }] });
   let intercepted: ReturnType<typeof mock.method> | undefined;
   try {
-    await fs.writeFile(paths.claude, JSON.stringify({ model: "lesson", env: { ANTHROPIC_BASE_URL: PROXY } }));
-    await fs.mkdir(path.join(root, "cache"));
-    const gateway = path.join(root, "cache", "gateway-models.json");
-    await fs.writeFile(gateway, JSON.stringify({ baseUrl: PROXY, models: [{ id: "lesson" }] }));
+    await fs.mkdir(path.dirname(gatewayFile), { recursive: true });
+    await fs.writeFile(paths.claude, JSON.stringify({ model: "lesson", env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN } }));
+    await fs.writeFile(gatewayFile, JSON.stringify({ baseUrl: CODEX_ORIGIN, models: [{ id: "lesson" }] }));
+    await fs.writeFile(legacyBackup, JSON.stringify({
+      clients: { codex: false, claude: true },
+      claudeFile: JSON.stringify({ model: "personal", env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN } }),
+      gateway: personalGateway,
+    }));
     const write = fs.writeFile;
     intercepted = mock.method(fs, "writeFile", async (...args: Parameters<typeof fs.writeFile>) => {
-      if (args[0] === paths.claude) throw Object.assign(new Error("synthetic write denial"), { code: "EPERM" });
+      if (args[0] === gatewayFile) throw Object.assign(new Error("synthetic gateway denial"), { code: "EPERM" });
       return write(...args);
     });
-    await assert.rejects(routes.setClaudeRoute(false, PROXY));
-    assert.equal(JSON.parse(await fs.readFile(gateway, "utf8")).models[0].id, "lesson");
+    await assert.rejects(routes.migrateLegacyState(CODEX_ORIGIN), /synthetic gateway denial/);
+    assert.equal(await fs.readFile(legacyBackup, "utf8").then(Boolean), true);
     intercepted.mock.restore();
-    await routes.setClaudeRoute(false, PROXY);
-    const doc = JSON.parse(await fs.readFile(paths.claude, "utf8"));
-    assert.equal(doc.model, undefined); assert.equal(doc.env, undefined);
-    await assert.rejects(fs.readFile(gateway), { code: "ENOENT" });
-  } finally { intercepted?.mock.restore(); await fs.rm(root, { recursive: true, force: true }); }
-});
+    intercepted = undefined;
 
-it("fallback and takeover preserve personal VS Code base entries beside a stale classroom entry", async () => {
-  const { root, paths, routes } = await tempRoutes();
-  try {
-    const env = [{ name: "OTHER", value: "keep" }, { name: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:9999" }, { name: "ANTHROPIC_BASE_URL", value: PROXY }];
-    await fs.writeFile(paths.vsCode, JSON.stringify({ "claudeCode.environmentVariables": env }));
-    await routes.setClaudeRoute(false, PROXY);
-    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["claudeCode.environmentVariables"], env.slice(0, 2));
-    await fs.writeFile(paths.vsCode, JSON.stringify({ "claudeCode.environmentVariables": env }));
-    await routes.setClaudeRoute(true, PROXY); await routes.setClaudeRoute(false, PROXY);
-    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8"))["claudeCode.environmentVariables"], env.slice(0, 2));
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
+    await createRouteFiles(paths).migrateLegacyState(CODEX_ORIGIN);
+    assert.deepEqual(JSON.parse(await fs.readFile(gatewayFile, "utf8")), JSON.parse(personalGateway));
+    await assert.rejects(fs.access(legacyBackup), { code: "ENOENT" });
+  } finally {
+    intercepted?.mock.restore();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

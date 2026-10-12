@@ -517,12 +517,7 @@ async function main(): Promise<void> {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },
     proxyBaseUrl: pageUrl.replace(/\/$/, ""),
-    routes: {
-      ...routeFiles,
-      setModelOptions: options => routeFiles.setModelOptions(options && {
-        ...options, restartCodex: runtimeOptions.restartClients && options.restartCodex,
-      }),
-    },
+    routes: routeFiles,
     copilot: {
       read: readCopilotProviders,
       write: writeCopilotProviders,
