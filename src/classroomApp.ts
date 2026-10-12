@@ -4,6 +4,8 @@ import { defaultAdapters, isAdapterChoice, type AdapterSettings, type AdapterSet
 import type { AdapterClient, AdapterId } from "./adapters";
 import {
   defaultClientRoutes,
+  type ClientRouteHealth,
+  type ClientRouteRestartState,
   type ClientRoutes,
   type ClientRouteSettingsStorage,
 } from "./clientRoutes";
@@ -16,7 +18,7 @@ import {
   type LessonSnippet,
 } from "./courseCatalog";
 import type { CommandResult } from "./commandRunner";
-import type { CodexRouteOptions } from "./routeFiles";
+import type { CodexRouteOptions, DetectedRouteClients } from "./routeFiles";
 
 export type NicknameRedeemResult = {
   api_key: string;
@@ -91,7 +93,7 @@ export type ClassroomAppDeps = {
   stopProcess(): void;
   proxyBaseUrl: string;
   routes: {
-    migrateLegacyState(proxyBaseUrl: string): Promise<void>;
+    migrateLegacyState(proxyBaseUrl: string, clients?: DetectedRouteClients): Promise<void>;
     setCodexRoute(options: CodexRouteOptions): Promise<void>;
     setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
   };
@@ -634,25 +636,49 @@ export class ClassroomApp {
       await this.restoreModelOptions();
       return;
     }
-    const options: CodexRouteOptions = {
-      mode: "classroom",
-      ids: [...this.modelIds],
-      selectedModel: this.sending.get("codex") ?? first,
-      proxyBaseUrl: this.deps.proxyBaseUrl,
-      restart: true,
-    };
+    const options = this.codexClassroomOptions(first);
     if (updateClient !== "claude") {
       const mode = this.deps.clientRouteRuntime ? this.clientRoutes.codex.mode : this.clientModes.codex;
-      await this.deps.routes.setCodexRoute(mode === "classroom" ? options : { mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
+      await this.codexLifecycle().write(mode, options);
     }
+  }
+
+  private codexClassroomOptions(first = this.modelIds[0]): Extract<CodexRouteOptions, { mode: "classroom" }> {
+    return {
+      mode: "classroom",
+      ids: [...this.modelIds],
+      selectedModel: this.sending.get("codex") ?? first!,
+      proxyBaseUrl: this.clientRouteOrigins.codex ?? this.deps.proxyBaseUrl,
+      restart: true,
+    };
   }
 
   private async restoreModelOptions(): Promise<void> {
     await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
   }
 
-  private async restoreCodexRouteSettings(): Promise<void> {
-    await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl });
+  private codexLifecycle() {
+    const route = this.clientRoutes.codex;
+    const origin = this.clientRouteOrigins.codex ?? this.deps.proxyBaseUrl;
+    return {
+      route,
+      write: (mode: ModelSwitchMode, classroom?: Extract<CodexRouteOptions, { mode: "classroom" }>) =>
+        this.deps.routes.setCodexRoute(mode === "classroom" ? classroom ?? this.codexClassroomOptions() : { mode: "native", proxyBaseUrl: origin }),
+      setMode: (mode: ModelSwitchMode) => {
+        route.mode = mode;
+        this.clientModes.codex = mode;
+      },
+      setState: (mode: ModelSwitchMode, health: ClientRouteHealth, restart: ClientRouteRestartState = "ready") => {
+        route.mode = mode;
+        route.health = health;
+        route.restart = restart;
+        this.clientModes.codex = mode;
+      },
+      stop: async () => {
+        await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: origin });
+        await this.deps.clientRouteRuntime?.stop("codex");
+      },
+    };
   }
 
   prepare(actionId: string): void {
@@ -892,7 +918,8 @@ export class ClassroomApp {
   }
 
   private async setCodexClientRouteSwitch(mode: ModelSwitchMode): Promise<void> {
-    const route = this.clientRoutes.codex;
+    const lifecycle = this.codexLifecycle();
+    const route = lifecycle.route;
     if (route.health === "red" || route.health === "gray") {
       this.notice = "Codex Client Route 目前無法切換 Classroom。";
       return;
@@ -904,16 +931,14 @@ export class ClassroomApp {
     if (route.mode === mode) return;
     const previousRoute = { ...route };
     const previousModes = { ...this.clientModes };
-    route.mode = mode;
-    this.clientModes.codex = mode;
+    lifecycle.setMode(mode);
     try {
       // Preference persistence and the route-file journal both precede the client write.
       await this.saveClientRoutePreferences();
       const aggregate = Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
       if (!await this.saveMode(aggregate, this.clientModes)) throw new Error("mode persistence failed");
-      await this.publishModelOptions("codex");
-      route.health = mode === "classroom" ? "yellow" : "green";
-      route.restart = mode === "classroom" ? "restart-required" : "ready";
+      await lifecycle.write(mode);
+      lifecycle.setState(mode, mode === "classroom" ? "yellow" : "green", mode === "classroom" ? "restart-required" : "ready");
       route.adapter = this.adapters.codex;
       this.notice = undefined;
       this.adapterNotice = undefined;
@@ -921,7 +946,7 @@ export class ClassroomApp {
       this.clientRoutes.codex = previousRoute;
       this.clientModes = previousModes;
       try { await this.saveClientRoutePreferences(); } catch { /* Keep the rollback visible in memory. */ }
-      try { await this.publishModelOptions("codex"); } catch { /* The route remains non-Classroom. */ }
+      try { await this.codexLifecycle().write(previousRoute.mode); } catch { /* The route remains in its previous mode. */ }
       this.notice = "無法更新 Codex Client Route，已保留原本模式。";
     }
   }
@@ -1064,6 +1089,7 @@ export class ClassroomApp {
 
   async reloadAllowlist(): Promise<void> {
     await this.detectClients();
+    await this.deps.routes.migrateLegacyState(this.deps.proxyBaseUrl, this.detectedClients);
     if (this.deps.clientRouteRuntime) {
       await this.startCodexRoute();
       await this.startClaudeCodeRoute();
@@ -1083,6 +1109,11 @@ export class ClassroomApp {
   private async startCodexRoute(): Promise<void> {
     const runtime = this.deps.clientRouteRuntime;
     if (!runtime) return;
+    let lifecycle = this.codexLifecycle();
+    if (!this.detectedClients.codex) {
+      lifecycle.setState("native", "gray");
+      return;
+    }
     const alreadyRunning = runtime.current?.("codex")?.health === "green";
     const restartPending = this.clientRoutes.codex.health === "yellow" &&
       this.clientRoutes.codex.restart === "restart-required";
@@ -1095,26 +1126,20 @@ export class ClassroomApp {
     }
     catch { health = "red"; }
     if (health === "red") {
-      this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "red", restart: "ready" };
-      this.clientModes.codex = "native";
+      lifecycle.setState("native", "red");
       try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
-      try { await this.deps.routes.setCodexRoute({ mode: "native", proxyBaseUrl: this.deps.proxyBaseUrl }); } catch { /* Retried on reload. */ }
+      try { await lifecycle.write("native"); } catch { /* Retried on reload. */ }
       return;
     }
-    if (!this.detectedClients.codex) {
-      this.clientRoutes.codex = { ...this.clientRoutes.codex, mode: "native", health: "gray", restart: "ready" };
-      this.clientModes.codex = "native";
-      return;
-    }
+    lifecycle = this.codexLifecycle(); // start() supplied the route's authoritative origin.
     if (this.clientRoutes.codex.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
-      this.clientRoutes.codex.mode = "native";
+      lifecycle.setMode("native");
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
     if (retryingNativeRecovery) {
-      try { await this.restoreCodexRouteSettings(); }
+      try { await lifecycle.write("native"); }
       catch {
-        this.clientRoutes.codex.health = "red";
-        this.clientRoutes.codex.restart = "ready";
+        lifecycle.setState("native", "red");
         return;
       }
     }
@@ -1123,8 +1148,16 @@ export class ClassroomApp {
       : "native";
     if (alreadyRunning && restartPending && this.clientModes.codex === "classroom") return;
     // Listener recovery never restores Classroom automatically after a red failure.
-    this.clientRoutes.codex.health = "green";
-    this.clientRoutes.codex.restart = "ready";
+    lifecycle.setState(this.clientModes.codex, "green");
+    if (!alreadyRunning && this.clientModes.codex === "classroom") {
+      try {
+        await lifecycle.write("classroom");
+        lifecycle.setState("classroom", "yellow", "restart-required");
+      } catch {
+        lifecycle.setState("native", "red");
+        try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
+      }
+    }
   }
 
   private async startVsCodeRoute(): Promise<void> {
@@ -1329,7 +1362,7 @@ export class ClassroomApp {
       this.modelProviders = [];
       this.mode = "native";
       if (this.deps.clientRouteRuntime) {
-        this.clientRoutes.codex.mode = "native";
+        this.codexLifecycle().setMode("native");
         this.clientRoutes.claudeCode.mode = "native";
         this.clientRoutes.vsCodeChat.mode = "native";
         this.clientRoutes.codex.restart = "ready";
@@ -1356,7 +1389,7 @@ export class ClassroomApp {
       this.forgetModelChoices();
       if (this.deps.clientRouteRuntime) {
         try {
-          await this.restoreCodexRouteSettings();
+          await this.codexLifecycle().write("native");
           if (this.clientRoutes.codex.health !== "red") {
             this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
           }
@@ -1456,7 +1489,7 @@ export class ClassroomApp {
     this.remoteCatalogHeld = false;
     this.mode = "native";
     if (this.deps.clientRouteRuntime) {
-      this.clientRoutes.codex.mode = "native";
+      this.codexLifecycle().setMode("native");
       this.clientRoutes.codex.restart = "ready";
       this.clientRoutes.claudeCode.mode = "native";
       this.clientRoutes.claudeCode.restart = "ready";
@@ -1473,7 +1506,7 @@ export class ClassroomApp {
     this.forgetModelChoices();
     let restoreFailed = false;
     try {
-      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
+      if (this.deps.clientRouteRuntime) await this.codexLifecycle().write("native");
       else await this.restoreModelOptions();
       if (this.deps.clientRouteRuntime && this.clientRoutes.codex.health !== "red") {
         this.clientRoutes.codex.health = this.detectedClients.codex ? "green" : "gray";
@@ -1531,9 +1564,9 @@ export class ClassroomApp {
           this.clientRoutes = defaultClientRoutes();
         }
       }
-      await this.deps.routes.migrateLegacyState(this.deps.proxyBaseUrl);
-      await this.restoreConnection();
       await this.detectClients();
+      await this.deps.routes.migrateLegacyState(this.deps.proxyBaseUrl, this.detectedClients);
+      await this.restoreConnection();
       await this.startCodexRoute();
       await this.startClaudeCodeRoute();
       await this.startVsCodeRoute();
@@ -1597,9 +1630,8 @@ export class ClassroomApp {
     this.deps.proxy.stop();
     let failure: unknown;
     try {
-      if (this.deps.clientRouteRuntime) await this.restoreCodexRouteSettings();
+      if (this.deps.clientRouteRuntime) await this.codexLifecycle().stop();
       else await this.restoreModelOptions();
-      await this.deps.clientRouteRuntime?.stop("codex");
     } catch (error) {
       failure = error;
       if (this.deps.clientRouteRuntime) this.clientRoutes.codex.health = "red";

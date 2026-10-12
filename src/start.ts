@@ -758,9 +758,9 @@ async function main(): Promise<void> {
     }
   };
 
+  const ui = await clientRouteRuntime.startUi!();
   await app.start();
-  const started = clientRouteRuntime.current?.("codex") ?? await clientRouteRuntime.start("codex");
-  const home = `${started.origin}/`;
+  const home = `${ui.origin}/`;
   const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
   if (runtimeOptions.desktop) openBrowser(home);
   const shutdown = () => {

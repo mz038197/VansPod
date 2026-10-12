@@ -58,9 +58,11 @@ export function clientSettingsBackup(file: string, resources: Record<string, Set
         await fs.writeFile(resource.file, next, "utf8");
       }
     },
-    async restore() {
+    async restore(ids?: readonly string[]) {
       const journal = await load();
+      const selected = ids ? new Set(ids) : undefined;
       for (const [id, entry] of Object.entries(journal)) {
+        if (selected && !selected.has(id)) continue;
         const resource = resources[id];
         const current = await optionalText(resource.file);
         if (current === null) continue; // An external deletion must stay deleted.
@@ -70,8 +72,11 @@ export function clientSettingsBackup(file: string, resources: Record<string, Set
         if (next === null) await fs.rm(resource.file, { force: true });
         else if (next !== current) await fs.writeFile(resource.file, next, "utf8");
       }
-      // Keep the journal intact on any failed restoration, so retries are safe.
-      await fs.rm(file, { force: true });
+      // Keep every unselected resource and the whole journal on any failed
+      // restoration, so independently detected clients can retry safely.
+      const remaining = Object.fromEntries(Object.entries(journal).filter(([id]) => selected && !selected.has(id)));
+      if (Object.keys(remaining).length) await save(remaining);
+      else await fs.rm(file, { force: true });
     },
   };
 }

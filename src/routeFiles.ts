@@ -77,6 +77,8 @@ export type CodexRouteOptions = {
   restart?: boolean;
 } | { mode: "native"; proxyBaseUrl: string };
 
+export type DetectedRouteClients = { codex: boolean; claude: boolean; vsCodeChat: boolean };
+
 export function createRouteFiles(paths: RouteFilePaths) {
   const codexBackup = clientSettingsBackup(path.join(path.dirname(paths.codex), "classroom-codex-settings-backup.json"), {
     config: { file: paths.codex, restore: restoreTomlFields },
@@ -92,13 +94,19 @@ export function createRouteFiles(paths: RouteFilePaths) {
   const claudeCodeBackup = clientSettingsBackup(path.join(path.dirname(paths.claude), "classroom-claude-code-settings-backup.json"), {
     config: { file: paths.claude, restore: restoreJsonFields },
   });
-  async function migrateLegacyRouteState(proxy: string) {
+  async function migrateLegacyRouteState(proxy: string, clients: DetectedRouteClients) {
     // ADR-0005 wrote one Claude/VS Code journal. Restore it before the routes split;
     // this journal is never used for a new write.
-    await legacyClaudeBackup.restore();
-    const saved = await readDiskBackup(paths);
-    const route = await optionalText(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"));
-    if (saved && (saved.clients?.codex ?? true) || route !== null) {
+    const legacyResources = [
+      ...(clients.claude ? ["config", "gateway"] : []),
+      ...(clients.vsCodeChat ? ["vscode"] : []),
+    ];
+    if (legacyResources.length) await legacyClaudeBackup.restore(legacyResources);
+    const saved = clients.codex || clients.claude ? await readDiskBackup(paths) : undefined;
+    const route = clients.codex
+      ? await optionalText(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"))
+      : null;
+    if (clients.codex && (saved && (saved.clients?.codex ?? true) || route !== null)) {
       let original = await readText(paths.codex);
       const keys: string[] = [];
       if (saved && (saved.clients?.codex ?? true)) {
@@ -123,7 +131,7 @@ export function createRouteFiles(paths: RouteFilePaths) {
       }
       await codexBackup.seed("config", original, keys);
     }
-    if (saved && (saved.clients?.claude ?? true)) {
+    if (clients.claude && saved && (saved.clients?.claude ?? true)) {
       const current = await readText(paths.claude);
       const doc = parseJsonObject(current);
       if (!doc) throw new Error("Invalid Claude settings");
@@ -143,14 +151,16 @@ export function createRouteFiles(paths: RouteFilePaths) {
       await claudeCodeBackup.seed("config", original, keys);
     }
     // New durable journals exist before obsolete backup files are removed.
-    if (saved) await fs.rm(backupFile(paths), { force: true });
-    if (route !== null) await fs.rm(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"), { force: true });
+    const savedCodexPending = !!saved && (saved.clients?.codex ?? true) && !clients.codex;
+    const savedClaudePending = !!saved && (saved.clients?.claude ?? true) && !clients.claude;
+    if (saved && !savedCodexPending && !savedClaudePending) await fs.rm(backupFile(paths), { force: true });
+    if (clients.codex && route !== null) await fs.rm(path.join(path.dirname(paths.codex), "classroom-codex-route-backup.json"), { force: true });
   }
   return {
-    async migrateLegacyState(proxyBaseUrl: string): Promise<void> {
-      await migrateLegacyRouteState(proxyBaseUrl);
-      const text = await optionalText(paths.claude);
-      if (text !== null) {
+    async migrateLegacyState(proxyBaseUrl: string, clients: DetectedRouteClients = { codex: true, claude: true, vsCodeChat: true }): Promise<void> {
+      await migrateLegacyRouteState(proxyBaseUrl, clients);
+      const text = clients.claude ? await optionalText(paths.claude) : null;
+      if (clients.claude && text !== null) {
         let next = personalClaudeText(text, proxyBaseUrl);
         const gateway = parseJsonObject(await readText(gatewayCachePath(paths.claude)));
         if (isManagedUrl(gateway?.baseUrl, proxyBaseUrl)) {
@@ -163,8 +173,8 @@ export function createRouteFiles(paths: RouteFilePaths) {
         if (next !== text) await writeText(paths.claude, next);
         if (isManagedUrl(gateway?.baseUrl, proxyBaseUrl)) await fs.rm(gatewayCachePath(paths.claude), { force: true });
       }
-      const vscode = await optionalText(paths.vsCode);
-      if (vscode !== null) {
+      const vscode = clients.vsCodeChat ? await optionalText(paths.vsCode) : null;
+      if (clients.vsCodeChat && vscode !== null) {
         const doc = parseJsonObject(vscode);
         if (!doc) throw new Error("Invalid VS Code settings");
         if (anthropicBaseValues(doc[VS_CODE_ENV]).some(value => isManagedUrl(value, proxyBaseUrl))) {
