@@ -13,6 +13,7 @@ export type ClientRouteStart = {
 };
 
 export type ClientRouteRuntime = {
+  startUi?(): Promise<{ origin: string }>;
   start(route: ClientRouteId): Promise<ClientRouteStart>;
   current?(route: ClientRouteId): ClientRouteStart | undefined;
   stop(route?: ClientRouteId): Promise<void>;
@@ -28,7 +29,7 @@ export function createClientRouteRuntime(options: {
   ): void | Promise<void>;
 }): ClientRouteRuntime {
   const listeners = new Map<ClientRouteId, http.Server>();
-  let emergency: http.Server | undefined;
+  let baseListener: { server: http.Server; origin: string; route: ClientRouteId | undefined; activate(route: ClientRouteId | undefined): void } | undefined;
 
   const routePort = (route: ClientRouteId): number => {
     if (options.basePort === 0) return 0;
@@ -37,7 +38,8 @@ export function createClientRouteRuntime(options: {
     return options.basePort;
   };
 
-  const open = async (route: ClientRouteId | undefined, port: number) => {
+  const open = async (initialRoute: ClientRouteId | undefined, port: number) => {
+    let route = initialRoute;
     const server = http.createServer((request, response) => {
       const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
       if (route === "claudeCode" && request.method === "GET" && pathname === "/v1/models") {
@@ -68,19 +70,34 @@ export function createClientRouteRuntime(options: {
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Client Route listener has no loopback address");
-    return { server, origin: `http://127.0.0.1:${address.port}` };
+    return {
+      server,
+      origin: `http://127.0.0.1:${address.port}`,
+      get route() { return route; },
+      activate(next: ClientRouteId | undefined) { route = next; },
+    };
+  };
+
+  const startUi = async () => {
+    if (baseListener) return { origin: baseListener.origin };
+    try { baseListener = await open(undefined, routePort("codex")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      baseListener = await open(undefined, 0);
+    }
+    return { origin: baseListener.origin };
   };
 
   return {
+    startUi,
     current(route) {
       const server = listeners.get(route);
-      const selected = server ?? (route === "codex" ? emergency : undefined);
-      if (!selected) return undefined;
-      const address = selected.address();
+      if (!server) return undefined;
+      const address = server.address();
       if (!address || typeof address === "string") return undefined;
       return {
         route,
-        health: server ? "green" : "red",
+        health: "green",
         origin: `http://127.0.0.1:${address.port}`,
       };
     },
@@ -91,36 +108,49 @@ export function createClientRouteRuntime(options: {
         if (!address || typeof address === "string") throw new Error("Client Route listener has no loopback address");
         return { route, health: "green", origin: `http://127.0.0.1:${address.port}` };
       }
+      if (route === "codex") {
+        const requestedOrigin = `http://127.0.0.1:${routePort(route)}`;
+        const ui = await startUi();
+        if (options.basePort !== 0 && ui.origin !== requestedOrigin) {
+          try {
+            const opened = await open(route, routePort(route));
+            listeners.set(route, opened.server);
+            return { route, health: "green", origin: opened.origin };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+            return { route, health: "red", origin: ui.origin };
+          }
+        }
+        baseListener!.activate(route);
+        listeners.set(route, baseListener!.server);
+        return { route, health: "green", origin: ui.origin };
+      }
       try {
         const opened = await open(route, routePort(route));
         listeners.set(route, opened.server);
         return { route, health: "green", origin: opened.origin };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-        if (route !== "codex") {
-          return { route, health: "red", origin: `http://127.0.0.1:${routePort(route)}` };
-        }
-        if (emergency) {
-          const address = emergency.address();
-          if (address && typeof address !== "string") {
-            return { route, health: "red", origin: `http://127.0.0.1:${address.port}` };
-          }
-        }
-        const opened = await open(undefined, 0);
-        emergency = opened.server;
-        return { route, health: "red", origin: opened.origin };
+        return { route, health: "red", origin: `http://127.0.0.1:${routePort(route)}` };
       }
     },
     async stop(route) {
       const selected = route ? [[route, listeners.get(route)] as const] : [...listeners.entries()];
+      const closed = new Set<http.Server>();
       for (const [id, server] of selected) {
         if (!server) continue;
+        if (id === "codex" && baseListener?.server === server && route) {
+          baseListener.activate(undefined);
+          listeners.delete(id);
+          continue;
+        }
         server.close();
+        closed.add(server);
         listeners.delete(id);
       }
-      if ((!route || route === "codex") && emergency) {
-        emergency.close();
-        emergency = undefined;
+      if (!route && baseListener) {
+        if (!closed.has(baseListener.server)) baseListener.server.close();
+        baseListener = undefined;
       }
     },
   };

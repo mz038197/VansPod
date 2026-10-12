@@ -393,6 +393,12 @@ export async function runMultiRouteLifecycle({ exe }) {
     safeAssert(JSON.parse(await fs.readFile(box.paths.copilot, 'utf8')).some(provider => provider.marker === 'preserve-provider'), 'Stop removed a personal VS Code provider');
     await app.stop(); app = undefined; await restart();
     html = await page(app); for (const client of ['codex', 'claude', 'vscode']) assertHealthyRoute(html, client, 'classroom');
+    const restartedCodexConfig = await fs.readFile(box.paths.codex, 'utf8');
+    const restartedCodexCatalog = JSON.parse(await fs.readFile(box.paths.codexCatalog, 'utf8'));
+    const restartedCodexCache = JSON.parse(await fs.readFile(box.paths.codexCache, 'utf8'));
+    safeAssert(restartedCodexConfig.includes(`http://127.0.0.1:${base}/v1`) && restartedCodexConfig.includes('model_catalog_json'), 'Restart restored Codex UI mode without republishing its config');
+    safeAssert(restartedCodexCatalog.models.some(model => model.slug === `VCRouter/${sessions.first.model}`), 'Restart did not republish the Codex catalog');
+    safeAssert(restartedCodexCache.models.some(model => model.slug === `VCRouter/${sessions.first.model}`), 'Restart did not republish the Codex model cache');
     record('packaged Stop restores all personal settings before listeners close; restart safely restores saved Classroom routes');
 
     router.state.offline = true;

@@ -28,6 +28,28 @@ it("assigns Codex identity from the accepting listener regardless of request hin
   assert.equal(await response.text(), "codex");
 });
 
+it("keeps the shared UI listener incapable of Codex traffic until that route is activated", async () => {
+  const runtime = createClientRouteRuntime({
+    basePort: 0,
+    async handle(accepted, _request, response) {
+      response.end(accepted.route ?? "ui-only");
+    },
+  });
+  runtimes.push(runtime);
+
+  const ui = await runtime.startUi!();
+  assert.equal(runtime.current!("codex"), undefined);
+  assert.equal(await (await fetch(`${ui.origin}/v1/responses`, { method: "POST" })).text(), "ui-only");
+
+  const codex = await runtime.start("codex");
+  assert.equal(codex.origin, ui.origin);
+  assert.equal(await (await fetch(`${ui.origin}/v1/responses`, { method: "POST" })).text(), "codex");
+
+  await runtime.stop("codex");
+  assert.equal(runtime.current!("codex"), undefined);
+  assert.equal(await (await fetch(`${ui.origin}/v1/responses`, { method: "POST" })).text(), "ui-only");
+});
+
 it("assigns Claude Code identity from its own listener regardless of request hints", async () => {
   const runtime = createClientRouteRuntime({
     basePort: 0,
@@ -133,13 +155,22 @@ it("opens an emergency UI on a free loopback port when the Codex base port is oc
     },
   });
   runtimes.push(runtime);
+  let occupiedOpen = true;
 
   try {
     const started = await runtime.start("codex");
     assert.equal(started.health, "red");
     assert.notEqual(started.origin, `http://127.0.0.1:${address.port}`);
     assert.equal(await (await fetch(started.origin)).text(), "ui-only");
-  } finally {
     await new Promise<void>(resolve => occupied.close(() => resolve()));
+    occupiedOpen = false;
+
+    const recovered = await runtime.start("codex");
+    assert.equal(recovered.health, "green");
+    assert.equal(recovered.origin, `http://127.0.0.1:${address.port}`);
+    assert.equal(await (await fetch(recovered.origin)).text(), "codex");
+    assert.equal(await (await fetch(started.origin)).text(), "ui-only");
+  } finally {
+    if (occupiedOpen) await new Promise<void>(resolve => occupied.close(() => resolve()));
   }
 });

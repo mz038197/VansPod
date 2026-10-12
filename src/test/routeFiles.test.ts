@@ -98,6 +98,46 @@ it("migrates the old combined Claude journal once and initializes clean personal
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+it("leaves undetected client settings untouched and retries their legacy migration after detection", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    const personalCli = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://personal.example" } });
+    const managedCli = JSON.stringify({ env: { ANTHROPIC_BASE_URL: CODEX_ORIGIN }, marker: "managed-cli" });
+    const personalVsCode = JSON.stringify({ "editor.fontSize": 17 });
+    const managedVsCode = JSON.stringify({
+      "editor.fontSize": 17,
+      "claudeCode.environmentVariables": [{ name: "ANTHROPIC_BASE_URL", value: CODEX_ORIGIN }],
+    });
+    const legacyJournal = path.join(root, "classroom-claude-settings-backup.json");
+    const undetectedModelBackup = path.join(root, "classroom-model-backup.json");
+    const undetectedCodexBackup = path.join(root, "classroom-codex-route-backup.json");
+    await fs.writeFile(paths.claude, managedCli);
+    await fs.writeFile(paths.vsCode, managedVsCode);
+    await fs.writeFile(legacyJournal, JSON.stringify({
+      config: { original: personalCli, written: managedCli, keys: ["env.ANTHROPIC_BASE_URL"] },
+      vscode: { original: personalVsCode, written: managedVsCode, keys: ["vscodeBase"] },
+    }));
+    await fs.writeFile(undetectedModelBackup, "malformed but owned by undetected clients");
+    await fs.writeFile(undetectedCodexBackup, "malformed but owned by undetected Codex");
+
+    await routes.migrateLegacyState(CODEX_ORIGIN, { codex: false, claude: false, vsCodeChat: true });
+
+    assert.equal(await fs.readFile(paths.claude, "utf8"), managedCli);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.vsCode, "utf8")), JSON.parse(personalVsCode));
+    assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(legacyJournal, "utf8"))), ["config"]);
+    assert.equal(await fs.readFile(undetectedModelBackup, "utf8"), "malformed but owned by undetected clients");
+    assert.equal(await fs.readFile(undetectedCodexBackup, "utf8"), "malformed but owned by undetected Codex");
+
+    await fs.rm(undetectedModelBackup);
+    await fs.rm(undetectedCodexBackup);
+
+    await routes.migrateLegacyState(CODEX_ORIGIN, { codex: false, claude: true, vsCodeChat: false });
+
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.claude, "utf8")), JSON.parse(personalCli));
+    await assert.rejects(fs.access(legacyJournal), { code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it("legacy migration removes only recognized VansPod values without a journal", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {

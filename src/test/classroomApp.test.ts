@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
 import { createConnectionStorage, createMemorySecureStorage, type ConnectionStorage } from "../secureStorage";
-import type { CodexRouteOptions } from "../routeFiles";
+import { createRouteFiles, type CodexRouteOptions } from "../routeFiles";
 import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
@@ -357,6 +360,7 @@ function harness(
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
     setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
+    migrateLegacyState?: (proxyBaseUrl: string, clients?: { codex: boolean; claude: boolean; vsCodeChat: boolean }) => Promise<void>;
   },
 ) {
   const redeemCalls: { invite_code: string; nickname: string }[] = [];
@@ -481,7 +485,7 @@ function harness(
     },
     proxyBaseUrl: PROXY,
     routes: {
-      async migrateLegacyState() {},
+      async migrateLegacyState(proxyBaseUrl, clients) { await options?.migrateLegacyState?.(proxyBaseUrl, clients); },
       async setClaudeCodeRoute(classroom, proxyBaseUrl) {
         await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl);
         if (classroom) {
@@ -695,10 +699,30 @@ it("detects clients on startup and refresh without treating probe failure as a c
   assert.deepEqual(h.app.view().detectedClients, { codex: false, claude: false });
 });
 
+it("gates legacy migration with the clients detected on startup and Reload", async () => {
+  let installed = { codex: false, claude: true, vsCodeChat: false };
+  const migrations: Array<typeof installed> = [];
+  const h = harness(undefined, {
+    detectClient: async client => installed[client],
+    migrateLegacyState: async (_origin, clients) => { migrations.push(structuredClone(clients!)); },
+  });
+
+  await h.app.start();
+  installed = { codex: true, claude: true, vsCodeChat: true };
+  await h.app.reloadAllowlist();
+
+  assert.deepEqual(migrations, [
+    { codex: false, claude: true, vsCodeChat: false },
+    { codex: true, claude: true, vsCodeChat: true },
+  ]);
+});
+
 it("Reload re-detects gray clients and enables every recovered route as Native", async () => {
   let installed = false;
+  const starts: string[] = [];
   const runtime: ClientRouteRuntime = {
     async start(route) {
+      starts.push(route);
       const port = route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821;
       return { route, health: "green", origin: `http://127.0.0.1:${port}` };
     },
@@ -715,6 +739,7 @@ it("Reload re-detects gray clients and enables every recovered route as Native",
   });
   await h.app.start();
   assert.deepEqual(Object.values(h.app.view().clientRoutes!).map(route => route.health), ["gray", "gray", "gray"]);
+  assert.deepEqual(starts, []);
   installed = true;
 
   await h.app.reloadAllowlist();
@@ -724,6 +749,7 @@ it("Reload re-detects gray clients and enables every recovered route as Native",
     assert.equal(route.health, "green");
     assert.equal(route.restart, "ready");
   }
+  assert.deepEqual(starts, ["codex", "claudeCode", "vsCodeChat"]);
 });
 
 it("keeps a failed Codex listener red and Native without writing Classroom settings", async () => {
@@ -1423,6 +1449,59 @@ it("stops the Codex listener only after restoring its Native settings", async ()
   await h.app.stop();
 
   assert.deepEqual(events, ["restore", "stop:codex", "stop:claudeCode", "stop:vsCodeChat"]);
+});
+
+it("republishes the saved Codex Classroom config and catalogs after orderly Stop and relaunch", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-codex-relaunch-"));
+  const paths = {
+    codex: path.join(root, "config.toml"),
+    claude: path.join(root, "settings.json"),
+    vsCode: path.join(root, "vscode.json"),
+  };
+  const storage = persistentStorageFake();
+  let saved = {
+    codex: { mode: "native" as "native" | "classroom", adapter: "responses" as const },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as const, adapter: "responses" as const },
+  };
+  const clientRouteSettings: ClientRouteSettingsStorage = {
+    async load() { return structuredClone(saved); },
+    async save(next) { saved = structuredClone(next) as typeof saved; },
+  };
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: PROXY }; },
+    async stop() {},
+  };
+  const diskRoutes = createRouteFiles(paths);
+  const routeWrite = async (value: ModelOptions | null) => diskRoutes.setCodexRoute(value ? {
+    mode: "classroom",
+    ids: value.ids,
+    selectedModel: value.codexModel,
+    proxyBaseUrl: value.proxyBaseUrl,
+  } : { mode: "native", proxyBaseUrl: PROXY });
+  try {
+    await fs.writeFile(paths.codex, 'model = "personal"\n');
+    const first = harness(undefined, { storage, clientRouteSettings, clientRouteRuntime: runtime, detectClient: async client => client === "codex", setModelOptions: routeWrite });
+    await first.app.start();
+    await first.app.redeem("DEMO", "Student");
+    await first.app.setSwitch("classroom", "codex");
+    assert.match(await fs.readFile(paths.codex, "utf8"), /model = "VCRouter\/second-looking-but-first"/);
+
+    await first.app.stop();
+    assert.match(await fs.readFile(paths.codex, "utf8"), /model = "personal"/);
+
+    const restarted = harness(undefined, { storage, clientRouteSettings, clientRouteRuntime: runtime, detectClient: async client => client === "codex", setModelOptions: routeWrite });
+    await restarted.app.start();
+
+    const config = await fs.readFile(paths.codex, "utf8");
+    const catalog = JSON.parse(await fs.readFile(path.join(root, "classroom-catalog.json"), "utf8"));
+    const cache = JSON.parse(await fs.readFile(path.join(root, "models_cache.json"), "utf8"));
+    assert.equal(restarted.app.view().clientRoutes?.codex.mode, "classroom");
+    assert.match(config, /openai_base_url = "http:\/\/127\.0\.0\.1:47821\/v1"/);
+    assert.match(config, /model_catalog_json/);
+    assert.deepEqual(catalog.models.map((model: { slug: string }) => model.slug), ["VCRouter/second-looking-but-first", "VCRouter/later"]);
+    assert.deepEqual(cache.models.map((model: { slug: string }) => model.slug), ["VCRouter/second-looking-but-first", "VCRouter/later"]);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 it("Stop restores separated routes without touching the retired combined Claude seam or adapter preferences", async () => {
