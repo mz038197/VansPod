@@ -1,9 +1,9 @@
 import type { UpstreamSend } from "./classroomApp";
 import { modelApiAdapter } from "./adapters";
-import { AdapterError, object } from "./adapters/types";
+import { AdapterError, object, type AdapterRequest } from "./adapters/types";
 import { event } from "./adapters/stream";
-import { claudeWebSearch } from "./claudeWebSearch";
-import { codexSearch } from "./codexSearch";
+import { claudeWebSearch, declaresWebSearch } from "./claudeWebSearch";
+import { codexWebSearch } from "./codexWebSearch";
 import type http from "node:http";
 import { once } from "node:events";
 
@@ -22,15 +22,18 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string): Promi
   const client = upstream.client === "claude" ? "claude" : "codex";
   try {
     const path = upstream.path ?? "";
-    if (isCodexSearch(client, path)) return await codexSearch(upstream, baseUrl);
+    if (isCodexSearch(client, path)) return await codexWebSearch(upstream, baseUrl);
     const route = path.split("?")[0];
     if (client === "codex" ? !route.endsWith("/responses") : !route.endsWith("/messages")) throw new AdapterError(`此 API 路徑尚未支援所選 adapter：${route}`);
     let body: unknown; try { body = JSON.parse(upstream.body ?? ""); } catch { throw new AdapterError("請求正文必須是有效 JSON。"); }
     const parsed = object(body, "request");
     if (parsed.stream !== undefined && typeof parsed.stream !== "boolean") throw new AdapterError("stream 必須是布林值。");
-    const response = await claudeWebSearch(modelApiAdapter(upstream.adapter ?? "responses"), { client, model: upstream.model, body: parsed,
+    const adapter = modelApiAdapter(upstream.adapter ?? "responses");
+    const request: AdapterRequest = { client, model: upstream.model, body: parsed,
       apiKey: upstream.apiKey ?? "", routerBaseUrl: baseUrl.replace(/\/+$/, ""), headers: upstream.headers,
-      signal: upstream.signal ?? new AbortController().signal });
+      signal: upstream.signal ?? new AbortController().signal };
+    // Claude Code searches inside a model request: Router runs the searches, not the model upstream.
+    const response = declaresWebSearch(request) ? await claudeWebSearch(adapter, request) : await adapter.send(request);
     if (response.ok) return response;
     let message = `Router 回傳 HTTP ${response.status}。`;
     try {

@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { renderPage } from "../page";
 import { createPersistentConnectionStorage } from "../platformStorage";
@@ -14,6 +12,7 @@ import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
 import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
 import { sendRouter } from "../modelProxy";
+import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -3854,24 +3853,17 @@ it("Native startup recovery failure is visible and can be retried without restar
 });
 
 it("Classroom Codex search goes to Router with the Classroom API Key whatever model its body names, and never to ChatGPT", async () => {
-  const sample = JSON.parse(await fs.readFile(path.join(__dirname, "../../src/test/fixtures/codex-search/search-query.json"), "utf8")) as { path: string; body: Record<string, unknown> };
-  const routerCalls: Array<{ path: string; authorization: string | undefined; body: unknown }> = [];
-  const router = http.createServer(async (req, res) => {
-    let raw = ""; for await (const chunk of req) raw += chunk;
-    routerCalls.push({ path: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(raw) });
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ results: [{ query: "台中 近期活動", title: "台中爵士音樂節", url: "https://example.com/jazz", text: "十月在市民廣場舉行。" }] }));
-  });
-  await new Promise<void>(resolve => router.listen(0, "127.0.0.1", resolve));
-  const responses: Response[] = [];
-  const targets: string[] = [];
-  const h = harness(undefined, {
-    send: async upstream => {
-      targets.push(upstream.target);
-      if (upstream.target === "router") responses.push(await sendRouter(upstream, `http://127.0.0.1:${(router.address() as AddressInfo).port}`));
-    },
-  });
-  try {
+  const sample = fixture<{ path: string; body: Record<string, unknown> }>("codex-search/search-query.json");
+  const found = { results: [{ query: "台中 近期活動", title: "台中爵士音樂節", url: "https://example.com/jazz", text: "十月在市民廣場舉行。" }] };
+  await withFakeRouter(() => found, async (routerBaseUrl, routerCalls) => {
+    const responses: Response[] = [];
+    const targets: string[] = [];
+    const h = harness(undefined, {
+      send: async upstream => {
+        targets.push(upstream.target);
+        if (upstream.target === "router") responses.push(await sendRouter(upstream, routerBaseUrl));
+      },
+    });
     await h.app.start();
     await h.app.redeem("DEMO", "Student");
     await h.app.setSwitch("classroom");
@@ -3881,7 +3873,8 @@ it("Classroom Codex search goes to Router with the Classroom API Key whatever mo
       const response = responses.pop()!;
       assert.equal(response.status, 200);
       assert.match((await response.json() as { output: string }).output, /台中爵士音樂節/);
-      assert.deepEqual(routerCalls.pop(), { path: "/v1/search", authorization: `Bearer ${KEY}`, body: { queries: ["台中 近期活動"] } });
+      const call = routerCalls.pop()!;
+      assert.deepEqual([call.path, call.headers.authorization, call.body], ["/v1/search", `Bearer ${KEY}`, { queries: ["台中 近期活動"] }]);
     }
     for (const client of ["codex", "claude"] as const) {
       await assert.rejects(h.app.forward({ client, model: "", method: "POST", path: client === "codex" ? "/v1/responses" : "/v1/alpha/search", body: "{}" }), /\(missing\).*不在課堂允許清單/);
@@ -3894,5 +3887,5 @@ it("Classroom Codex search goes to Router with the Classroom API Key whatever mo
     assert.equal(h.sent().at(-1)?.target, "chatgpt");
     assert.equal(responses.length, 0);
     assert.equal(routerCalls.length, 0);
-  } finally { router.close(); }
+  });
 });

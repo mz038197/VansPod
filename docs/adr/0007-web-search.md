@@ -1,6 +1,6 @@
 # Web Search 由 Router 提供乾淨端點，客戶端格式翻譯留在 VansPod
 
-**狀態：設計已與使用者逐題確認，尚未實作。** 日期：2026-10-12。
+**狀態：設計已與使用者逐題確認；VansPod 端已在整合分支 `issue-21-web-search` 實作，真實客戶端的實機驗證尚待 GitHub #30。** 日期：2026-10-12。
 
 ## Context
 
@@ -35,4 +35,6 @@
 
 2026-10-13 VansPod × Codex（GitHub #27）：請求格式以 `src/test/fixtures/codex-search/` 的真實樣本為準。回應格式取自 Codex 原始碼（`openai/codex` tag `rust-v0.162.1`）：`codex-rs/codex-api/src/search.rs` 的 `SearchResponse { encrypted_output, output, results }`，以及 `codex-rs/ext/web-search/src/tool.rs`——模型只讀 `output`，`results` 只供客戶端顯示，非 2xx 回應是 `FunctionCallError::Fatal`。因此未開放、太頻繁、不可用、上游失敗與不支援的指令一律回 200，把說明放在 `output`；這個回應尚未以真實 Codex 端對端驗證。
 
-2026-10-13 VansPod × Claude Code 的上限與錯誤結果（GitHub #29）：錯誤結果的格式與代碼取自 Anthropic 的 web search tool 文件——`web_search_tool_result` 的 `content` 是單一物件 `{ type: "web_search_tool_result_error", error_code }`。Router 的 `web_search_rate_limited` 對應 `too_many_requests`；`web_search_disabled`、`web_search_unavailable` 與上游失敗沒有更貼近的代碼，一律是 `unavailable`，差別只在模型讀到的說明，該說明與 Codex 共用同一組文字。搜尋次數（含失敗的）用完後，下一個模型請求帶 `tool_choice: none`，模型只能作答；仍要求搜尋的呼叫不送 Router，回 `max_uses_exceeded`，再犯一次就結束回覆。超過 1000 字元或沒有查詢文字的呼叫不送 Router，分別回 `query_too_long` 與 `invalid_tool_input`，不像 Codex 那樣截斷。
+2026-10-13 VansPod × Claude Code 的上限與錯誤結果（GitHub #29）：錯誤結果的格式與代碼取自 Anthropic 的 web search tool 文件——`web_search_tool_result` 的 `content` 是單一物件 `{ type: "web_search_tool_result_error", error_code }`。Router 的 `web_search_rate_limited` 對應 `too_many_requests`；`web_search_disabled`、`web_search_unavailable` 與上游失敗沒有更貼近的代碼，一律是 `unavailable`，差別只在模型讀到的說明，該說明與 Codex 共用同一組文字。搜尋次數（含失敗的）用完後，下一個模型請求帶 `tool_choice: none`，模型只能作答；仍要求搜尋的呼叫不送 Router，回 `max_uses_exceeded`，再犯一次就結束回覆，並在回覆最後補一段給學生看的文字，說明已達這次回答的搜尋次數上限。超過 1000 字元或沒有查詢文字的呼叫不送 Router，分別回 `query_too_long` 與 `invalid_tool_input`，不像 Codex 那樣截斷。
+
+2026-10-13 VansPod × Claude Code 的搜尋迴圈（GitHub #28、#29）：Router 的 `POST /v1/search` 只收 `queries`，因此 Claude Code 搜尋工具宣告上的 `allowed_domains`、`blocked_domains` 與 `user_location` 沒有地方可放，一律不帶給 Router，搜尋結果不受這些設定限制；`max_uses` 只用來決定上限。三種 Model API Adapter（Responses、Chat、Messages）都跑同一個迴圈：選 Messages 時搜尋工具宣告同樣換成一般函式工具，不會原樣送到上游，否則搜尋就繞過了老師的開關。向 Router 搜尋的呼叫、結果的整理與給模型讀的失敗說明集中在 `src/webSearch.ts`，Codex 與 Claude Code 兩條路共用。被 `max_tokens` 截斷而 JSON 不完整的搜尋呼叫視同沒有查詢文字，回 `invalid_tool_input`；這只會發生在 Messages adapter，Chat 與 Responses adapter 在迴圈之前就會拒絕任何參數不是有效 JSON 的工具呼叫。

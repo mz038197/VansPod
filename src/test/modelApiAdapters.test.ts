@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import http from "node:http";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
+import { Failure, fixture, withFakeRouter } from "./fakeRouter";
 
 test("Chat rejects known unsupported model semantics before contacting Router", async () => {
   await withRouter(async (routerBaseUrl, calls) => {
@@ -287,21 +286,9 @@ for (const adapter of ["responses", "chat"] as const) test(`Codex ${adapter} pro
   }, adapter === "responses" ? { id: "r", status: "completed", output: [] } : { choices: [{ message: { content: null, tool_calls: [{ id: "call_patch", type: "function", function: { name: "apply_patch", arguments: '{"input":"hello"}' } }] }, finish_reason: "tool_calls" }] });
 });
 
-// Real requests captured from codex-cli (GitHub #23). Tests run from dist/, the samples stay in src/.
+// Real requests captured from codex-cli (GitHub #23).
 function codexSearchSample(name: string): { path: string; body: { commands: Record<string, unknown> } & Record<string, unknown> } {
-  return JSON.parse(readFileSync(path.join(__dirname, "../../src/test/fixtures/codex-search", `${name}.json`), "utf8"));
-}
-
-async function withSearchRouter(status: number, reply: unknown, run: (url: string, calls: Array<{ path: string; authorization: string | undefined; body: unknown }>) => Promise<void>) {
-  const calls: Array<{ path: string; authorization: string | undefined; body: unknown }> = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = ""; for await (const chunk of req) raw += chunk;
-    calls.push({ path: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(raw) });
-    res.writeHead(status, { "content-type": "application/json" }); res.end(typeof reply === "string" ? reply : JSON.stringify(reply));
-  });
-  server.listen(0, "127.0.0.1"); await once(server, "listening");
-  try { const address = server.address(); assert.ok(address && typeof address !== "string"); await run(`http://127.0.0.1:${address.port}`, calls); }
-  finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  return fixture(`codex-search/${name}.json`);
 }
 
 async function withRouter(run: (url: string, calls: Array<{ path: string; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }>) => Promise<void>, reply: unknown) {
@@ -768,7 +755,7 @@ test("Codex web search becomes a Router search with the Classroom API Key and co
     { query: "台中 近期活動", title: "台中爵士音樂節", url: "https://example.com/jazz", text: "十月在市民廣場舉行。" },
     { query: "台中 近期活動", title: "Taichung Events", url: "https://example.com/events", text: "A list of events this month." },
   ];
-  for (const adapter of ["chat", "responses"] as const) await withSearchRouter(200, { results }, async (routerBaseUrl, calls) => {
+  for (const adapter of ["chat", "responses"] as const) await withFakeRouter(() => ({ results }), async (routerBaseUrl, calls) => {
     const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter, path: `${sample.path}?client_version=0.162.1`, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
     assert.equal(response.status, 200);
     const reply = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
@@ -780,14 +767,14 @@ test("Codex web search becomes a Router search with the Classroom API Key and co
       { type: "text_result", ref_id: "turn0search1", url: "https://example.com/events", title: "Taichung Events", snippet: "A list of events this month." },
     ]);
     // Only the query strings leave: not the conversation, the model or the session id.
-    assert.deepEqual(calls, [{ path: "/v1/search", authorization: "Bearer synthetic-key", body: { queries: ["台中 近期活動"] } }]);
+    assert.deepEqual(calls.map(call => [call.path, call.headers.authorization, call.body]), [["/v1/search", "Bearer synthetic-key", { queries: ["台中 近期活動"] }]]);
   });
 });
 
 test("Codex web search sends Router only the first three queries and names the commands it left out", async () => {
   const sample = codexSearchSample("search-query");
   const body = { ...sample.body, commands: { ...sample.body.commands, search_query: ["一", "二", "三", "四", "五"].map(q => ({ q })), open: [{ ref_id: "https://example.com" }] } };
-  await withSearchRouter(200, { results: [] }, async (routerBaseUrl, calls) => {
+  await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
     const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
     assert.equal(response.status, 200);
     const reply = await response.json() as { output: string; results: unknown };
@@ -801,7 +788,7 @@ test("Codex web search sends Router only the first three queries and names the c
 test("Codex web commands other than search_query get a clear unsupported result and never reach Router", async () => {
   const blank = codexSearchSample("search-query");
   const samples = [codexSearchSample("open"), codexSearchSample("finance"), { ...blank, body: { ...blank.body, commands: { search_query: [], weather: [{ location: "Taichung" }] } } }];
-  await withSearchRouter(200, { results: [] }, async (routerBaseUrl, calls) => {
+  await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
     for (const [index, command] of ["open", "finance", "weather"].entries()) {
       const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: samples[index].path, apiKey: "synthetic-key", body: JSON.stringify(samples[index].body) }, routerBaseUrl);
       assert.equal(response.status, 200);
@@ -829,7 +816,7 @@ test("Codex web search explains each Router failure differently in a result the 
     ["malformed success", 200, { results: "none" }, /search failed/],
   ];
   const outputs = new Map<string, string>();
-  for (const [name, status, reply, expected] of cases) await withSearchRouter(status, reply, async (routerBaseUrl, calls) => {
+  for (const [name, status, reply, expected] of cases) await withFakeRouter(() => status === 200 ? reply : new Failure(status, reply), async (routerBaseUrl, calls) => {
     const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
     // A non-2xx reply is fatal to the Codex turn, so the explanation travels as a successful search result.
     assert.equal(response.status, 200, name);
