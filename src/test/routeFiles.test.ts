@@ -76,6 +76,40 @@ it("journals Claude Code without touching VS Code settings or official credentia
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+it("publishes the classroom model as Claude Code's custom model option and restores the personal one", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    await fs.writeFile(paths.claude, JSON.stringify({ env: { ANTHROPIC_CUSTOM_MODEL_OPTION: "personal-model", KEEP: "yes" } }));
+    await routes.setClaudeCodeRoute(true, CLAUDE_ORIGIN, "vcr-auto");
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.claude, "utf8")).env, {
+      ANTHROPIC_CUSTOM_MODEL_OPTION: "vcr-auto", KEEP: "yes", ANTHROPIC_BASE_URL: CLAUDE_ORIGIN,
+    });
+    await routes.setClaudeCodeRoute(true, CLAUDE_ORIGIN, "later");
+    const managed = JSON.parse(await fs.readFile(paths.claude, "utf8"));
+    assert.equal(managed.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "later");
+    managed.theme = "light";
+    await fs.writeFile(paths.claude, JSON.stringify(managed));
+    await routes.setClaudeCodeRoute(false, CLAUDE_ORIGIN);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.claude, "utf8")), {
+      env: { ANTHROPIC_CUSTOM_MODEL_OPTION: "personal-model", KEEP: "yes" }, theme: "light",
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it("removes the classroom custom model option when the student had none", async () => {
+  const { root, paths, routes } = await tempRoutes();
+  try {
+    await fs.writeFile(paths.claude, JSON.stringify({ theme: "dark" }));
+    await routes.setClaudeCodeRoute(true, CLAUDE_ORIGIN, "vcr-auto");
+    const managed = JSON.parse(await fs.readFile(paths.claude, "utf8"));
+    assert.equal(managed.env.ANTHROPIC_CUSTOM_MODEL_OPTION, "vcr-auto");
+    managed.theme = "light";
+    await fs.writeFile(paths.claude, JSON.stringify(managed));
+    await routes.setClaudeCodeRoute(false, CLAUDE_ORIGIN);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.claude, "utf8")), { theme: "light" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it("migrates the old combined Claude journal once and initializes clean personal state", async () => {
   const { root, paths, routes } = await tempRoutes();
   try {

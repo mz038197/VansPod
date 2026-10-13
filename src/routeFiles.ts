@@ -211,7 +211,7 @@ export function createRouteFiles(paths: RouteFilePaths) {
         if (cache?.fetched_at === "2000-01-01T00:00:00Z" && Array.isArray(cache.models) && cache.models.every(value => String(asRecord(value)?.slug).startsWith("VCRouter/"))) await fs.rm(cachePath, { force: true });
       }
     },
-    async setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void> {
+    async setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string, model?: string): Promise<void> {
       if (!classroom) {
         await claudeCodeBackup.restore();
         const text = await optionalText(paths.claude);
@@ -224,10 +224,13 @@ export function createRouteFiles(paths: RouteFilePaths) {
       const text = await readText(paths.claude);
       const doc = parseJsonObject(text);
       if (!doc) throw new Error("Invalid Claude settings");
-      const env = { ...(asRecord(doc.env) ?? {}), ANTHROPIC_BASE_URL: proxyBaseUrl };
+      // Gateway model discovery drops ids without "claude"/"anthropic" and needs a
+      // non-OAuth credential, so the /model picker entry comes from this option.
+      const env = { ...(asRecord(doc.env) ?? {}), ANTHROPIC_BASE_URL: proxyBaseUrl, ...(model ? { ANTHROPIC_CUSTOM_MODEL_OPTION: model } : {}) };
       const next = replaceJsonProperty(text, "env", env);
       const personal = personalClaudeText(text, proxyBaseUrl);
-      await claudeCodeBackup.write("config", next, ["env.ANTHROPIC_BASE_URL"], personal === text ? undefined : personal);
+      const keys = ["env.ANTHROPIC_BASE_URL", ...(model ? ["env.ANTHROPIC_CUSTOM_MODEL_OPTION"] : [])];
+      await claudeCodeBackup.write("config", next, keys, personal === text ? undefined : personal);
     },
   };
 }
@@ -291,11 +294,12 @@ function restoreJsonFields(current: string, original: string, written: string, k
         doc[VS_CODE_ENV] = next;
       }
       changed = true;
-    } else if (key === "env.ANTHROPIC_BASE_URL") {
+    } else if (key.startsWith("env.")) {
+      const name = key.slice("env.".length);
       const env = asRecord(doc.env), old = asRecord(before.env), expected = asRecord(managed.env);
-      if (!env || !isDeepStrictEqual(env.ANTHROPIC_BASE_URL, expected?.ANTHROPIC_BASE_URL)) continue;
-      if (old?.ANTHROPIC_BASE_URL === undefined) delete env.ANTHROPIC_BASE_URL;
-      else env.ANTHROPIC_BASE_URL = old.ANTHROPIC_BASE_URL;
+      if (!env || !isDeepStrictEqual(env[name], expected?.[name])) continue;
+      if (old?.[name] === undefined) delete env[name];
+      else env[name] = old[name];
       if (!Object.keys(env).length) delete doc.env;
       changed = true;
     } else if (isDeepStrictEqual(doc[key], managed[key])) {

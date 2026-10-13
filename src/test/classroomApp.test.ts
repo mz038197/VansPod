@@ -361,7 +361,7 @@ function harness(
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
-    setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
+    setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string, model?: string) => Promise<void>;
     migrateLegacyState?: (proxyBaseUrl: string, clients?: { codex: boolean; claude: boolean; vsCodeChat: boolean }) => Promise<void>;
   },
 ) {
@@ -488,8 +488,8 @@ function harness(
     proxyBaseUrl: PROXY,
     routes: {
       async migrateLegacyState(proxyBaseUrl, clients) { await options?.migrateLegacyState?.(proxyBaseUrl, clients); },
-      async setClaudeCodeRoute(classroom, proxyBaseUrl) {
-        await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl);
+      async setClaudeCodeRoute(classroom, proxyBaseUrl, model) {
+        await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl, model);
         if (classroom) {
           claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: undefined };
           docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
@@ -1054,6 +1054,40 @@ it("Clear removes the journal-owned VS Code provider and returns the route to he
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "native");
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "ready");
+});
+
+it("publishes the first allowlist model to Claude Code on switch and again when Reload changes it", async () => {
+  const running = new Set<string>();
+  const origin = (route: string) => `http://127.0.0.1:${route === "claudeCode" ? 47822 : 47821}`;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      running.add(route);
+      return { route, health: "green", origin: origin(route) };
+    },
+    current(route) {
+      return running.has(route) ? { route, health: "green", origin: origin(route) } : undefined;
+    },
+    async stop(route) { if (route) running.delete(route); },
+  };
+  let models = ["vcr-auto", "later"];
+  const published: Array<string | undefined> = [];
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    sessionModels: async () => models,
+    async setClaudeCodeRoute(classroom, _proxyBaseUrl, model) { if (classroom) published.push(model); },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "claude");
+  assert.deepEqual(published, ["vcr-auto"]);
+
+  await h.app.reloadAllowlist();
+  assert.deepEqual(published, ["vcr-auto"]);
+
+  models = ["later", "vcr-auto"];
+  await h.app.reloadAllowlist();
+  assert.deepEqual(published, ["vcr-auto", "later"]);
 });
 
 it("Clear commits credential revocation before independent route recovery and Reload retries every failed journal", async () => {
