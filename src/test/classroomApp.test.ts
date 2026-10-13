@@ -339,7 +339,7 @@ function harness(
     clientRouteSettings?: ClientRouteSettingsStorage;
     clientRouteRuntime?: ClientRouteRuntime;
     storage?: ConnectionStorage;
-    send?: (upstream: UpstreamSend) => Promise<void>;
+    send?: (upstream: UpstreamSend) => Promise<{ ok: boolean } | void>;
     redeemError?: Error;
     catalogYaml?: unknown;
     catalogBody?: { course_catalog_yaml?: unknown };
@@ -549,7 +549,7 @@ function harness(
     },
     async send(upstream) {
       sent.push({ ...upstream });
-      await options?.send?.(upstream);
+      return await options?.send?.(upstream) ?? { ok: true };
     },
   });
   return {
@@ -1176,14 +1176,40 @@ it("Clear commits credential revocation before independent route recovery and Re
   }, { codex: "green", claudeCode: "green", vsCodeChat: "green" });
 });
 
-it("a forwarded VS Code request turns the waiting route green and drops its restart reminder", async () => {
+it("a failed Codex request leaves the waiting route yellow until a request succeeds", async () => {
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  let upstreamOk = false;
+  const h = harness(undefined, {
+    detectClient: async client => client === "codex",
+    clientRouteRuntime: runtime,
+    send: async () => ({ ok: upstreamOk }),
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "codex");
+  assert.equal(h.app.view().clientRoutes?.codex.health, "yellow");
+
+  await h.app.forward({ client: "codex", model: h.app.view().allowedModels![0] });
+  assert.equal(h.app.view().clientRoutes?.codex.health, "yellow");
+
+  upstreamOk = true;
+  await h.app.forward({ client: "codex", model: h.app.view().allowedModels![0] });
+  assert.equal(h.app.view().clientRoutes?.codex.health, "green");
+});
+
+it("a successful VS Code request turns the waiting route green and drops its restart reminder, a failed one does not", async () => {
   const runtime: ClientRouteRuntime = {
     async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
     async stop() {},
   };
+  let upstreamOk = false;
   const h = harness(undefined, {
     detectClient: async client => client === "vsCodeChat",
     clientRouteRuntime: runtime,
+    send: async () => ({ ok: upstreamOk }),
     sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
     vsCodeRouteSettings: {
       async initializeNative() { return { changed: false }; },
@@ -1197,6 +1223,11 @@ it("a forwarded VS Code request turns the waiting route green and drops its rest
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
   assert.deepEqual(h.app.view().modelRestart, ["vscode"]);
 
+  await h.app.forward({ client: "copilot", model: "lesson" });
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  assert.deepEqual(h.app.view().modelRestart, ["vscode"]);
+
+  upstreamOk = true;
   await h.app.forward({ client: "copilot", model: "lesson" });
 
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");

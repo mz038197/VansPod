@@ -434,15 +434,15 @@ function upstreamOrigin(target: UpstreamTarget): string {
   return "https://claude.ai";
 }
 
-async function sendUpstream(upstream: UpstreamSend): Promise<void> {
+async function sendUpstream(upstream: UpstreamSend): Promise<{ ok: boolean }> {
   if (!proxyAccepting || !upstream.path) {
-    return;
+    return { ok: false };
   }
   const slot = responseSlot.getStore();
-  if (!slot) return;
+  if (!slot) return { ok: false };
   if (upstream.target === "router" && upstream.client !== "copilot") {
     slot.response = await sendRouter(upstream, routerBaseUrl());
-    return;
+    return { ok: slot.response.ok };
   }
   try {
     const headers: Record<string, string> = {
@@ -465,6 +465,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<void> {
   } catch {
     slot.response = Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 });
   }
+  return { ok: slot.response.ok };
 }
 
 async function main(): Promise<void> {

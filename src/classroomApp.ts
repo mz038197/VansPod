@@ -107,7 +107,8 @@ export type ClassroomAppDeps = {
     stop(): void;
     receive(request: { provider: "VCRouter" }): Promise<void>;
   };
-  send(upstream: UpstreamSend): Promise<void>;
+  /** `ok` is false when the upstream did not answer the request successfully. */
+  send(upstream: UpstreamSend): Promise<{ ok: boolean }>;
 };
 
 export type CourseCatalogView = {
@@ -438,7 +439,9 @@ export class ClassroomApp {
   async forward(request: ClientForward): Promise<ForwardedRecord> {
     // Only select a coherent connection and permissions under the lock; streaming stays concurrent.
     const upstream = await this.serialConnectionOperation(() => this.forwardUpstream(request));
-    await this.deps.send(withHttp(upstream, request));
+    const outcome = await this.deps.send(withHttp(upstream, request));
+    // Only a successful request proves the client loaded the new settings and the route works.
+    if (!outcome.ok) return forwardedRecord(upstream);
     if (this.deps.clientRouteRuntime && request.client !== "copilot" && this.clientModes[request.client] === "classroom") {
       const route = request.client === "codex" ? this.clientRoutes.codex : this.clientRoutes.claudeCode;
       route.health = "green";
