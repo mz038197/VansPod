@@ -1090,23 +1090,63 @@ test("Codex web search becomes a Router search with the Classroom API Key and co
 
 test("Codex web search sends Router only the first three queries and names the commands it left out", async () => {
   const sample = codexSearchSample("search-query");
-  const body = { ...sample.body, commands: { ...sample.body.commands, search_query: ["一", "二", "三", "四", "五"].map(q => ({ q })), open: [{ ref_id: "https://example.com" }] } };
+  const body = { ...sample.body, commands: { ...sample.body.commands, search_query: ["一", "二", "三", "四", "五"].map(q => ({ q })), open: [{ ref_id: "https://example.com" }], weather: [{ location: "Taichung" }] } };
   await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
     const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
     assert.equal(response.status, 200);
     const reply = await response.json() as { output: string; results: unknown };
     assert.match(reply.output, /No web search results/);
-    assert.match(reply.output, /not supported in this classroom session and were not run: open./);
+    assert.match(reply.output, /not supported in this classroom session and were not run: weather\./);
+    assert.match(reply.output, /fetch it yourself\. Requested: https:\/\/example\.com /);
     assert.deepEqual(reply.results, []);
     assert.deepEqual(calls.map(call => call.body), [{ queries: ["一", "二", "三"] }]);
   });
 });
 
+test("Codex is told to read a page itself when it asks to open a URL, without contacting Router", async () => {
+  const sample = codexSearchSample("open");
+  // Reading a known URL is not Web Search, so the class session's switch is never asked.
+  await withFakeRouter(() => new Failure(403, { error: { code: "web_search_disabled" } }), async (routerBaseUrl, calls) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
+    assert.equal(response.status, 200);
+    const reply = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
+    assert.match(reply.output, /fetch it yourself/);
+    assert.ok(reply.output.includes("https://example.com"), reply.output);
+    assert.match(reply.output, /only the page you asked for/i);
+    assert.match(reply.output, /readable text/);
+    assert.match(reply.output, /Do not follow links/);
+    assert.doesNotMatch(reply.output, /not supported|Do not use shell commands/);
+    assert.deepEqual([reply.encrypted_output, reply.results], [null, []]);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test("Codex is told how to read a page for a search result id, a numbered link and a find, without contacting Router", async () => {
+  const sample = codexSearchSample("open");
+  const cases: Array<[Record<string, unknown>, RegExp[]]> = [
+    [{ open: [{ ref_id: "turn0search0" }] }, [/The open command is not run for you/, /turn0search0 is not kept/, /URL listed for that result/]],
+    [{ click: [{ ref_id: "turn0fetch3", id: 17 }] }, [/The click command is not run for you/, /fetch the URL that link points to/]],
+    [{ find: [{ ref_id: "https://example.com/docs", pattern: "Annie Case" }] }, [/The find command is not run for you/, /Requested: https:\/\/example\.com\/docs /, /search its text for the pattern yourself/]],
+    [{ open: [{ ref_id: "https://example.com", lineno: 120 }, { ref_id: "https://example.com" }], find: [{ ref_id: "turn0fetch3", pattern: "x" }] }, [/The open, find commands are not run for you/, /Requested: https:\/\/example\.com Fetch only/]],
+  ];
+  await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
+    for (const [commands, expected] of cases) {
+      const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify({ ...sample.body, commands }) }, routerBaseUrl);
+      assert.equal(response.status, 200);
+      const { output } = await response.json() as { output: string };
+      for (const pattern of expected) assert.match(output, pattern);
+      assert.match(output, /To read another page, call open or click again/);
+      assert.doesNotMatch(output, /not supported|Do not use shell commands/);
+    }
+    assert.equal(calls.length, 0);
+  });
+});
+
 test("Codex web commands other than search_query get a clear unsupported result and never reach Router", async () => {
   const blank = codexSearchSample("search-query");
-  const samples = [codexSearchSample("open"), codexSearchSample("finance"), { ...blank, body: { ...blank.body, commands: { search_query: [], weather: [{ location: "Taichung" }] } } }];
+  const samples = [codexSearchSample("finance"), { ...blank, body: { ...blank.body, commands: { search_query: [], weather: [{ location: "Taichung" }] } } }];
   await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
-    for (const [index, command] of ["open", "finance", "weather"].entries()) {
+    for (const [index, command] of ["finance", "weather"].entries()) {
       const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: samples[index].path, apiKey: "synthetic-key", body: JSON.stringify(samples[index].body) }, routerBaseUrl);
       assert.equal(response.status, 200);
       const reply = await response.json() as { encrypted_output: unknown; output: string; results: unknown };
@@ -1149,7 +1189,8 @@ test("Codex web search explains each Router failure differently in a result the 
   const disabled = outputs.get("disabled")!;
   assert.match(disabled, /這堂課沒有開放網路搜尋/);
   assert.match(disabled, /Do not retry/);
-  assert.match(disabled, /Do not use shell commands/);
+  assert.match(disabled, /Do not use shell commands \(curl, wget, scripts\) to search the web or crawl sites/);
+  assert.doesNotMatch(disabled, /fetch web pages/);
   assert.match(disabled, /tell the user directly/i);
   assert.doesNotMatch(disabled, /another way|other way|instead|alternative|built-in|其他方式|改用|內建|Codex/i);
   // Router refused before a connection could be made at all.

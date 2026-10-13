@@ -14,8 +14,10 @@ export const MAX_QUERY_LENGTH = 1000;
 
 // Every explanation below is read verbatim by the model, hence the English half. None
 // of them may hint at another route to the information: an earlier refusal did, and the
-// model crawled sites from the shell for minutes (ADR-0007).
-export const NO_SHELL = "Do not use shell commands (curl, wget, scripts) to fetch web pages.";
+// model crawled sites from the shell for minutes (ADR-0007). What is ruled out is
+// searching by other means; reading one known URL is not Web Search, and only the reply
+// to Codex's own open, click or find says so (codexWebSearch.ts).
+export const NO_SHELL = "Do not use shell commands (curl, wget, scripts) to search the web or crawl sites for this information.";
 const ROUTER_REFUSALS: Record<string, string> = {
   web_search_disabled: `這堂課沒有開放網路搜尋。Web search is not enabled for this class session. This is a class setting, not a malfunction, and no search was performed. Do not retry this tool. ${NO_SHELL} Tell the user directly that web search is not enabled for this class session.`,
   web_search_rate_limited: `搜尋太頻繁，請稍後再試。Web search is temporarily rate limited: there were too many searches in the last minute, so no search was performed. Do not retry this tool now. ${NO_SHELL} Tell the user to wait about a minute and then ask again.`,

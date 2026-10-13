@@ -53,8 +53,8 @@ VansPod 或其本機代理將模型請求送往的 Router 或模型供應端。�
 _Avoid_: VS Code Chat、Claude CLI、Claude Desktop、把客戶端與模型供應端都稱為上游
 
 **Web Search**:
-Router 在一個 Class Session 內，代學生的 Coding Agent 執行的網路搜尋。它不是模型，不屬於 Session Model Allowlist；是否開放由老師對每個 Class Session 個別決定，預設不開放，並由 Router 強制執行。未開放時，Coding Agent 應直接告知學生，而不是自行改用其他方式抓取網頁。它只決定 Router 是否代為搜尋，不限制學生電腦自己的連網能力。
-_Avoid_: 搜尋模型、把搜尋列進 Session Model Allowlist、學生自己的搜尋帳號、未開放時用 shell 抓網頁替代、把關閉 Web Search 當成斷網
+Router 在一個 Class Session 內，代學生的 Coding Agent 以查詢文字找出相關網頁的網路搜尋。它不是模型，不屬於 Session Model Allowlist；是否開放由老師對每個 Class Session 個別決定，預設不開放，並由 Router 強制執行。未開放時，Coding Agent 應直接告知學生，而不是自行逐站抓取網頁來代替搜尋。它只決定 Router 是否代為搜尋，不限制學生電腦自己的連網能力；Coding Agent 讀取一個已知網址的內容不是 Web Search，不受這個開關限制。
+_Avoid_: 搜尋模型、把搜尋列進 Session Model Allowlist、學生自己的搜尋帳號、未開放時用 shell 逐站抓網頁代替搜尋、把讀取已知網址當成 Web Search、把關閉 Web Search 當成斷網
 
 **Model Switch**:
 每個 Client Route 各自的本機開關，讓它獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個 Client Route 不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該 Client Route 原有的個人設定。
