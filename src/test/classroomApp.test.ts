@@ -11,6 +11,8 @@ import type { AdapterSettingsStorage } from "../adapterSettings";
 import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
 import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
+import { sendRouter } from "../modelProxy";
+import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
   type EnvironmentToolId,
@@ -359,7 +361,7 @@ function harness(
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
-    setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string) => Promise<void>;
+    setClaudeCodeRoute?: (classroom: boolean, proxyBaseUrl: string, model?: string) => Promise<void>;
     migrateLegacyState?: (proxyBaseUrl: string, clients?: { codex: boolean; claude: boolean; vsCodeChat: boolean }) => Promise<void>;
   },
 ) {
@@ -486,8 +488,8 @@ function harness(
     proxyBaseUrl: PROXY,
     routes: {
       async migrateLegacyState(proxyBaseUrl, clients) { await options?.migrateLegacyState?.(proxyBaseUrl, clients); },
-      async setClaudeCodeRoute(classroom, proxyBaseUrl) {
-        await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl);
+      async setClaudeCodeRoute(classroom, proxyBaseUrl, model) {
+        await options?.setClaudeCodeRoute?.(classroom, proxyBaseUrl, model);
         if (classroom) {
           claudeRouteBackup ??= { terminal: docs.claudeTerminal.ANTHROPIC_BASE_URL, vscode: undefined };
           docs.claudeTerminal.ANTHROPIC_BASE_URL = proxyBaseUrl;
@@ -1052,6 +1054,40 @@ it("Clear removes the journal-owned VS Code provider and returns the route to he
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "native");
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "ready");
+});
+
+it("publishes the first allowlist model to Claude Code on switch and again when Reload changes it", async () => {
+  const running = new Set<string>();
+  const origin = (route: string) => `http://127.0.0.1:${route === "claudeCode" ? 47822 : 47821}`;
+  const runtime: ClientRouteRuntime = {
+    async start(route) {
+      running.add(route);
+      return { route, health: "green", origin: origin(route) };
+    },
+    current(route) {
+      return running.has(route) ? { route, health: "green", origin: origin(route) } : undefined;
+    },
+    async stop(route) { if (route) running.delete(route); },
+  };
+  let models = ["vcr-auto", "later"];
+  const published: Array<string | undefined> = [];
+  const h = harness(undefined, {
+    detectClient: async () => true,
+    clientRouteRuntime: runtime,
+    sessionModels: async () => models,
+    async setClaudeCodeRoute(classroom, _proxyBaseUrl, model) { if (classroom) published.push(model); },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "claude");
+  assert.deepEqual(published, ["vcr-auto"]);
+
+  await h.app.reloadAllowlist();
+  assert.deepEqual(published, ["vcr-auto"]);
+
+  models = ["later", "vcr-auto"];
+  await h.app.reloadAllowlist();
+  assert.deepEqual(published, ["vcr-auto", "later"]);
 });
 
 it("Clear commits credential revocation before independent route recovery and Reload retries every failed journal", async () => {
@@ -3848,4 +3884,42 @@ it("Native startup recovery failure is visible and can be retried without restar
   fail = false;
   await h.app.setSwitch("native", "claude");
   assert.equal(h.app.view().notice, undefined);
+});
+
+it("Classroom Codex search goes to Router with the Classroom API Key whatever model its body names, and never to ChatGPT", async () => {
+  const sample = fixture<{ path: string; body: Record<string, unknown> }>("codex-search/search-query.json");
+  const found = { results: [{ query: "台中 近期活動", title: "台中爵士音樂節", url: "https://example.com/jazz", text: "十月在市民廣場舉行。" }] };
+  await withFakeRouter(() => found, async (routerBaseUrl, routerCalls) => {
+    const responses: Response[] = [];
+    const targets: string[] = [];
+    const h = harness(undefined, {
+      send: async upstream => {
+        targets.push(upstream.target);
+        if (upstream.target === "router") responses.push(await sendRouter(upstream, routerBaseUrl));
+      },
+    });
+    await h.app.start();
+    await h.app.redeem("DEMO", "Student");
+    await h.app.setSwitch("classroom");
+    // Search is not a model request: Web Search is a switch on the Class Session, not a Session Model Allowlist entry.
+    for (const model of ["", "not-allowed", "later", "VCRouter/vcr-auto"]) {
+      await h.app.forward({ client: "codex", model, method: "POST", path: sample.path, body: JSON.stringify({ ...sample.body, model }) });
+      const response = responses.pop()!;
+      assert.equal(response.status, 200);
+      assert.match((await response.json() as { output: string }).output, /台中爵士音樂節/);
+      const call = routerCalls.pop()!;
+      assert.deepEqual([call.path, call.headers.authorization, call.body], ["/v1/search", `Bearer ${KEY}`, { queries: ["台中 近期活動"] }]);
+    }
+    for (const client of ["codex", "claude"] as const) {
+      await assert.rejects(h.app.forward({ client, model: "", method: "POST", path: client === "codex" ? "/v1/responses" : "/v1/alpha/search", body: "{}" }), /\(missing\).*不在課堂允許清單/);
+    }
+    assert.deepEqual(targets, ["router", "router", "router", "router"]);
+    // Native search is untouched: it leaves for the student's own ChatGPT and Router hears nothing.
+    await h.app.setSwitch("native");
+    await h.app.forward({ client: "codex", model: "gpt-synthetic", method: "POST", path: sample.path, body: JSON.stringify(sample.body) });
+    assert.equal(targets.at(-1), "chatgpt");
+    assert.equal(h.sent().at(-1)?.target, "chatgpt");
+    assert.equal(responses.length, 0);
+    assert.equal(routerCalls.length, 0);
+  });
 });

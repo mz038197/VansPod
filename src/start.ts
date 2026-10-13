@@ -476,6 +476,7 @@ async function main(): Promise<void> {
     res: http.ServerResponse,
   ) => Promise<void>;
   let app!: ClassroomApp;
+  const storage = createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() });
   const clientRouteRuntime = createClientRouteRuntime({
     basePort: port,
     models(route) {
@@ -512,7 +513,7 @@ async function main(): Promise<void> {
         throw new Error("VansPod 不寫 MCP 設定");
       },
     },
-    storage: createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() }),
+    storage,
     stopProcess() {
       // 關視窗不呼叫這裡。停止是頁面上的單獨動作。
     },

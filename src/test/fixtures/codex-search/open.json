@@ -1,0 +1,42 @@
+{
+  "client": "codex",
+  "method": "POST",
+  "path": "/v1/alpha/search",
+  "body": {
+    "id": "00000000-0000-7000-8000-000000000001",
+    "model": "VCRouter/vcr-auto",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "用你內建的 web__run 工具做兩件事，各一次：(1) 用 open 指令開啟 https://example.com；(2) 用 finance 或 weather 指令查台積電股價或台北天氣。工具失敗就直接回報，不要重試，不要執行任何 shell 指令。"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "00000000-0000-7000-8000-000000000002",
+          "create_time": 1700000000,
+          "content_item_kinds": [
+            "user.text"
+          ]
+        }
+      }
+    ],
+    "commands": {
+      "open": [
+        {
+          "ref_id": "https://example.com"
+        }
+      ]
+    },
+    "settings": {
+      "allowed_callers": [
+        "direct"
+      ],
+      "external_web_access": false
+    },
+    "max_output_tokens": 10000
+  }
+}

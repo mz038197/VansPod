@@ -19,6 +19,7 @@ import {
 } from "./courseCatalog";
 import type { CommandResult } from "./commandRunner";
 import type { CodexRouteOptions, DetectedRouteClients } from "./routeFiles";
+import { isCodexSearch } from "./modelProxy";
 
 export type NicknameRedeemResult = {
   api_key: string;
@@ -95,7 +96,7 @@ export type ClassroomAppDeps = {
   routes: {
     migrateLegacyState(proxyBaseUrl: string, clients?: DetectedRouteClients): Promise<void>;
     setCodexRoute(options: CodexRouteOptions): Promise<void>;
-    setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string): Promise<void>;
+    setClaudeCodeRoute(classroom: boolean, proxyBaseUrl: string, model?: string): Promise<void>;
   };
   copilot: {
     read(): Promise<CopilotDocument>;
@@ -488,7 +489,8 @@ export class ClassroomApp {
       throw new Error("Claude Code 已切回 Native。請重開 Claude Code CLI 後再試。");
     }
     if (this.clientModes[request.client] === "classroom") {
-      this.assertAllowedModel(request.model);
+      // Web Search is a switch on the Class Session that Router enforces, not a model on the allowlist.
+      if (!isCodexSearch(request.client, request.path)) this.assertAllowedModel(request.model);
       const upstream = await this.classroomUpstream(request.client, request.model);
       if (!upstream) {
         throw new Error("沒有上課模型。");
@@ -1030,7 +1032,7 @@ export class ClassroomApp {
       await this.saveClientRoutePreferences();
       const aggregate = Object.values(this.clientModes).includes("classroom") ? "classroom" : "native";
       if (!await this.saveMode(aggregate, this.clientModes)) throw new Error("mode persistence failed");
-      await this.deps.routes.setClaudeCodeRoute(mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+      await this.deps.routes.setClaudeCodeRoute(mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl, this.modelIds[0]);
       route.health = mode === "classroom" ? "yellow" : "green";
       route.restart = mode === "classroom" ? "restart-required" : "ready";
       this.notice = undefined;
@@ -1040,7 +1042,7 @@ export class ClassroomApp {
       this.clientModes = previousModes;
       try { await this.saveClientRoutePreferences(); } catch { /* Keep the rollback visible in memory. */ }
       try {
-        await this.deps.routes.setClaudeCodeRoute(previousRoute.mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl);
+        await this.deps.routes.setClaudeCodeRoute(previousRoute.mode === "classroom", this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl, this.modelIds[0]);
       } catch { /* The visible route state remains authoritative. */ }
       this.notice = "無法更新 Claude Code Client Route，已保留原本模式。";
     }
@@ -1279,6 +1281,7 @@ export class ClassroomApp {
       await this.deps.routes.setClaudeCodeRoute(
         this.clientModes.claude === "classroom",
         this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl,
+        this.modelIds[0],
       );
       if (this.clientModes.claude === "classroom") {
         route.health = "yellow";
@@ -1434,6 +1437,13 @@ export class ClassroomApp {
       this.sending.delete(client);
     }
     await this.publishModelOptions();
+    if (this.clientModes.claude === "classroom" && previous[0] !== ids[0]) {
+      try {
+        await this.deps.routes.setClaudeCodeRoute(true, this.clientRouteOrigins.claudeCode ?? this.deps.proxyBaseUrl, ids[0]);
+      } catch {
+        this.notice = "無法更新 Claude Code 的課堂模型選項。";
+      }
+    }
     return true;
   }
 

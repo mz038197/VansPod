@@ -1,0 +1,43 @@
+{
+  "client": "codex",
+  "method": "POST",
+  "path": "/v1/alpha/search",
+  "body": {
+    "id": "00000000-0000-7000-8000-000000000001",
+    "model": "VCRouter/vcr-auto",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "用你內建的 web search 工具搜尋「台中 近期活動」，只搜尋一次，然後用一句話回答。不要執行任何 shell 指令。"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "00000000-0000-7000-8000-000000000002",
+          "create_time": 1700000000,
+          "content_item_kinds": [
+            "user.text"
+          ]
+        }
+      }
+    ],
+    "commands": {
+      "search_query": [
+        {
+          "q": "台中 近期活動"
+        }
+      ],
+      "response_length": "short"
+    },
+    "settings": {
+      "allowed_callers": [
+        "direct"
+      ],
+      "external_web_access": false
+    },
+    "max_output_tokens": 10000
+  }
+}

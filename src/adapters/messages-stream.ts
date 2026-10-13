@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { AdapterError, object, type JsonObject } from "./types";
 import { event, frames } from "./stream";
+import { thinkingBlock, type Reasoning, type ThinkingMode } from "./claude-reasoning";
 import { ChatToolCalls, chatFinishReason, validateChatContent } from "./chat-output";
 
 export class MessagesStream {
-  private readonly blocks = new Map<string, { index: number; kind: "text" | "tool"; value: string; closed: boolean }>();
+  private readonly blocks = new Map<string, { index: number; kind: "text" | "tool" | "thinking"; value: string; closed: boolean }>();
   private inputTokens = 0;
   private outputTokens = 0;
   constructor(private readonly model: string) {}
@@ -20,6 +21,14 @@ export class MessagesStream {
     if (this.blocks.has(key)) return "";
     const block = { index: this.blocks.size, kind: "tool" as const, value: "", closed: false }; this.blocks.set(key, block);
     return event("content_block_start", { index: block.index, content_block: { type: "tool_use", id, name, input: {} } });
+  }
+  // The signature only exists once the upstream has finished the reasoning, so the block is sent whole.
+  thinking(key: string, reasoning: Reasoning, mode: ThinkingMode): string {
+    if (mode === "off" || this.blocks.has(key)) return "";
+    const index = this.blocks.size, block = thinkingBlock(reasoning, mode); this.blocks.set(key, { index, kind: "thinking", value: "", closed: true });
+    return event("content_block_start", { index, content_block: { type: "thinking", thinking: "", signature: "" } })
+      + (block.thinking ? event("content_block_delta", { index, delta: { type: "thinking_delta", thinking: block.thinking } }) : "")
+      + event("content_block_delta", { index, delta: { type: "signature_delta", signature: block.signature } }) + event("content_block_stop", { index });
   }
   arguments(key: string, delta: string): string {
     const block = this.blocks.get(key); if (!block || block.kind !== "tool") throw new AdapterError("上游工具串流缺少識別資訊。", 502);
@@ -44,10 +53,12 @@ export class MessagesStream {
   }
 }
 
-export async function* chatToMessagesStream(response: Response, model: string): AsyncGenerator<string> {
+export async function* chatToMessagesStream(response: Response, model: string, mode: ThinkingMode = "off"): AsyncGenerator<string> {
   const output = new MessagesStream(model); yield output.start();
   const tools = new ChatToolCalls();
-  let finish: unknown;
+  let finish: unknown, reasoning = "", thoughts = 0;
+  // Reasoning comes before the answer it led to; it becomes one block when that answer starts.
+  const thought = () => { const text = reasoning; reasoning = ""; return text ? output.thinking(`thinking:${thoughts++}`, { text }, mode) : ""; };
   for await (const frame of frames(response)) {
     if (frame.data === "[DONE]") continue;
     const body = frame.data;
@@ -55,8 +66,10 @@ export async function* chatToMessagesStream(response: Response, model: string): 
     if (body.usage) { const usage = object(body.usage, "usage"); output.usage(usage.prompt_tokens, usage.completion_tokens); }
     for (const raw of (body.choices ?? []) as JsonObject[]) {
       const choice = object(raw, "choice"), delta = object(choice.delta ?? {}, "delta");
-      validateChatContent(delta);
-      if (typeof delta.content === "string") yield output.text("text", delta.content);
+      validateChatContent(delta, true);
+      const reasoned = delta.reasoning_content ?? delta.reasoning;
+      if (typeof reasoned === "string") reasoning += reasoned;
+      if (typeof delta.content === "string" && delta.content) { yield thought(); yield output.text("text", delta.content); }
       if (delta.tool_calls !== undefined) tools.add(delta.tool_calls);
       if (choice.finish_reason != null) finish = choice.finish_reason;
     }
@@ -64,6 +77,7 @@ export async function* chatToMessagesStream(response: Response, model: string): 
   finish = chatFinishReason(finish);
   const calls = tools.completed();
   if (finish === "tool_calls" && !calls.length) throw new AdapterError("上游工具呼叫缺少識別資訊。", 502);
+  yield thought();
   for (const call of calls) {
     yield output.tool(`tool:${call.index}`, call.id, call.function.name);
     yield output.arguments(`tool:${call.index}`, call.function.arguments);

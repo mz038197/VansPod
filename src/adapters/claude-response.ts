@@ -1,7 +1,8 @@
 import { AdapterError, list, object, string, type JsonObject } from "./types";
+import { responsesReasoning, thinkingBlock, type ThinkingMode } from "./claude-reasoning";
 import { ChatToolCalls, chatFinishReason, validateChatContent } from "./chat-output";
 
-export function responsesToClaude(body: JsonObject, model: string): JsonObject {
+export function responsesToClaude(body: JsonObject, model: string, mode: ThinkingMode = "off"): JsonObject {
   if (body.status !== "completed" && body.status !== "incomplete") throw new AdapterError("Responses 未正常完成。", 502);
   if (body.status === "incomplete") {
     const reason = object(body.incomplete_details, "incomplete_details").reason;
@@ -17,7 +18,11 @@ export function responsesToClaude(body: JsonObject, model: string): JsonObject {
     } else if (item.type === "function_call") {
       let input: unknown; try { input = JSON.parse(string(item.arguments, "arguments")); } catch { throw new AdapterError("上游工具參數不是有效 JSON。", 502); }
       content.push({ type: "tool_use", id: string(item.call_id, "call_id"), name: string(item.name, "tool name"), input: object(input, "tool input") });
-    } else throw new AdapterError(`Claude 無法保留 Responses 輸出 ${String(item.type)}。`, 502);
+    } else if (item.type === "reasoning") {
+      const reasoning = mode === "off" ? undefined : responsesReasoning(item);
+      if (reasoning) content.push(thinkingBlock(reasoning, mode));
+    }
+    else throw new AdapterError(`Claude 無法保留 Responses 輸出 ${String(item.type)}。`, 502);
   }
   const usage = body.usage ? object(body.usage, "usage") : {};
   return { id: body.id ?? "msg_vanspod", type: "message", role: "assistant", model, content,
@@ -25,11 +30,13 @@ export function responsesToClaude(body: JsonObject, model: string): JsonObject {
     stop_sequence: null, usage: { input_tokens: usage.input_tokens ?? 0, output_tokens: usage.output_tokens ?? 0 } };
 }
 
-export function chatToClaude(body: JsonObject, model: string): JsonObject {
+export function chatToClaude(body: JsonObject, model: string, mode: ThinkingMode = "off"): JsonObject {
   const choice = object(list(body.choices, "choices")[0], "choice");
   const message = object(choice.message, "Chat message");
-  validateChatContent(message);
+  validateChatContent(message, true);
   const content: JsonObject[] = [];
+  const reasoning = message.reasoning_content ?? message.reasoning;
+  if (mode !== "off" && typeof reasoning === "string" && reasoning) content.push(thinkingBlock({ text: reasoning }, mode));
   if (message.content !== null && message.content !== undefined) content.push({ type: "text", text: string(message.content, "Chat content") });
   const tools = new ChatToolCalls();
   tools.add(message.tool_calls === undefined ? [] : list(message.tool_calls, "tool_calls").map((call, index) => ({ ...object(call, "tool call"), index })));
