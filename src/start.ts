@@ -18,7 +18,7 @@ import {
   type UpstreamSend,
   type UpstreamTarget,
 } from "./classroomApp";
-import { renderPage } from "./page";
+import { modelStatus, renderPage } from "./page";
 import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand } from "./commandRunner";
 import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
@@ -550,6 +550,14 @@ async function main(): Promise<void> {
           "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ running: view.commandRunning, output: view.commandOutput ?? "" }));
+        return;
+      }
+      if (req.method === "GET" && pathname === "/model-status") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify(modelStatus(app.view())));
         return;
       }
       if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {

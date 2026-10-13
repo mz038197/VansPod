@@ -1176,6 +1176,33 @@ it("Clear commits credential revocation before independent route recovery and Re
   }, { codex: "green", claudeCode: "green", vsCodeChat: "green" });
 });
 
+it("a forwarded VS Code request turns the waiting route green and drops its restart reminder", async () => {
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: true }; },
+      async restore() { return { changed: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  assert.deepEqual(h.app.view().modelRestart, ["vscode"]);
+
+  await h.app.forward({ client: "copilot", model: "lesson" });
+
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  assert.equal(h.app.view().modelRestart, undefined);
+});
+
 it("an authoritative empty allowlist restores VS Code to Native", async () => {
   let providers: Array<Record<string, unknown>> = [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }];
   let restored = 0;

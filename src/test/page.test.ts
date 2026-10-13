@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
-import { renderPage } from "../page";
+import { modelStatus, renderPage } from "../page";
+import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
 import { settingsActionsScript } from "../settingsActions";
@@ -135,6 +136,48 @@ describe("VansPod page", () => {
       true,
     );
     assert.equal(html.includes(KEY), false);
+  });
+
+  it("repaints a waiting light and removes its restart reminder without a reload", async () => {
+    const routes = (health: "yellow" | "green") => ({
+      codex: { id: "codex" as const, mode: "native" as const, adapter: "responses" as const, health: "gray" as const, restart: "ready" as const },
+      claudeCode: { id: "claudeCode" as const, mode: "native" as const, adapter: "responses" as const, health: "gray" as const, restart: "ready" as const },
+      vsCodeChat: { id: "vsCodeChat" as const, mode: "classroom" as const, adapter: "responses" as const, health, restart: "ready" as const },
+    });
+    const waiting = view({ clientRoutes: routes("yellow"), modelRestart: ["vscode"] });
+    const html = renderPage(waiting);
+    assert.match(html, /class="client-light health-yellow"[^>]*data-client-light="vscode"/);
+    assert.match(html, /class="model-update"[^>]*data-restart-clients="vscode"/);
+    assert.match(modelStatus(waiting).restart, /data-restart-clients="vscode"/);
+
+    const status = modelStatus(view({ clientRoutes: routes("green") }));
+    assert.deepEqual(status.lights.vscode, { health: "green", className: "client-light detected", status: "VS Code 可用" });
+    assert.equal(status.restart, "");
+
+    const light = {
+      className: "client-light health-yellow", title: "VS Code 等待重開", label: "",
+      getAttribute: () => "vscode", setAttribute(_name: string, value: string) { this.label = value; },
+    };
+    let bannerRemoved = false;
+    const banner = { getAttribute: () => "vscode", remove() { bannerRemoved = true; } };
+    const card = { querySelector: (selector: string) => selector === ".model-update" ? banner : null };
+    let tick!: () => Promise<void>;
+    vm.runInNewContext(modelStatusScript, {
+      settingsBusy: false,
+      setTimeout(callback: typeof tick) { tick = callback; },
+      document: {
+        hidden: false,
+        querySelectorAll: () => [light],
+        querySelector: () => card,
+        createElement: () => ({ innerHTML: "", content: { firstElementChild: null } }),
+      },
+      fetch: async (url: string) => { assert.equal(url, "/model-status"); return { ok: true, json: async () => status }; },
+    });
+    await tick();
+    assert.equal(light.className, "client-light detected");
+    assert.equal(light.title, "VS Code 可用");
+    assert.equal(light.label, "VS Code 可用");
+    assert.equal(bannerRemoved, true);
   });
 
   it("omits the VS Code restart notice when vscode is not in mustRestart", () => {

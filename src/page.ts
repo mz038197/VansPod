@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
+import { modelStatusScript } from "./modelStatus";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
@@ -52,7 +53,7 @@ function restartHtml(view: ClassroomAppView): string {
   if (clients.includes("vscode")) {
     parts.push(`<p>設定已更新，請完全退出 VS Code 再打開，不要只重載視窗。</p>`);
   }
-  return parts.length ? `<div class="model-update" role="status"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v2"/></svg><div>${parts.join("")}</div></div>` : "";
+  return parts.length ? `<div class="model-update" role="status" data-restart-clients="${clients.join(",")}"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v2"/></svg><div>${parts.join("")}</div></div>` : "";
 }
 
 function statusWord(view: ClassroomAppView): string {
@@ -117,23 +118,40 @@ function modelInner(view: ClassroomAppView): string {
     </form>`;
 }
 
+function clientRoute(view: ClassroomAppView, client: "codex" | "claude" | "vscode") {
+  return client === "codex" ? view.clientRoutes?.codex : client === "claude" ? view.clientRoutes?.claudeCode : view.clientRoutes?.vsCodeChat;
+}
+
+function clientLight(view: ClassroomAppView, client: "codex" | "claude" | "vscode") {
+  const route = clientRoute(view, client);
+  const detected = client === "vscode" ? route?.health !== "gray" : view.detectedClients?.[client] ?? false;
+  const health = route && route.health !== "gray" ? route.health : detected ? "green" : "gray";
+  const healthText = health === "red" ? "入口失敗" : health === "yellow" ? "等待重開" : health === "green" ? "可用" : "未偵測";
+  const status = `${clientLabel(client)} ${route && route.health !== "gray" ? healthText : detected ? "已偵測" : "未偵測"}`;
+  const lightClass = health === "green" ? " detected" : health === "red" || health === "yellow" ? ` health-${health}` : "";
+  return { health, className: `client-light${lightClass}`, status };
+}
+
+export function modelStatus(view: ClassroomAppView) {
+  return {
+    lights: { codex: clientLight(view, "codex"), claude: clientLight(view, "claude"), vscode: clientLight(view, "vscode") },
+    restart: restartHtml(view),
+  };
+}
+
 function adapterForms(view: ClassroomAppView): string {
   const selected = view.adapters ?? { codex: "responses", claude: "responses" };
   const forms = (["codex", "claude", "vscode"] as const).map(client => {
     const choices = client === "claude" ? ["responses", "chat", "messages"] : ["responses", "chat"];
     const selectedAdapter = client === "vscode" ? view.clientRoutes?.vsCodeChat.adapter ?? "responses" : selected[client];
     const options = choices.map(id => `<option value="${id}"${selectedAdapter === id ? " selected" : ""}>${id === "responses" ? "Responses" : id === "chat" ? "Chat" : "Messages"}</option>`).join("");
-    const route = client === "codex" ? view.clientRoutes?.codex : client === "claude" ? view.clientRoutes?.claudeCode : view.clientRoutes?.vsCodeChat;
+    const route = clientRoute(view, client);
     const mode = client === "vscode" ? route?.mode ?? "native" : view.clientModes?.[client] ?? view.mode;
-    const detected = client === "vscode" ? route?.health !== "gray" : view.detectedClients?.[client] ?? false;
-    const health = route && route.health !== "gray" ? route.health : detected ? "green" : "gray";
-    const healthText = health === "red" ? "入口失敗" : health === "yellow" ? "等待重開" : health === "green" ? "可用" : "未偵測";
-    const status = `${clientLabel(client)} ${route && route.health !== "gray" ? healthText : detected ? "已偵測" : "未偵測"}`;
-    const lightClass = health === "green" ? " detected" : health === "red" || health === "yellow" ? ` health-${health}` : "";
+    const { health, className, status } = clientLight(view, client);
     const routeHealthy = health === "green" || health === "yellow";
     const available = view.connected && (view.allowedModels?.length ?? (view.modelId ? 1 : 0)) > 0;
     const adapterDisabled = view.commandRunning || !routeHealthy;
-    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="client-light${lightClass}" tabindex="0" title="${status}" aria-label="${status}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !routeHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
+    return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="${className}" tabindex="0" title="${status}" aria-label="${status}" data-client-light="${client}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !routeHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form></div>`;
   }).join("");
   return forms + `<p class="hint">VS Code 路由支援 BYOK Chat、Agent 與 utility tasks，不需要 GitHub 登入或 Copilot plan；inline completion、semantic search 與 embeddings 不在此路由範圍。</p>` +
     (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
@@ -986,7 +1004,7 @@ export function renderPage(view: ClassroomAppView): string {
     main button.connection-copy:hover:not(:disabled) { background: var(--input); color: var(--text); }
     main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
   </style>
-  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${settingsActionsScript}
+  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }

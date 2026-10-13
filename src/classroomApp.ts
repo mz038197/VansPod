@@ -443,10 +443,12 @@ export class ClassroomApp {
       const route = request.client === "codex" ? this.clientRoutes.codex : this.clientRoutes.claudeCode;
       route.health = "green";
       route.restart = "ready";
+      this.modelRestart = this.modelRestart.filter(client => client !== request.client);
     }
     if (this.deps.clientRouteRuntime && request.client === "copilot" && this.clientRoutes.vsCodeChat.mode === "classroom") {
       this.clientRoutes.vsCodeChat.health = "green";
       this.clientRoutes.vsCodeChat.restart = "ready";
+      this.modelRestart = this.modelRestart.filter(client => client !== "vscode");
     }
     return forwardedRecord(upstream);
   }
