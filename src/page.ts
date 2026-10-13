@@ -953,10 +953,13 @@ export function renderPage(view: ClassroomAppView): string {
     .client-light.detected { background: light-dark(#4b9274, #70b697); box-shadow: 0 0 0 2px light-dark(rgba(75, 146, 116, 0.08), rgba(112, 182, 151, 0.09)); }
     .client-light.health-yellow { background: #c9932b; }
     .client-light.health-red { background: #c95757; }
-    .client-flow { grid-column: 1 / -1; height: 2px; border-radius: 1px; color: light-dark(#dcdcdc, #3d3d3d); background: linear-gradient(90deg, currentColor 0 8px, transparent 8px) 0 0 / 16px 100% repeat-x; animation: client-flow 0.7s linear infinite paused; transition: color 300ms ease-out; }
-    .client-flow.flowing { color: var(--accent); animation-play-state: running; }
-    @keyframes client-flow { to { background-position-x: 16px; } }
-    @media (prefers-reduced-motion: reduce) { .client-flow { animation: none; } }
+    .client-flow { grid-column: 1 / -1; position: relative; height: 2px; border-radius: 1px; overflow: hidden; background: light-dark(#ececec, #333333); transition: background-color 400ms ease-out; }
+    .client-flow::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 35%; background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity: 0; transform: translateX(-100%); transition: opacity 400ms ease-out; animation: client-flow 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+    .client-flow.flowing { background: color-mix(in srgb, var(--accent) 22%, light-dark(#ececec, #333333)); }
+    .client-flow.flowing::after { opacity: 1; }
+    /* The band is 35% of the line, so 286% of its own width carries it off the far end. */
+    @keyframes client-flow { to { transform: translateX(286%); } }
+    @media (prefers-reduced-motion: reduce) { .client-flow::after { animation: none; } }
     main .client-modes button { min-height: 30px; padding: 5px 10px; font-size: 12px; }
     @container (max-width: 330px) {
       .model-client { grid-template-columns: minmax(0, 1fr) auto; }
