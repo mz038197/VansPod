@@ -43,6 +43,7 @@ export async function fakeRouter() {
       }
       if (['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(pathname)) {
         const input = JSON.parse(await body(req));
+        if (state.holdResponses) return;
         state.calls.at(-1).model = input.model;
         if (Object.hasOwn(input, 'access_programs')) return reply(res, 400, { error: { message: 'Unknown parameter access_programs' } });
         state.calls.at(-1).hasClientMetadata = Object.hasOwn(input, 'client_metadata');
@@ -115,14 +116,25 @@ function assertPrivateOutput(text) { for (const secret of sensitive) safeAssert(
 
 async function startExe(exe, box, router, port, overrides = {}) {
   const basePort = port ?? 47821;
-  const runtimeEnv = { ...box.env, CLASSROOM_ROUTER_BASE_URL: router.url, ...overrides };
+  const runtimeEnv = { ...box.env, CLASSROOM_APP_FOREGROUND: '1', CLASSROOM_ROUTER_BASE_URL: router.url, ...overrides };
   if (port !== undefined) runtimeEnv.CLASSROOM_APP_PORT = String(port);
   const child = spawn(exe, [], { cwd: box.root, env: runtimeEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let output = '', spawnFailed = false;
   child.on('error', () => { spawnFailed = true; });
   child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
   let url = `http://127.0.0.1:${basePort}`;
-  const handle = { child, get url() { return url; }, routeUrl(route) { return `http://127.0.0.1:${basePort + ({ codex: 0, claude: 1, vscode: 2 }[route] ?? 0)}`; }, output: () => output, async stop() {
+  const handle = { child, get url() { return url; }, routeUrl(route) { return `http://127.0.0.1:${basePort + ({ codex: 0, claude: 1, vscode: 2 }[route] ?? 0)}`; }, output: () => output, async stop(force = false) {
+    if (!force && !spawnFailed && child.exitCode === null && child.signalCode === null) {
+      // Let the actual safe-exit path finish before forcing termination. The
+      // fallback remains for intentionally broken/locked restoration fixtures.
+      try {
+        const state = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime/instance.json'), 'utf8'));
+        const result = await fetch(state.origin + '/_vanspod/stop', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: JSON.stringify({confirmed: true}), signal: AbortSignal.timeout(5000)});
+        if (result.ok && (await result.json()).ok) for (let attempt = 0; child.exitCode === null && child.signalCode === null && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+      } catch {
+        for (let attempt = 0; child.exitCode === null && child.signalCode === null && attempt < 20; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
     if (!spawnFailed && child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit'); child.kill(); await exited;
     }
@@ -388,7 +400,9 @@ export async function runMultiRouteLifecycle({ exe }) {
     await switchRoute('vscode', 'classroom');
     record('stale VS Code session is rejected while another Client Route remains live');
 
-    await post(app, '/stop');
+    const runningInstance = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime/instance.json'), 'utf8'));
+    const stopped = await fetch(runningInstance.origin + '/_vanspod/stop', { method: 'POST', headers: {Authorization: 'Bearer ' + runningInstance.token}, body: JSON.stringify({confirmed: true}) });
+    safeAssert(stopped.ok && (await stopped.json()).ok, 'Graceful stop failed');
     safeAssert(await fs.readFile(box.paths.codex, 'utf8') === personal.codex && await fs.readFile(box.paths.claude, 'utf8') === personal.claude && await fs.readFile(box.paths.vscode, 'utf8') === personal.vscode, 'Stop did not restore personal route settings');
     safeAssert(JSON.parse(await fs.readFile(box.paths.copilot, 'utf8')).some(provider => provider.marker === 'preserve-provider'), 'Stop removed a personal VS Code provider');
     await app.stop(); app = undefined; await restart();
@@ -649,7 +663,7 @@ export async function runLifecycle({ exe }) {
     for (const delay of [150, 450, 900, 1400]) {
       await post(app, '/redeem', { invite_code: 'first', nickname: sessions.first.nickname });
       const pending = post(app, '/redeem', { invite_code: 'second', nickname: sessions.second.nickname }).then(() => true, () => false);
-      await new Promise(resolve => setTimeout(resolve, delay)); await app.stop(); const completed = await pending;
+      await new Promise(resolve => setTimeout(resolve, delay)); await app.stop(true); const completed = await pending;
       await restart(); const html = await page(app);
       const first = html.includes(sessions.first.class_name), second = html.includes(sessions.second.class_name);
       safeAssert(first !== second, 'Interrupted save restored missing or mixed session');

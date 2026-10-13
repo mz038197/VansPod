@@ -3,10 +3,8 @@ import { detectClient } from "./clientDetection";
 import { readRuntimeOptions } from "./runtimeOptions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -31,11 +29,14 @@ import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSet
 import { sendRouter, relayResponse } from "./modelProxy";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
+import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
+import { asset } from "./desktop";
+import { lifecyclePage } from "./lifecyclePage";
+import { removalPreview, prepareRemoval } from "./removal";
 
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
 const pageUrl = `http://127.0.0.1:${port}/`;
-const nodeRequire = createRequire(__filename);
 const responseSlot = new AsyncLocalStorage<{
   response?: Response;
 }>();
@@ -342,26 +343,13 @@ function openBrowser(url: string): void {
   }
 }
 
-type SeaApi = {
-  isSea: () => boolean;
-  getAsset: (key: string, encoding: string) => string;
-};
-
-function trayScriptPath(): string {
-  try {
-    const sea = nodeRequire("node:sea") as SeaApi;
-    if (sea.isSea()) {
-      const target = path.join(os.tmpdir(), "vanspod-tray.ps1");
-      writeFileSync(target, sea.getAsset("tray.ps1", "utf8"));
-      return target;
-    }
-  } catch {
-    // 開發時 node:sea 不在，改讀旁邊的腳本。
-  }
-  return path.join(__dirname, "..", "scripts", "tray.ps1");
-}
-
-function openTray(url: string): ChildProcess {
+async function openTray(url: string): Promise<ChildProcess> {
+  const directory = path.join(managementDirectory(), "desktop-assets");
+  await fs.mkdir(directory, { recursive: true });
+  const script = path.join(directory, "tray.ps1");
+  const icon = path.join(directory, "brand-icon.ico");
+  await fs.writeFile(script, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), await asset("tray.ps1")]));
+  await fs.writeFile(icon, await asset("brand-icon.ico"));
   return spawn(
     "powershell.exe",
     [
@@ -370,8 +358,10 @@ function openTray(url: string): ChildProcess {
       "-ExecutionPolicy",
       "Bypass",
       "-File",
-      trayScriptPath(),
-      url,
+      script,
+      "-Url", url,
+      "-IconPath", icon,
+      "-StateFile", path.join(managementDirectory(), "runtime", "instance.json"),
     ],
     { stdio: "ignore", windowsHide: true },
   );
@@ -470,7 +460,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<{ ok: boolean }> {
   return { ok: slot.response.ok };
 }
 
-async function main(): Promise<void> {
+export async function main(instance?: Instance): Promise<void> {
   const routeFiles = createRouteFiles(routePaths());
   const settingsFile = path.join(os.homedir(), ".vanspod", "settings.json");
   let dispatch!: (
@@ -479,6 +469,15 @@ async function main(): Promise<void> {
     res: http.ServerResponse,
   ) => Promise<void>;
   let app!: ClassroomApp;
+  let exitRequested = false;
+  let launchVersion: string | undefined;
+  let tray: ChildProcess | undefined;
+  const exit = async () => {
+    tray?.kill();
+    await clientRouteRuntime.stop();
+    if (instance) await releaseInstance(instance.id);
+    process.exit(0);
+  };
   const storage = createPlatformConnectionStorage(storageFile(), { legacyFilePath: legacyStorageFile() });
   const clientRouteRuntime = createClientRouteRuntime({
     basePort: port,
@@ -530,12 +529,13 @@ async function main(): Promise<void> {
     send: sendUpstream,
   });
   dispatch = async (accepted, req, res) => {
+    if (!/^(127\.0\.0\.1|localhost):\d+$/.test(req.headers.host ?? "")) { res.writeHead(403); res.end("本機網址無效。"); return; }
     const parsed = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
     const pathname = parsed.pathname;
     const goHome = (params?: URLSearchParams) => {
       if (req.headers["x-classroom-settings"] === "1") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(renderPage(app.view()));
+        res.end(instance ? lifecyclePage(renderPage(app.view()), instance.token) : renderPage(app.view()));
         return;
       }
       const variant = params?.get("prototype_variant") ?? "";
@@ -546,6 +546,47 @@ async function main(): Promise<void> {
       redirect(res);
     };
     try {
+      if (instance && pathname.startsWith("/_vanspod/")) {
+        if (req.headers.authorization !== `Bearer ${instance.token}` || (req.headers.origin && req.headers.origin !== instance.origin)) {
+          res.writeHead(403); res.end(JSON.stringify({ id: instance.id, ok: false })); return;
+        }
+        const reply = (value: object) => { res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify({ id: instance.id, ...value })); };
+        if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
+        if (req.method === "POST" && pathname === "/_vanspod/open") {
+          const body = JSON.parse(await readBody(req)) as { version?: string };
+          if (typeof body.version === "string" && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(body.version)) launchVersion = body.version;
+          reply({ ok: true }); return;
+        }
+        if (req.method === "GET" && pathname === "/_vanspod/uninstall-preview") {
+          if (app.view().commandRunning) { reply({ ok: false, message: "安裝中，請完成後再移除。" }); return; }
+          reply({ ok: true, message: `${await removalPreview()}${activeRequests.size ? "\n仍有模型回答，移除將中斷目前回答。" : ""}` }); return;
+        }
+        if (req.method === "POST" && (pathname === "/_vanspod/stop" || pathname === "/_vanspod/uninstall")) {
+          const body = JSON.parse(await readBody(req)) as { confirmed?: boolean; interruptConfirmed?: boolean; waitForPid?: number };
+          const uninstall = pathname === "/_vanspod/uninstall";
+          if (uninstall && body.confirmed !== true) { reply({ ok: false, confirmation: true, message: "請先確認將刪除的內容，再完整移除 VansPod。" }); return; }
+          if (app.view().commandRunning) { reply({ ok: false, message: "安裝中，請完成後再結束。" }); return; }
+          if (activeRequests.size && (uninstall ? body.interruptConfirmed !== true : body.confirmed !== true)) { reply({ ok: false, confirmation: true, message: "仍有模型回答，請確認中斷目前回答並結束。" }); return; }
+          if (exitRequested) { reply({ ok: false, message: "正在結束 VansPod。" }); return; }
+          exitRequested = true;
+          abortRequests();
+          let restored = false;
+          try {
+            await app.stop();
+            restored = true;
+            if (uninstall) {
+              const launchRemoval = await prepareRemoval(Number.isSafeInteger(body.waitForPid) && body.waitForPid! > 0 ? body.waitForPid : undefined);
+              await launchRemoval();
+            }
+            reply({ ok: true, message: uninstall ? "完整移除已開始；結果會以 Windows 訊息顯示。未完成時會保留移除工具供重試。" : "VansPod 已結束，可關閉此分頁。" });
+            res.once("finish", () => { void exit(); });
+          }
+          catch (error) { exitRequested = false; reply({ ok: false, message: restored ? `移除未完成：${error instanceof Error ? error.message : "移除工具啟動失敗"}。請重試移除。` : `客戶端設定恢復失敗（${Object.entries(app.view().clientRoutes ?? {}).filter(([, route]) => route.health === "red").map(([id]) => id).join("、")}），備份已保留，請重試結束。` }); }
+          return;
+        }
+        reply({ ok: false, message: "管理操作無效。" }); return;
+      }
+      if (exitRequested && req.method !== "GET") { res.writeHead(409); res.end("正在結束 VansPod，請稍後再試。"); return; }
       if (req.method === "GET" && pathname === "/command-status") {
         const view = app.view();
         res.writeHead(200, {
@@ -573,13 +614,13 @@ async function main(): Promise<void> {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
         });
-        res.end(html);
+        res.end(instance ? lifecyclePage(html, instance.token) : html);
         return;
       }
-      if (req.method === "GET" && pathname === "/brand-logo.png") {
-        const bytes = await fs.readFile(path.join(__dirname, "..", "media", "brand-logo.png"));
+      if (req.method === "GET" && (pathname === "/brand-logo.png" || pathname === "/favicon.ico")) {
+        const bytes = await asset(pathname === "/favicon.ico" ? "brand-icon.ico" : "brand-logo.png");
         res.writeHead(200, {
-          "Content-Type": "image/png",
+          "Content-Type": pathname === "/favicon.ico" ? "image/x-icon" : "image/png",
           "Cache-Control": "no-store",
         });
         res.end(bytes);
@@ -750,6 +791,7 @@ async function main(): Promise<void> {
         return;
       }
       if (req.method === "POST" && pathname === "/stop") {
+        if (instance) { res.writeHead(409); res.end("請使用畫面的結束 VansPod，確認後再結束。"); return; }
         const params = new URLSearchParams(await readBody(req));
         await app.stop();
         goHome(params);
@@ -774,16 +816,17 @@ async function main(): Promise<void> {
   const ui = await clientRouteRuntime.startUi!();
   await app.start();
   const home = `${ui.origin}/`;
-  const tray = runtimeOptions.desktop && process.platform === "win32" ? openTray(home) : undefined;
-  if (runtimeOptions.desktop) openBrowser(home);
+  if (instance) { instance.pid = process.pid; instance.origin = ui.origin; await saveInstance(instance); }
+  tray = runtimeOptions.desktop && process.platform === "win32" && instance ? await openTray(home) : undefined;
+  if (runtimeOptions.desktop && !process.env.VANSPOD_WORKER_TOKEN) openBrowser(home);
   const shutdown = () => {
-    abortRequests();
-    tray?.kill();
-    void clientRouteRuntime.stop().finally(() => process.exit(0));
+    if (exitRequested || app.view().commandRunning || activeRequests.size) return;
+    exitRequested = true;
+    void app.stop().then(exit).catch(() => { exitRequested = false; process.stderr.write("客戶端設定恢復失敗，請重試結束。\n"); });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.stdout.write(`VansPod: ${home}\n`);
 }
 
-void main();
+if (require.main === module) void main();

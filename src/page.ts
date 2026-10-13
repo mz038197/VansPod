@@ -1,4 +1,4 @@
-import { createRequire } from "node:module";
+import { VERSION as APP_VERSION } from "./version";
 import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
@@ -13,7 +13,7 @@ import {
 } from "./courseCatalog";
 
 const PRODUCT = "VansPod";
-const VERSION = `v${createRequire(__filename)("../package.json").version as string}`;
+const VERSION = `v${APP_VERSION}`;
 
 const COPY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 const MOON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3a7 7 0 0 0 11.5 11.5z"/></svg>`;
@@ -572,6 +572,7 @@ function basePage(view: ClassroomAppView): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${PRODUCT}</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <style>${CSS}</style>
   <script>${appearanceScript()}</script>
 </head>

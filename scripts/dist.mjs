@@ -25,7 +25,7 @@ if (tsc.status !== 0) {
   process.exit(tsc.status ?? 1);
 }
 
-const entry = path.join(root, "dist", "start.js");
+const entry = path.join(root, "dist", "entry.js");
 const bundlePath = path.join(root, "dist", "sea-main.cjs");
 fs.writeFileSync(bundlePath, bundle(entry));
 const checked = spawnSync(process.execPath, ["--check", bundlePath], {
@@ -61,11 +61,17 @@ buildSea({
   main: bundlePath,
   blob: path.join(root, "dist", "sea-prep.blob"),
   exe,
-  assets: { "tray.ps1": path.join(root, "scripts", "tray.ps1") },
+  assets: {
+    "tray.ps1": path.join(root, "scripts", "tray.ps1"),
+    "uninstall.ps1": path.join(root, "scripts", "uninstall.ps1"),
+    "brand-logo.png": path.join(root, "media", "brand-logo.png"),
+    "brand-icon.ico": path.join(root, "media", "brand-icon.ico"),
+  },
+  icon: path.join(root, "media", "brand-icon.ico"),
 });
 process.stdout.write(`VansPod executable: ${exe}\n`);
 
-function buildSea({ main, blob, exe, assets }) {
+function buildSea({ main, blob, exe, assets, icon }) {
   const config = {
     main,
     output: blob,
@@ -95,6 +101,7 @@ function buildSea({ main, blob, exe, assets }) {
       exe,
       "-Blob",
       blob,
+      ...(icon ? ["-Icon", icon] : []),
     ],
     { cwd: root, stdio: "inherit" },
   );

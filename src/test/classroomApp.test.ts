@@ -3393,6 +3393,23 @@ actions:
 });
 
 describe("close window", () => {
+  it("refuses to stop during an installation and preserves the classroom connection", async () => {
+    let release!: (result: { exitCode: number; output: string }) => void;
+    const gate = new Promise<{ exitCode: number; output: string }>(resolve => { release = resolve; });
+    const { app, proxyStops, storedKey } = harness(undefined, { install: async () => gate });
+    await app.start();
+    await app.redeem("ABC12345", "Ada");
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv"]);
+    const installing = app.confirmEnvironment();
+    try {
+      await assert.rejects(app.stop(), /安裝中/);
+      assert.equal(proxyStops(), 0);
+      assert.equal(await storedKey(), KEY);
+    } finally { release({ exitCode: 0, output: "" }); await installing; }
+    await app.stop();
+    assert.equal(await storedKey(), KEY);
+  });
   it("does not stop the process", async () => {
     const { app, stops, storedKey, clipboardWrites } = harness();
     await app.redeem("ABC12345", "Ada");

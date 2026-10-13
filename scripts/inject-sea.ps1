@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Exe,
   [Parameter(Mandatory = $true)]
-  [string]$Blob
+  [string]$Blob,
+  [string]$Icon
 )
 
 $bytes = [System.IO.File]::ReadAllBytes($Blob)
@@ -34,6 +35,35 @@ try {
   }
 } finally {
   [Runtime.InteropServices.Marshal]::FreeHGlobal($name)
+}
+if ($Icon) {
+  try {
+    $iconBytes = [System.IO.File]::ReadAllBytes($Icon)
+    $count = [BitConverter]::ToUInt16($iconBytes, 4)
+    $groupStream = New-Object System.IO.MemoryStream
+    $groupWriter = New-Object System.IO.BinaryWriter($groupStream)
+    $groupWriter.Write([uint16]0); $groupWriter.Write([uint16]1); $groupWriter.Write([uint16]$count)
+    for ($index = 0; $index -lt $count; $index++) {
+      $entry = 6 + 16 * $index
+      $length = [BitConverter]::ToUInt32($iconBytes, $entry + 8)
+      $offset = [BitConverter]::ToUInt32($iconBytes, $entry + 12)
+      $frame = New-Object byte[] $length
+      [Array]::Copy($iconBytes, $offset, $frame, 0, $length)
+      $resourceId = 1001 + $index
+      if (-not [SeaResource]::UpdateResource($handle, [IntPtr]3, [IntPtr]$resourceId, 0, $frame, $length)) { throw 'Icon resource injection failed' }
+      $groupWriter.Write($iconBytes, $entry, 12)
+      $groupWriter.Write([uint16]$resourceId)
+    }
+    $groupWriter.Flush()
+    $group = $groupStream.ToArray()
+    foreach ($language in @(0, 1033)) {
+      if (-not [SeaResource]::UpdateResource($handle, [IntPtr]14, [IntPtr]1, $language, $group, [uint32]$group.Length)) { throw 'Icon group injection failed' }
+    }
+    $groupWriter.Dispose(); $groupStream.Dispose()
+  } catch {
+    [SeaResource]::EndUpdateResource($handle, $true) | Out-Null
+    throw
+  }
 }
 if (-not [SeaResource]::EndUpdateResource($handle, $false)) {
   Write-Error "EndUpdateResource failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"

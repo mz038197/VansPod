@@ -227,6 +227,7 @@ export class ClassroomApp {
   private installedActions = new Map<string, Map<string, string>>();
   private commandOutput: string | undefined;
   private commandRunning = false;
+  private stopping = false;
   private commandSucceeded: boolean | undefined;
   private clientModes: ClientModes = { codex: "native", claude: "native" };
   private detectedClients = { codex: false, claude: false, vsCodeChat: false };
@@ -377,7 +378,7 @@ export class ClassroomApp {
   }
 
   async confirmEnvironment(): Promise<void> {
-    if (this.commandRunning || !this.projectFolder) {
+    if (this.stopping || this.commandRunning || !this.projectFolder) {
       return;
     }
     const selected = ENVIRONMENT_TOOLS.filter((id) =>
@@ -703,7 +704,7 @@ export class ClassroomApp {
   }
 
   async confirm(): Promise<void> {
-    if (this.commandRunning || !this.projectFolder || !this.pendingCommand) {
+    if (this.stopping || this.commandRunning || !this.projectFolder || !this.pendingCommand) {
       return;
     }
     const cwd = this.projectFolder;
@@ -1560,6 +1561,7 @@ export class ClassroomApp {
   }
 
   private async startNow(): Promise<void> {
+    this.stopping = false;
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
@@ -1637,7 +1639,10 @@ export class ClassroomApp {
   }
 
   async stop(): Promise<void> {
-    return this.serialConnectionOperation(() => this.stopNow());
+    if (this.commandRunning) throw new Error("安裝中，請完成後再結束。");
+    this.stopping = true;
+    try { await this.serialConnectionOperation(() => this.stopNow()); }
+    catch (error) { this.stopping = false; throw error; }
   }
 
   private async stopNow(): Promise<void> {

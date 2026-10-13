@@ -1,17 +1,52 @@
 # VansPod
 
-套件名稱為 `vanspod`。Windows 執行 `npm run dist` 後會產出 `dist/VansPod.exe`。
+VansPod 是 Windows 學生使用的本機課堂入口。提供含 Node runtime 的單檔 `VansPod.exe`，以及給已有 Node.js 24 以上環境的 npm 套件；兩者共用同一個背景服務和學生設定。
+
+## 學生操作
+
+雙擊 exe 或執行 `vanspod start`，會啟動背景服務並開啟瀏覽器。再開一次會回到既有畫面；關閉瀏覽器或啟動用終端機不會停止課堂代理。Windows 右下角的 VansPod logo 可重新開啟畫面，右鍵「結束 VansPod」可恢復客戶端個人設定後退出。電腦重新啟動後須手動開啟，不設定開機自動啟動。
+
+公開 npm 發佈完成後，學生可使用下列安裝方式；本機打包不代表套件已上架：
+
+```powershell
+npm install -g vanspod
+vanspod start
+```
+
+| 指令 | 用途 |
+| --- | --- |
+| `vanspod` / `vanspod start` | 啟動並開啟瀏覽器，或開啟既有畫面 |
+| `vanspod status` | 顯示是否執行中、執行版本、PID 與本機網址 |
+| `vanspod stop` | 恢復客戶端設定後結束，保留課堂連線與模式記憶 |
+| `vanspod uninstall` | 列出刪除內容，確認後完整移除 |
+| `vanspod --version` / `vanspod --help` | 顯示安裝版本／說明，不啟動服務 |
+
+安裝環境或課程專案時不能結束或移除。模型回答中須確認中斷；命令列無法互動確認時保持執行。設定恢復失敗會保留服務與備份，顯示失敗的客戶端並允許重試。
+
+完整移除請用頁面的「移除 VansPod」或 `vanspod uninstall`。這會先恢復客戶端設定，再清理 VansPod 憑證、偏好、日誌、暫存與已登記的 exe／npm 安裝；保留學生作品、課程專案、Node、Git、VS Code 和客戶端個人設定。結果以 Windows 訊息顯示，刪除失敗會保留移除工具和失敗項目供重試；未登記的其他 exe 副本須自行刪除。直接刪 exe 或 `npm uninstall -g vanspod` 無法保證完整清理。
+
+更新前先結束 VansPod。exe 下載指定版本替換，npm 使用 `npm install -g vanspod@<老師指定版本>`；兩者使用相同版本號，上課途中不自動更新。開啟入口與執行版本不同時會提示，先結束才能換版。
+
+## 開發與本機打包
+
+```powershell
+npm install
+npm run typecheck
+npm test
+npm start
+npm run dist
+npm pack --pack-destination dist
+```
+
+exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.1.0.tgz`；可在 Windows 用 `npm install -g <套件路徑>` 安裝測試。圖片、favicon、系統匣與移除腳本均包含在發佈產物中。更新 logo 後執行 `powershell.exe -NoProfile -File scripts/build-icon.ps1` 重建多尺寸 Windows icon。
+
+exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry；正式上架需先確認套件名稱及發佈帳號權限。更新時不要執行完整移除，否則會清除課堂資料。
 
 本機課堂 app。規格是 [classroom-one-click-install#8](https://github.com/mz038197/classroom-one-click-install/issues/8)。
 
 不放進凡思課堂安裝擴充，也不從 opencodex fork。領域詞以該 repo 的 CONTEXT.md 為準。視窗決定見該 repo 的 ADR 0017。
 
-```
-npm test
-npm start
-```
-
-`npm start` 在 Windows 開本機網頁、用系統瀏覽器打開，並在工作列放一顆圖示。再點圖示會打開同一個網址。關掉分頁不會結束這個行程。在啟動它的終端機按 Ctrl+C 才會結束。
+設計與操作邊界見 [ADR-0008](docs/adr/0008-student-distribution-and-lifecycle.md)。
 
 ## Classroom 上游 API
 
