@@ -40,7 +40,11 @@ export function replayedReasoning(block: JsonObject): Reasoning {
   if (block.type === "thinking" && typeof signature === "string" && signature.startsWith(PREFIX)) {
     try {
       const reasoning = object(JSON.parse(Buffer.from(signature.slice(PREFIX.length), "base64url").toString("utf8")), "reasoning");
-      return { text: typeof reasoning.text === "string" ? reasoning.text : "", ...(reasoning.item !== undefined ? { item: object(reasoning.item, "reasoning item") } : {}) };
+      // The signature comes back from the client, so only a reasoning item's own fields reach the upstream.
+      const item = reasoning.item === undefined ? undefined : object(reasoning.item, "reasoning item");
+      if (item && item.type !== "reasoning") throw new Error("not a reasoning item");
+      const kept = item && responsesReasoning(item)?.item;
+      return { text: typeof reasoning.text === "string" ? reasoning.text : "", ...(kept ? { item: kept } : {}) };
     } catch { throw new AdapterError("Claude thinking 的回放資料已損毀。"); }
   }
   // Replaying it needs its Anthropic signature; dropping it would silently change the transcript.

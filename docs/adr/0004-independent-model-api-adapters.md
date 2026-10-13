@@ -130,6 +130,7 @@ code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議
 - Chat：`reasoning_content`／`reasoning` 轉成只帶文字的 thinking 區塊，下一輪掛回同一則 assistant 訊息的 `reasoning_content`，與 Codex → Chat 的回放格式相同。
 - `display: "omitted"` 時 thinking 文字留空，內容只放在 signature；否則顯示文字，且 Responses 另送 `reasoning.summary: "auto"`。
 - 跨 adapter：Responses 產生的區塊送到 Chat 時以其文字回放；Chat 產生的區塊沒有 Responses 項目，送到 Responses 時略過。
+- signature 由客戶端送回，內容不可信：回放時只接受 `type: "reasoning"` 的項目，且只取用上述欄位；其他類型視為回放資料損毀而報錯。
 - 這是 VansPod 自有格式，不讀 opencodex 的 ocxr1 信封。opencodex 經 Claude Code 往返時只保留推理文字，VansPod 連同上游的加密內容一起保留。
 
 驗證：以真實 Claude Code CLI 經建置後的 Responses adapter 連到本機假上游，第一輪回傳 reasoning 與工具呼叫，第二輪上游收到的 input 在工具呼叫之前帶有相同的 reasoning 項目（id、summary、encrypted_content 都一致）。
