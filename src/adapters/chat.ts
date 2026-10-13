@@ -1,7 +1,7 @@
 import { ResponsesSse, responsesToChatBody, toolKindsFromResponses, type FreeformToolIdentity } from "../responsesChat";
 import { AdapterError, object, list, type AdapterRequest, type ModelApiAdapter } from "./types";
 import { claudeToChat } from "./claude-request";
-import { thinkingMode } from "./claude-reasoning";
+import { thinkingMode, upstreamRequestWithReplay } from "./claude-reasoning";
 import { chatToClaude } from "./claude-response";
 import { chatToMessagesStream } from "./messages-stream";
 import { streamResponse } from "./stream";
@@ -21,7 +21,7 @@ export class ChatAdapter implements ModelApiAdapter {
     const hideReasoningSummary = request.client === "codex" && typeof request.body.reasoning === "object" && request.body.reasoning !== null && object(request.body.reasoning, "reasoning").summary === "none";
     const raw = JSON.stringify({ ...request.body, stream: request.body.stream === true });
     const bodyToSend = request.client === "codex" ? object(JSON.parse(responsesToChatBody(raw, request.model)), "Chat request") : claudeToChat(request.body, request.model);
-    const { response, abort } = await upstreamRequest(request, "/v1/chat/completions", bodyToSend);
+    const { response, abort } = await (request.client === "codex" ? upstreamRequest : upstreamRequestWithReplay)(request, "/v1/chat/completions", bodyToSend);
     if (!response.ok) return response;
     if (request.body.stream) {
       if (request.client === "claude") return streamResponse(chatToMessagesStream(response, request.model, thinkingMode(request.body)), abort);

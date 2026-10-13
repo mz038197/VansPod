@@ -25,7 +25,7 @@ export class MessagesStream {
   // The signature only exists once the upstream has finished the reasoning, so the block is sent whole.
   thinking(key: string, reasoning: Reasoning, mode: ThinkingMode): string {
     if (mode === "off" || this.blocks.has(key)) return "";
-    const index = this.blocks.size, block = thinkingBlock(reasoning, mode); this.blocks.set(key, { index, kind: "thinking", value: "", closed: true });
+    const index = this.blocks.size, block = thinkingBlock(reasoning, mode, this.model); this.blocks.set(key, { index, kind: "thinking", value: "", closed: true });
     return event("content_block_start", { index, content_block: { type: "thinking", thinking: "", signature: "" } })
       + (block.thinking ? event("content_block_delta", { index, delta: { type: "thinking_delta", thinking: block.thinking } }) : "")
       + event("content_block_delta", { index, delta: { type: "signature_delta", signature: block.signature } }) + event("content_block_stop", { index });

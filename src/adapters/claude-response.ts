@@ -20,7 +20,7 @@ export function responsesToClaude(body: JsonObject, model: string, mode: Thinkin
       content.push({ type: "tool_use", id: string(item.call_id, "call_id"), name: string(item.name, "tool name"), input: object(input, "tool input") });
     } else if (item.type === "reasoning") {
       const reasoning = mode === "off" ? undefined : responsesReasoning(item);
-      if (reasoning) content.push(thinkingBlock(reasoning, mode));
+      if (reasoning) content.push(thinkingBlock(reasoning, mode, model));
     }
     else throw new AdapterError(`Claude 無法保留 Responses 輸出 ${String(item.type)}。`, 502);
   }
@@ -36,7 +36,7 @@ export function chatToClaude(body: JsonObject, model: string, mode: ThinkingMode
   validateChatContent(message, true);
   const content: JsonObject[] = [];
   const reasoning = message.reasoning_content ?? message.reasoning;
-  if (mode !== "off" && typeof reasoning === "string" && reasoning) content.push(thinkingBlock({ text: reasoning }, mode));
+  if (mode !== "off" && typeof reasoning === "string" && reasoning) content.push(thinkingBlock({ text: reasoning }, mode, model));
   if (message.content !== null && message.content !== undefined) content.push({ type: "text", text: string(message.content, "Chat content") });
   const tools = new ChatToolCalls();
   tools.add(message.tool_calls === undefined ? [] : list(message.tool_calls, "tool_calls").map((call, index) => ({ ...object(call, "tool call"), index })));

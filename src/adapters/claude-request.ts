@@ -97,19 +97,26 @@ export function claudeToResponses(body: JsonObject, model: string): JsonObject {
     const message = object(value, "Claude message");
     const role = string(message.role, "role");
     if (!ROLES.includes(role)) throw new AdapterError("Claude message role 無法轉換。");
-    let parts: JsonObject[] = [];
+    // A reasoning item is only valid in front of the output it led to, so it waits for that output.
+    let parts: JsonObject[] = [], reasoning: JsonObject[] = [];
     const flush = () => { if (parts.length) input.push({ role: role === "system" ? "developer" : role, content: parts }); parts = []; };
+    const reasoned = () => { input.push(...reasoning); reasoning = []; };
     for (const block of contentBlocks(message.content)) {
       if (block.type === "thinking" && role === "assistant") {
         // Chat reasoning has no Responses item to hand back, so only the item form is replayed.
-        const { item } = replayedReasoning(block);
-        if (item) { flush(); input.push(item); }
+        // Encrypted reasoning belongs to the model that made it; another model is not sent it.
+        const replayed = replayedReasoning(block);
+        if (replayed.item && (replayed.model === undefined || replayed.model === model)) { flush(); reasoning.push(replayed.item); }
       } else if (block.type === "tool_use" && role === "assistant") {
-        flush();
+        flush(); reasoned();
         input.push({ type: "function_call", call_id: string(block.id, "tool id"), name: string(block.name, "tool name"), arguments: JSON.stringify(object(block.input, "tool input")) });
       } else if (block.type === "tool_result" && role === "user") {
         flush(); input.push({ type: "function_call_output", call_id: string(block.tool_use_id, "tool_use_id"), output: result(block, "responses") });
-      } else parts.push(...part(block, "responses", role));
+      } else {
+        const converted = part(block, "responses", role);
+        if (converted.length) reasoned();
+        parts.push(...converted);
+      }
     }
     flush();
   }

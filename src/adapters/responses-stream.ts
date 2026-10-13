@@ -21,14 +21,14 @@ export async function* responsesToMessagesStream(response: Response, model: stri
       } else if (item.type !== "message" && item.type !== "reasoning") throw new AdapterError(`Claude 無法保留 Responses 輸出 ${String(item.type)}。`, 502);
     } else if (type === "response.output_item.done") {
       const item = object(body.item, "output item"), reasoning = item.type === "reasoning" ? responsesReasoning(item) : undefined;
-      if (reasoning) yield output.thinking(`reasoning:${item.id}`, reasoning, mode);
+      if (reasoning) yield output.thinking(`reasoning:${item.id ?? body.output_index}`, reasoning, mode);
     } else if (type === "response.function_call_arguments.delta") yield output.arguments(`tool:${body.item_id}`, string(body.delta, "arguments delta"));
     else if (type === "response.completed" || type === "response.incomplete") terminal = object(body.response, "response");
     else if (/^response\.(refusal|custom_tool_call)/.test(type)) throw new AdapterError("Claude 無法保留此 Responses 串流內容。", 502);
   }
   if (!terminal) throw new AdapterError("Responses 串流中斷，未收到完成事件。", 502);
   const message = responsesToClaude(terminal, model, mode);
-  for (const value of list(terminal.output, "output")) {
+  for (const [position, value] of list(terminal.output, "output").entries()) {
     const item = object(value, "output item");
     if (item.type === "message") {
       const parts = list(item.content, "content");
@@ -38,7 +38,7 @@ export async function* responsesToMessagesStream(response: Response, model: stri
       }
     } else if (item.type === "reasoning") {
       const reasoning = responsesReasoning(item);
-      if (reasoning) yield output.thinking(`reasoning:${item.id}`, reasoning, mode);
+      if (reasoning) yield output.thinking(`reasoning:${item.id ?? position}`, reasoning, mode);
     } else if (item.type === "function_call") {
       const key = `tool:${item.id}`;
       yield output.tool(key, string(item.call_id, "call_id"), string(item.name, "name"));
