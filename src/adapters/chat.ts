@@ -1,6 +1,7 @@
 import { ResponsesSse, responsesToChatBody, toolKindsFromResponses, type FreeformToolIdentity } from "../responsesChat";
 import { AdapterError, object, list, type AdapterRequest, type ModelApiAdapter } from "./types";
 import { claudeToChat } from "./claude-request";
+import { thinkingMode } from "./claude-reasoning";
 import { chatToClaude } from "./claude-response";
 import { chatToMessagesStream } from "./messages-stream";
 import { streamResponse } from "./stream";
@@ -23,11 +24,11 @@ export class ChatAdapter implements ModelApiAdapter {
     const { response, abort } = await upstreamRequest(request, "/v1/chat/completions", bodyToSend);
     if (!response.ok) return response;
     if (request.body.stream) {
-      if (request.client === "claude") return streamResponse(chatToMessagesStream(response, request.model), abort);
+      if (request.client === "claude") return streamResponse(chatToMessagesStream(response, request.model, thinkingMode(request.body)), abort);
       return streamResponse(restoreChatToolStream(chatToResponsesStream(response, request.model, toolKindsFromResponses(raw), toolIdentity, hideReasoningSummary), codexTools!.restore), abort);
     }
     return jsonResponse(response, body => {
-      if (request.client === "claude") return chatToClaude(body, request.model);
+      if (request.client === "claude") return chatToClaude(body, request.model, thinkingMode(request.body));
       const choice = object(list(body.choices, "choices")[0], "choice");
       const message = object(choice.message, "message");
       validateChatContent(message, true);

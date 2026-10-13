@@ -63,7 +63,7 @@ MessagesAdapter 僅處理 Claude Code Messages ↔ Messages，保留既有上游
 
 共用介面及三個 adapter 位於 `src/adapters/`；`src/modelProxy.ts` 處理代理交付與錯誤，`src/adapterSettings.ts` 將非敏感偏好保存在 `.vanspod/settings.json`，與 Classroom Connection 分開。`src/classroomApp.ts` 在請求選路時固定當次 adapter，設定切換不更動已開始的請求。
 
-Claude 的原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，不會靜默移除後重送。例外見下方 2026-10-11 與 2026-10-12 的 Codex → Chat 輸入歷史記錄。
+Claude 的原協定路徑保留正文；跨協定轉換採明確支援範圍，不支援的欄位或內容會報錯。例如 Claude 的 thinking／簽章、工具錯誤標記、快取控制及服務端工具，不會靜默移除後重送。例外見下方 2026-10-11 與 2026-10-12 的 Codex → Chat 輸入歷史記錄，以及 2026-10-13 的 Claude Code 記錄。
 
 Codex 的相容處理位於 `src/codexWire/`。兩條上游路徑都將 `additional_tools` 提升為頂層工具宣告。Chat 將工具 namespace 轉為可逆的扁平名稱；依受支援的模型選項建立正文，不對整份客戶端正文套用頂層欄位白名單。`client_metadata`、`access_programs` 與未知客戶端頂層擴充不送給 Chat，也不阻擋請求；已知且無法保留的請求語意，以及工具、內容與推理資料，仍明確驗證。明文 reasoning 保留為 Responses reasoning 資料，`summary: none` 隱藏摘要而保留下一輪所需文字。Responses 移除已確認的 Codex 私有 `access_programs`，保留其他未知上游擴充欄位；將自訂工具宣告、工具選擇、呼叫歷史及配對結果一起降為 Router 接受的 function 格式，保留 `call_id`；回程則依客戶端原始宣告還原 namespace、自訂工具類型與原始輸入，修復一般 function 包裝及原生 custom 輸入包裝。
 
@@ -102,3 +102,38 @@ code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議
 2026-10-12 Codex 內建網路搜尋：Codex 的 `web__run` 對模型 base URL 發出 `POST /v1/alpha/search`（依 opencodex 的處理推斷，尚未在 VansPod 實際攔到請求確認）。課堂 Router 沒有搜尋後端，VansPod 也不轉給個人 ChatGPT，因此課堂模式維持不支援，但改回明確的 400 訊息，告知模型不要重試；其他不支援的路徑則在訊息中附上實際路徑。由 Router 提供搜尋端點、或轉給學生自己的 ChatGPT，是尚未決定的後續選項。
 
 2026-10-12 Codex → Chat reasoning 回放格式修正：先前把歷史 reasoning 以 `<reasoning>…</reasoning>` 包成一則 assistant content 回放，模型看到自己過去的回合長這樣，就在可見回答裡照樣輸出 `<reasoning>` 區塊，推理內容因此外洩到對話畫面。改為掛在其後第一則 assistant 訊息（文字或工具呼叫）的 `reasoning_content` 欄位，不再寫入 content；其後沒有 assistant 訊息的 reasoning（例如出現在最終回答之後）直接略過。這取代上一則「reasoning 的位置與格式維持 VansPod 原有行為」。已知風險：嚴格拒絕未知訊息欄位的上游可能不接受 `reasoning_content`，尚未對真實 Router 驗證。完整 247 項測試通過；Windows EXE 與真實 Router 未重跑。
+
+2026-10-13 Claude Code → Chat／Responses 相容修正：實際的 Claude Code 2.1.296 主對話請求一送出就被「Claude → responses 無法轉換欄位 context_management」400 擋下。以本機記錄用假伺服器擷取真實請求（含一輪工具呼叫與結果）後確認，同一份請求還帶有 `thinking: { type: "adaptive", display: "omitted" }`、system／文字／工具呼叫／工具結果上的 `cache_control`、`role: "system"` 的對話中訊息，以及 `tool_result.is_error`；這些原本全部報錯，所以 Claude Code 的跨協定路徑實際上無法使用。這是對上方「thinking、工具錯誤標記、快取控制不會靜默移除」的調整：
+
+- `context_management` 與 `thinking` 設定接受但不轉送。前者是 Anthropic 伺服器端的脈絡編輯，後者的推理深度已由 `output_config.effort` 轉成上游的 reasoning 設定。
+- `cache_control` 只是快取提示，不影響模型輸出，接受後不轉送。
+- `role: "system"` 的訊息留在原本的對話位置：Chat 沿用 `system`，Responses 改為 `developer`。
+- `tool_result.is_error` 不再報錯，改在工具結果前加上文字標記，讓模型仍看得到這次呼叫失敗。
+- 上游回傳的 reasoning（Responses 的 reasoning 項目與事件、Chat 的 `reasoning_content`）不再讓回應失敗；其處理方式見下方同日的 reasoning 回放記錄。
+
+同日對照 opencodex 2.81.0（19bd34a）的 `src/claude/inbound.ts`、`inbound-content-options.ts`、`compatibility.ts`，以下做法與它一致或依它調整；VansPod 仍不匯入或依賴該專案：
+
+- 對話中的 system 訊息在 Responses 用 `developer`：opencodex 記錄 ChatGPT 後端會以「System messages are not allowed」拒絕 input 中的 `system`。
+- 工具宣告未指定 `strict` 時，Responses 明確送出 `strict: false`。Responses 把省略視為 strict 模式，會把選填參數變成必填。
+- `metadata.user_id` 超過 64 字元時改送其 SHA-256；Claude Code 的值是一段 JSON，OpenAI 類上游會拒絕超過 64 字元的 `user`。
+- system 開頭的 `x-anthropic-billing-header:` 那一行不送給模型。
+- Responses 正文加上 `store: false`。
+- 沒有 `output_config.effort` 而 `thinking` 為 `enabled` 時，`budget_tokens` 依 4096／16384 分級為 low／medium／high，不直接轉送。
+- 工具錯誤標記的格式為 `[tool error] <內容>`。
+
+同日後續調整（使用者決定）：Claude Code → Chat／Responses 改為與 opencodex 相同的「只取用認得的欄位」，移除這條路徑上所有的欄位白名單。未知的頂層欄位、訊息／內容區塊／工具宣告／`tool_choice`／`thinking`／`metadata` 上的未知欄位，以及未知的內容類型（含工具結果與 system 內的）都不轉送，也不阻擋請求。這進一步放寬「無法表達就報錯」原則，理由與 Codex → Chat 相同：Claude Code 每個版本都會增加欄位，白名單會讓每一輪都被 400 擋下。已知代價：被略過的內容模型看不到，也不會有錯誤提示。
+
+同日 reasoning 回放（使用者決定，實作於 `src/adapters/claude-reasoning.ts`）：沒有回放時，推理模型在工具呼叫迴圈的每一輪都看不到自己先前的推理。實測 Claude Code 2.1.296 會把收到的 thinking 區塊連同 signature 原樣放回下一輪請求，包含 thinking 文字為空的區塊，因此以 signature 作為載體：
+
+- 請求的 `thinking` 為 `enabled`／`adaptive` 時才啟用；否則維持略過上游 reasoning，不回傳 thinking 區塊。
+- Responses：請求加上 `include: ["reasoning.encrypted_content"]`；上游的 reasoning 項目轉成 thinking 區塊，signature 為 `vpr1.` 加上 base64url 的 JSON，內含該項目回送時需要的欄位（`id`、`summary`、`content`、`encrypted_content`）與其文字。下一輪在原位置還原成同一個 reasoning 輸入項目。串流時在 `response.output_item.done` 一次送出整個區塊，因為加密內容到那時才完整；沒有文字也沒有加密內容的項目不產生區塊。
+- Chat：`reasoning_content`／`reasoning` 轉成只帶文字的 thinking 區塊，下一輪掛回同一則 assistant 訊息的 `reasoning_content`，與 Codex → Chat 的回放格式相同。
+- `display: "omitted"` 時 thinking 文字留空，內容只放在 signature；否則顯示文字，且 Responses 另送 `reasoning.summary: "auto"`。
+- 跨 adapter：Responses 產生的區塊送到 Chat 時以其文字回放；Chat 產生的區塊沒有 Responses 項目，送到 Responses 時略過。
+- 這是 VansPod 自有格式，不讀 opencodex 的 ocxr1 信封。opencodex 經 Claude Code 往返時只保留推理文字，VansPod 連同上游的加密內容一起保留。
+
+驗證：以真實 Claude Code CLI 經建置後的 Responses adapter 連到本機假上游，第一輪回傳 reasoning 與工具呼叫，第二輪上游收到的 input 在工具呼叫之前帶有相同的 reasoning 項目（id、summary、encrypted_content 都一致）。
+
+與 opencodex 仍不同之處：它將 `thinking: disabled` 轉成 `effort: "none"`、送出 `prompt_cache_key`，並在後段依模型目錄修正 effort，VansPod 沒有這一層，所以都不送；它把 `stop_sequences` 轉成 Responses 的 `stop`，VansPod 仍報錯；它回放帶 Anthropic 簽章的 thinking 區塊、丟棄沒有對應的伺服器端工具，VansPod 兩者都報錯。
+
+仍明確報錯：signature 不是 VansPod 產生的 thinking 區塊與 redacted_thinking 區塊（在 Messages adapter 或 Native 產生過 thinking 的對話切到 Chat／Responses 會被擋下）、沒有 `input_schema` 的伺服器端工具（網路搜尋已先由 `claudeWebSearch` 改寫）、未知的 message role、`tool_choice` 類型與圖片 source 類型、Responses 的 `stop_sequences`。完整 354 項測試通過，擷取到的真實請求都能轉成 Chat 與 Responses 正文；Windows EXE 與真實 Router／模型尚未驗證：Router 是否接受 `include`、是否回傳 reasoning 項目或加密內容、是否接受回送的 reasoning 項目與 Chat 的 `reasoning_content`，以及 `effort` 的 `xhigh`／`max`，都未確認。

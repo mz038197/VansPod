@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import http from "node:http";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { modelApiAdapter } from "../adapters";
 import { sendRouter } from "../modelProxy";
@@ -546,7 +547,7 @@ test("Claude uses Responses for an image and a tool round-trip and receives Mess
       { type: "function_call", call_id: "call_1", name: "read", arguments: '{"path":"a"}' },
       { type: "function_call_output", call_id: "call_1", output: "file content" },
     ]);
-    assert.deepEqual(calls[0].body.tools, [{ type: "function", name: "read", parameters: { type: "object" } }]);
+    assert.deepEqual(calls[0].body.tools, [{ type: "function", name: "read", strict: false, parameters: { type: "object" } }]);
     assert.deepEqual(await response.json(), { id: "resp_tool", type: "message", role: "assistant", model: "allowed", content: [
       { type: "text", text: "下一步" }, { type: "tool_use", id: "call_2", name: "read", input: { path: "b" } },
     ], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 5, output_tokens: 8 } });
@@ -573,6 +574,217 @@ test("Claude uses Chat for multiple turns and receives its tool call in Messages
     assert.deepEqual(body.content, [{ type: "tool_use", id: "call_2", name: "read", input: { path: "b" } }]);
     assert.equal(body.stop_reason, "tool_use");
   }, { id: "chat_tool", choices: [{ message: { content: null, tool_calls: [{ id: "call_2", type: "function", function: { name: "read", arguments: '{"path":"b"}' } }] }, finish_reason: "tool_calls" }] });
+});
+
+// Shape of a real Claude Code 2.1.296 main-conversation request (second turn after two tool calls).
+const claudeCodeUserId = JSON.stringify({ device_id: "0".repeat(64), account_uuid: "", session_id: "s" });
+const claudeCodeUser = createHash("sha256").update(claudeCodeUserId).digest("hex");
+const claudeCodeTurn = (stream: boolean) => ({
+  stream, max_tokens: 32000, thinking: { type: "adaptive", display: "omitted" }, output_config: { effort: "high" },
+  context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+  metadata: { user_id: claudeCodeUserId },
+  system: [{ type: "text", text: "x-anthropic-billing-header: cc_version=2.1.296; cch=abc;" },{ type: "text", text: "You are Claude Code.", cache_control: { type: "ephemeral" } }],
+  tools: [{ name: "Bash", description: "Run", input_schema: { type: "object" } }],
+  messages: [
+    { role: "user", content: [{ type: "text", text: "run it" }] },
+    { role: "system", content: "# Environment" },
+    { role: "assistant", content: [{ type: "text", text: "running" },
+      { type: "tool_use", id: "toolu_01", name: "Bash", input: { command: "exit 3" } },
+      { type: "tool_use", id: "toolu_02", name: "Bash", input: { command: "echo hi" }, cache_control: { type: "ephemeral" } }] },
+    { role: "user", content: [{ type: "tool_result", content: "Exit code 3", is_error: true, tool_use_id: "toolu_01" },
+      { tool_use_id: "toolu_02", type: "tool_result", content: "hi", is_error: false, cache_control: { type: "ephemeral" } }] },
+  ],
+});
+
+test("a real Claude Code turn reaches Responses and textless upstream reasoning is left out of the reply", async () => {
+  const output = [
+    { type: "reasoning", id: "rs_1", summary: [] },
+    { type: "message", id: "m", content: [{ type: "output_text", text: "完成" }] },
+  ];
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: claudeCodeTurn(false) });
+    assert.deepEqual(calls[0].body, {
+      model: "allowed", store: false, stream: false, max_output_tokens: 32000, user: claudeCodeUser, reasoning: { effort: "high" }, include: ["reasoning.encrypted_content"], instructions: "You are Claude Code.",
+      tools: [{ type: "function", name: "Bash", description: "Run", strict: false, parameters: { type: "object" } }],
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "run it" }] },
+        { role: "developer", content: [{ type: "input_text", text: "# Environment" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "running" }] },
+        { type: "function_call", call_id: "toolu_01", name: "Bash", arguments: '{"command":"exit 3"}' },
+        { type: "function_call", call_id: "toolu_02", name: "Bash", arguments: '{"command":"echo hi"}' },
+        { type: "function_call_output", call_id: "toolu_01", output: "[tool error] Exit code 3" },
+        { type: "function_call_output", call_id: "toolu_02", output: "hi" },
+      ],
+    });
+    assert.deepEqual((await response.json() as { content: unknown }).content, [{ type: "text", text: "完成" }]);
+  }, { id: "r", status: "completed", output });
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+    { type: "response.reasoning_summary_text.delta", item_id: "rs_1", delta: "想" },
+    { type: "response.output_text.delta", item_id: "m", output_index: 1, content_index: 0, delta: "完成" },
+    { type: "response.completed", response: { id: "r", status: "completed", output } },
+  ];
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: claudeCodeTurn(true) });
+    const sse = await response.text();
+    assert.match(sse, /"text":"完成"/); assert.doesNotMatch(sse, /想/); assert.match(sse, /event: message_stop/);
+  }, events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""));
+});
+
+test("a real Claude Code turn reaches Chat", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: claudeCodeTurn(false) });
+    assert.deepEqual(calls[0].body.messages, [
+      { role: "system", content: "You are Claude Code." },
+      { role: "user", content: "run it" },
+      { role: "system", content: "# Environment" },
+      { role: "assistant", content: "running", tool_calls: [
+        { id: "toolu_01", type: "function", function: { name: "Bash", arguments: '{"command":"exit 3"}' } },
+        { id: "toolu_02", type: "function", function: { name: "Bash", arguments: '{"command":"echo hi"}' } }] },
+      { role: "tool", tool_call_id: "toolu_01", content: "[tool error] Exit code 3" },
+      { role: "tool", tool_call_id: "toolu_02", content: "hi" },
+    ]);
+    assert.equal(calls[0].body.reasoning_effort, "high"); assert.equal(calls[0].body.user, claudeCodeUser);
+    for (const key of ["thinking", "context_management"]) assert.equal(key in calls[0].body, false);
+    assert.deepEqual((await response.json() as { content: unknown }).content, [{ type: "text", text: "完成" }]);
+  }, { id: "c", choices: [{ message: { content: "完成" }, finish_reason: "stop" }] });
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: claudeCodeTurn(true) });
+    const sse = await response.text();
+    assert.match(sse, /"text":"完成"/); assert.match(sse, /event: message_stop/);
+  }, [{ choices: [{ delta: { content: "完成" }, finish_reason: "stop" }] }].map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n");
+});
+
+test("Claude fields and content types the adapters do not know are left out without blocking the request", async () => {
+  const body = {
+    stream: false, max_tokens: 100, future_option: { on: true }, thinking: { type: "adaptive", future: 1 }, metadata: { user_id: "u", future: 1 },
+    system: [{ type: "text", text: "Help", citations: [] }, { type: "future_block" }],
+    tools: [{ name: "read", input_schema: { type: "object" }, defer_loading: true }], tool_choice: { type: "auto", future: 1 },
+    messages: [
+      { role: "user", future: 1, content: [{ type: "text", text: "hi", citations: [] }, { type: "future_block", data: "x" }] },
+      { role: "assistant", content: [{ type: "future_block" }, { type: "tool_use", id: "call_1", name: "read", input: {}, caller: { type: "direct" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", future: 1, content: [{ type: "text", text: "done" }, { type: "future_block" }] }] },
+    ],
+  };
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls[0].body, {
+      model: "allowed", store: false, stream: false, max_output_tokens: 100, user: "u", include: ["reasoning.encrypted_content"], reasoning: { summary: "auto" }, instructions: "Help", tool_choice: "auto",
+      tools: [{ type: "function", name: "read", strict: false, parameters: { type: "object" } }],
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "function_call", call_id: "call_1", name: "read", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: [{ type: "input_text", text: "done" }] },
+      ],
+    });
+  }, { id: "r", status: "completed", output: [] });
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls[0].body.messages, [
+      { role: "system", content: "Help" }, { role: "user", content: "hi" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content: [{ type: "text", text: "done" }] },
+    ]);
+    assert.equal("future_option" in calls[0].body, false);
+  }, { id: "c", choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+});
+
+type ClaudeBlock = { type: string; thinking?: string; signature?: string; text?: string };
+const sseBlocks = (sse: string): ClaudeBlock[] => {
+  const blocks: ClaudeBlock[] = [];
+  for (const line of sse.split("\n").filter(line => line.startsWith("data: "))) {
+    const data = JSON.parse(line.slice(6));
+    if (data.type === "content_block_start") blocks[data.index] = { ...data.content_block };
+    else if (data.type === "content_block_delta") {
+      const block = blocks[data.index], delta = data.delta;
+      if (delta.type === "thinking_delta") block.thinking += delta.thinking;
+      else if (delta.type === "signature_delta") block.signature = delta.signature;
+      else if (delta.type === "text_delta") block.text += delta.text;
+    }
+  }
+  return blocks;
+};
+const reasoningItem = { type: "reasoning", id: "rs_1", status: "completed", summary: [{ type: "summary_text", text: "先讀檔" }], encrypted_content: "gAAAA-opaque" };
+const replayedItem = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "先讀檔" }], encrypted_content: "gAAAA-opaque" };
+const thinkingTurn = (display: string | undefined, stream: boolean, history: unknown[] = []) => ({
+  stream, max_tokens: 100, thinking: { type: "adaptive", ...(display ? { display } : {}) },
+  messages: [{ role: "user", content: "hello" }, ...history],
+});
+
+test("Responses reasoning reaches Claude Code as a thinking block and returns to the upstream unchanged", async () => {
+  const output = [reasoningItem, { type: "message", id: "m", content: [{ type: "output_text", text: "好" }] }, { type: "function_call", id: "f", call_id: "call_1", name: "read", arguments: "{}" }];
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+    { type: "response.reasoning_summary_text.delta", item_id: "rs_1", delta: "先讀檔" },
+    { type: "response.output_item.done", output_index: 0, item: reasoningItem },
+    { type: "response.output_text.delta", item_id: "m", output_index: 1, content_index: 0, delta: "好" },
+    { type: "response.completed", response: { id: "r", status: "completed", output } },
+  ];
+  for (const [display, shown] of [[undefined, "先讀檔"], ["omitted", ""]] as const) {
+    const replies: ClaudeBlock[][] = [];
+    await withRouter(async (routerBaseUrl, calls) => {
+      const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(display, false) });
+      assert.deepEqual(calls[0].body.include, ["reasoning.encrypted_content"]);
+      assert.deepEqual(calls[0].body.reasoning, display ? undefined : { summary: "auto" });
+      replies.push((await response.json() as { content: ClaudeBlock[] }).content);
+    }, { id: "r", status: "completed", output });
+    await withRouter(async routerBaseUrl => {
+      const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(display, true) });
+      replies.push(sseBlocks(await response.text()));
+    }, events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""));
+    for (const content of replies) {
+      assert.deepEqual(content.map(block => block.type), ["thinking", "text", "tool_use"]);
+      assert.equal(content[0].thinking, shown); assert.match(content[0].signature!, /^vpr1\./);
+      const history = [{ role: "assistant", content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] }];
+      await withRouter(async (routerBaseUrl, calls) => {
+        await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(display, false, history) });
+        assert.deepEqual((calls[0].body.input as unknown[]).slice(1), [
+          replayedItem, { role: "assistant", content: [{ type: "output_text", text: "好" }] },
+          { type: "function_call", call_id: "call_1", name: "read", arguments: "{}" }, { type: "function_call_output", call_id: "call_1", output: "done" },
+        ]);
+      }, { id: "r", status: "completed", output: [] });
+      // The same history sent through Chat keeps the reasoning text on the assistant message.
+      await withRouter(async (routerBaseUrl, calls) => {
+        await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(display, false, history) });
+        assert.deepEqual((calls[0].body.messages as unknown[])[1], { role: "assistant", content: "好", reasoning_content: "先讀檔", tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] });
+      }, { id: "c", choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+    }
+  }
+});
+
+test("Chat reasoning reaches Claude Code as a thinking block and returns as reasoning_content", async () => {
+  const replies: ClaudeBlock[][] = [];
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(undefined, false) });
+    replies.push((await response.json() as { content: ClaudeBlock[] }).content);
+  }, { id: "c", choices: [{ message: { content: "好", reasoning_content: "先讀檔" }, finish_reason: "stop" }] });
+  await withRouter(async routerBaseUrl => {
+    const response = await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(undefined, true) });
+    replies.push(sseBlocks(await response.text()));
+  }, [{ choices: [{ delta: { reasoning_content: "先" } }] }, { choices: [{ delta: { reasoning_content: "讀檔" } }] }, { choices: [{ delta: { content: "好" }, finish_reason: "stop" }] }].map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n");
+  for (const content of replies) {
+    assert.deepEqual(content.map(block => [block.type, block.thinking ?? block.text]), [["thinking", "先讀檔"], ["text", "好"]]);
+    const history = [{ role: "assistant", content }, { role: "user", content: "next" }];
+    await withRouter(async (routerBaseUrl, calls) => {
+      await modelApiAdapter("chat").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(undefined, false, history) });
+      assert.deepEqual((calls[0].body.messages as unknown[])[1], { role: "assistant", content: "好", reasoning_content: "先讀檔" });
+    }, { id: "c", choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+    // Chat reasoning has no Responses item, so a later Responses turn leaves it out.
+    await withRouter(async (routerBaseUrl, calls) => {
+      await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn(undefined, false, history) });
+      assert.deepEqual((calls[0].body.input as unknown[])[1], { role: "assistant", content: [{ type: "output_text", text: "好" }] });
+    }, { id: "r", status: "completed", output: [] });
+  }
+});
+
+test("a client that did not ask for thinking gets no thinking block", async () => {
+  await withRouter(async (routerBaseUrl, calls) => {
+    const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: { stream: false, max_tokens: 100, messages: [{ role: "user", content: "hello" }] } });
+    assert.equal("include" in calls[0].body, false);
+    assert.deepEqual((await response.json() as { content: unknown }).content, [{ type: "text", text: "好" }]);
+  }, { id: "r", status: "completed", output: [reasoningItem, { type: "message", id: "m", content: [{ type: "output_text", text: "好" }] }] });
 });
 
 test("Messages adapter preserves Claude thinking, images, and protocol headers", async () => {
