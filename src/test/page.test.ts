@@ -34,8 +34,6 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
   assert.match(forms[0], /value="codex"/); assert.match(forms[1], /value="claude"/); assert.match(forms[2], /value="vscode"/);
   assert.match(forms[0], /value="responses" selected/); assert.match(forms[1], /value="responses" selected/); assert.match(forms[2], /value="responses" selected/);
   assert.doesNotMatch(forms[0], /value="messages"/); assert.match(forms[1], /value="messages"/); assert.doesNotMatch(forms[2], /value="messages"/);
-  assert.match(html, /不需要 GitHub 登入或 Copilot plan/);
-  assert.match(html, /inline completion、semantic search 與 embeddings 不在此路由範圍/);
   assert.match(settingsActionsScript, /form\[action="\/adapter"\]/);
 });
 

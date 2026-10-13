@@ -153,7 +153,7 @@ function adapterForms(view: ClassroomAppView): string {
     const adapterDisabled = view.commandRunning || !routeHealthy;
     return `<div class="model-client"><div class="client-head"><span class="adapter-label"><span class="${className}" tabindex="0" title="${status}" aria-label="${status}" data-client-light="${client}"></span>${clientIcons[client]}<span>${clientLabel(client)}</span></span><form class="modes client-modes" method="post" action="/switch"><input type="hidden" name="client" value="${client}"><button type="submit" name="mode" value="native" aria-pressed="${mode === "native"}" class="${mode === "native" ? "on" : ""}"${locked(view)}>個人</button><button type="submit" name="mode" value="classroom" aria-pressed="${mode === "classroom"}" class="${mode === "classroom" ? "on" : ""}"${!available || !routeHealthy || view.commandRunning ? " disabled" : ""}>課堂</button></form></div><form class="adapter-row" method="post" action="/adapter"><input type="hidden" name="client" value="${client}"><span class="adapter-select"><select name="adapter" aria-label="${clientLabel(client)} API 協定"${adapterDisabled ? " disabled" : ""}>${options}</select><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></span></form><span class="client-flow" data-client-flow="${client}" aria-hidden="true"></span></div>`;
   }).join("");
-  return forms + `<p class="hint">VS Code 路由支援 BYOK Chat、Agent 與 utility tasks，不需要 GitHub 登入或 Copilot plan；inline completion、semantic search 與 embeddings 不在此路由範圍。</p>` +
+  return forms +
     (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
 
