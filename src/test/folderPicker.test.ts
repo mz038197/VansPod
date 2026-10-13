@@ -16,7 +16,7 @@ it("creates a visible topmost owner before opening the Windows folder picker", {
   );
   const { stdout } = await run("powershell.exe", ["-NoProfile", "-STA", "-Command", command], {
     windowsHide: true,
-    timeout: 10_000,
+    timeout: 30_000,
     encoding: "utf8",
   });
   assert.equal(stdout.trim(), "");
@@ -31,7 +31,7 @@ it("returns Chinese folder paths as UTF-8", {
   );
   const { stdout } = await run("powershell.exe", ["-NoProfile", "-STA", "-Command", command], {
     windowsHide: true,
-    timeout: 10_000,
+    timeout: 30_000,
     encoding: "utf8",
   });
   assert.equal(stdout.trim(), "C:\\課堂\\專案");

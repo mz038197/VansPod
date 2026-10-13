@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { freeBasePort } from './test-ports.cjs';
 import { fakeRouter, sandbox } from './test-windows-exe.mjs';
 
 const execute = promisify(execFile);
@@ -13,7 +14,8 @@ const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.js
 const npmCli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 const box = await sandbox();
 const router = await fakeRouter();
-const env = { ...box.env, CLASSROOM_ROUTER_BASE_URL: router.url, CLASSROOM_APP_PORT: '49901' };
+const port = await freeBasePort();
+const env = { ...box.env, CLASSROOM_ROUTER_BASE_URL: router.url, CLASSROOM_APP_PORT: String(port) };
 const exeDirectory = path.join(box.root, 'tools');
 const exe = path.join(exeDirectory, 'VansPod.exe');
 let runtime;
@@ -69,7 +71,7 @@ try {
   runtime = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime/instance.json'), 'utf8'));
   assert.match(await fs.readFile(box.paths.claude, 'utf8'), /ANTHROPIC_BASE_URL/);
   router.state.holdResponses = true;
-  const pending = fetch(`http://127.0.0.1:49902/v1/messages`, {method: 'POST', body: JSON.stringify({model: 'synthetic-model-a', messages: [{role: 'user', content: 'hello'}]})}).catch(() => undefined);
+  const pending = fetch(`http://127.0.0.1:${port + 1}/v1/messages`, {method: 'POST', body: JSON.stringify({model: 'synthetic-model-a', messages: [{role: 'user', content: 'hello'}]})}).catch(() => undefined);
   await wait(async () => (await manage('status')).activeRequests > 0);
   assert.equal((await manage('stop', {})).confirmation, true);
   await assert.rejects(execute(process.execPath, [npmEntry, 'stop'], {env}), /仍有模型回答/);

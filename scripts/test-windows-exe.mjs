@@ -1,3 +1,4 @@
+import { freeBasePort } from './test-ports.cjs';
 // Repeatable verification of the real Windows SEA executable with isolated user files.
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -109,7 +110,6 @@ export async function sandbox() {
   } };
 }
 
-async function freePort() { const s = http.createServer(); s.listen(0, '127.0.0.1'); await once(s, 'listening'); const p = s.address().port; await new Promise(resolve => s.close(resolve)); return p; }
 async function allFiles(root) { const result = []; for (const d of await fs.readdir(root, { withFileTypes: true })) { const p = path.join(root, d.name); if (d.isDirectory()) result.push(...await allFiles(p)); else if (d.isFile()) result.push(p); } return result; }
 async function assertPrivateDisk(root) { for (const filename of await allFiles(root)) { const data = await fs.readFile(filename); for (const secret of sensitive) safeAssert(!data.includes(Buffer.from(secret)), `Sensitive data found in sandbox file ${path.relative(root, filename)}`); } }
 function assertPrivateOutput(text) { for (const secret of sensitive) safeAssert(!text.includes(secret), 'Sensitive data found in child output'); }
@@ -289,23 +289,6 @@ async function denyCreateFiles(directory, sandboxRoot) {
   return async () => { await run(icacls, [directory, '/remove:d', user], { windowsHide: true }); };
 }
 
-async function freeBasePort() {
-  for (let base = 50000; base < 65000; base += 3) {
-    const servers = [];
-    try {
-      for (const port of [base, base + 1, base + 2]) {
-        const server = http.createServer();
-        await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-        servers.push(server);
-      }
-      await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
-      return base;
-    } catch {
-      await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
-    }
-  }
-  throw new Error('No three-port verification range is available');
-}
 
 export async function runDefaultPortContract({ exe }) {
   safeAssert(process.platform === 'win32', 'Packaged default-port verification requires Windows');
@@ -478,7 +461,7 @@ export async function runMultiRouteLifecycle({ exe }) {
 export async function runLifecycle({ exe }) {
   safeAssert(process.platform === 'win32', 'Real SEA verification requires Windows');
   const restoreCheck = await personalSettingsSnapshot();
-  const router = await fakeRouter(), box = await sandbox(), port = await freePort();
+  const router = await fakeRouter(), box = await sandbox(), port = await freeBasePort();
   let app, lock, stopMonitor, restoreAcl;
   const results = []; const record = message => { results.push(message); console.log('PASS ' + message); }; const unverified = ['cross-account DPAPI: no second Windows account available', 'deterministic termination at every replacement instruction: not performed'];
   const restart = async overrides => { if (app) await app.stop(); app = await startExe(path.resolve(exe), box, router, port, overrides); };

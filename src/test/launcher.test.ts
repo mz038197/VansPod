@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const { freeBasePort }: { freeBasePort(): Promise<number> } = require("../../scripts/test-ports.cjs");
 const execute = promisify(execFile);
 const entry = path.join(__dirname, "..", "entry.js");
 const expectedVersion = JSON.parse(readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).version;
@@ -14,7 +15,7 @@ const expectedVersion = JSON.parse(readFileSync(path.join(__dirname, "..", "..",
 test("failed client initialization reports a useful error and leaves no unmanageable worker", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-start-failure-"));
   const bin = path.join(home, "bin");
-  const env = {...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), PATH: bin + path.delimiter + process.env.PATH, CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: "49891"};
+  const env = {...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), PATH: bin + path.delimiter + process.env.PATH, CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: String(await freeBasePort())};
   try {
     await fs.mkdir(bin); await fs.mkdir(path.join(home, ".codex"));
     await fs.writeFile(path.join(bin, "codex.cmd"), "@exit /b 0\r\n");
@@ -36,7 +37,7 @@ test("failed client initialization reports a useful error and leaves no unmanage
 
 test("start returns while one background service survives and repeated starts share it", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-background-"));
-  const env = { ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: "49871" };
+  const env = { ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: String(await freeBasePort()) };
   try {
     await Promise.all([execute(process.execPath, [entry, "start"], { env, timeout: 20000 }), execute(process.execPath, [entry, "start"], { env, timeout: 20000 })]);
     const first = JSON.parse((await execute(process.execPath, [entry, "status", "--json"], { env })).stdout);
@@ -79,7 +80,7 @@ test("start returns while one background service survives and repeated starts sh
 
 test("confirmed full removal clears VansPod data and preserves student projects and tools", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-removal-"));
-  const env = { ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: "49881" };
+  const env = { ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: String(await freeBasePort()) };
   try {
     await fs.mkdir(path.join(home, "student-project"));
     await fs.writeFile(path.join(home, "student-project", "main.js"), "student work");
