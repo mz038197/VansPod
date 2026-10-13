@@ -19,6 +19,9 @@ export const modelStatusScript = `
       light.title = next.status;
       light.setAttribute("aria-label", next.status);
     });
+    if (status.traffic) document.querySelectorAll("[data-client-flow]").forEach(function (flow) {
+      flow.classList.toggle("flowing", status.traffic[flow.getAttribute("data-client-flow")] === true);
+    });
     var card = document.querySelector('[data-setting="模型"]');
     if (!card) return;
     var banner = card.querySelector(".model-update");

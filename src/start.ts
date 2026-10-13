@@ -30,6 +30,7 @@ import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRout
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { sendRouter, relayResponse } from "./modelProxy";
 import { fetchSessionModelProviders } from "./routerSessionModels";
+import { createClientTraffic } from "./clientTraffic";
 
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
@@ -40,6 +41,7 @@ const responseSlot = new AsyncLocalStorage<{
 }>();
 const activeRequests = new Set<AbortController>();
 function abortRequests(): void { for (const controller of activeRequests) controller.abort(); }
+const traffic = createClientTraffic();
 
 function routerBaseUrl(): string {
   return (
@@ -558,7 +560,7 @@ async function main(): Promise<void> {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
         });
-        res.end(JSON.stringify(modelStatus(app.view())));
+        res.end(JSON.stringify({ ...modelStatus(app.view()), traffic: traffic.flowing() }));
         return;
       }
       if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
@@ -725,6 +727,7 @@ async function main(): Promise<void> {
         const closed = () => { if (!res.writableFinished) controller.abort(); };
         res.once("close", closed);
         const client: ProxyClient = accepted.route === "claudeCode" ? "claude" : accepted.route === "vsCodeChat" ? "copilot" : "codex";
+        const endTraffic = traffic.begin(client === "copilot" ? "vscode" : client);
         try {
           const body = await readBody(req, 20_971_520);
           const slot: { response?: Response } = {};
@@ -741,7 +744,7 @@ async function main(): Promise<void> {
           }
           if (!controller.signal.aborted) await relayResponse(slot.response ?? Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 }), res, client === "claude" ? "claude" : "codex", controller.signal);
         } finally {
-          controller.abort(); activeRequests.delete(controller);
+          controller.abort(); activeRequests.delete(controller); endTraffic();
           req.removeListener("aborted", aborted); res.removeListener("close", closed);
         }
         return;

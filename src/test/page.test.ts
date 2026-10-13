@@ -180,6 +180,29 @@ describe("VansPod page", () => {
     assert.equal(bannerRemoved, true);
   });
 
+  it("animates only the Client Route that has traffic and stops it when the traffic ends", async () => {
+    const html = renderPage(view());
+    for (const client of ["codex", "claude", "vscode"]) assert.match(html, new RegExp(`class="client-flow" data-client-flow="${client}"`));
+    const flows = ["codex", "claude"].map(client => ({
+      flowing: false,
+      getAttribute: () => client,
+      classList: { toggle(_name: string, on: boolean) { flows.find(flow => flow.getAttribute() === client)!.flowing = on; } },
+    }));
+    let traffic = { codex: false, claude: true, vscode: false };
+    let tick!: () => Promise<void>;
+    vm.runInNewContext(modelStatusScript, {
+      settingsBusy: false,
+      setTimeout(callback: typeof tick) { tick = callback; },
+      document: { hidden: false, querySelectorAll: (selector: string) => selector === "[data-client-flow]" ? flows : [], querySelector: () => null },
+      fetch: async () => ({ ok: true, json: async () => ({ lights: {}, restart: "", traffic }) }),
+    });
+    await tick();
+    assert.deepEqual(flows.map(flow => flow.flowing), [false, true]);
+    traffic = { codex: false, claude: false, vscode: false };
+    await tick();
+    assert.deepEqual(flows.map(flow => flow.flowing), [false, false]);
+  });
+
   it("omits the VS Code restart notice when vscode is not in mustRestart", () => {
     const html = renderPage(view({ modelRestart: ["codex"] }));
     assert.equal(html.includes("請完全退出 VS Code"), false);
