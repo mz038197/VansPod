@@ -1,6 +1,6 @@
 import type { UpstreamSend } from "./classroomApp";
 import { AdapterError, object } from "./adapters/types";
-import { MAX_QUERY_LENGTH, NO_SHELL, explainSearchFailure, webSearch, type WebSearchResult } from "./webSearch";
+import { MAX_QUERY_LENGTH, explainSearchFailure, webSearch, type WebSearchResult } from "./webSearch";
 
 // Codex's web__run tool posts every command to /alpha/search and reads the reply as
 // codex-api's SearchResponse { encrypted_output, output, results }: `output` is the
@@ -11,26 +11,37 @@ import { MAX_QUERY_LENGTH, NO_SHELL, explainSearchFailure, webSearch, type WebSe
 
 const MAX_QUERIES = 3;
 
+// These commands have no stand-in at all, so the ban here is wider than NO_SHELL's: one
+// curl to a weather or quote site is not a search, yet it is exactly what must not happen.
 function unsupported(commands: string[]): string {
-  return `課堂模式的網路搜尋只支援以關鍵字搜尋。${commands.length ? `These web commands are not supported in this classroom session and were not run: ${commands.join(", ")}.` : "This request named no search_query, and nothing else is supported in this classroom session."} Only search_query (searching by query text) is supported; its results already include a text snippet of each page. Do not retry the unsupported commands. ${NO_SHELL} If that is not enough, tell the user this classroom session cannot do it.`;
+  return `課堂模式沒有這些網路指令。${commands.length ? `These web commands are not supported in this classroom session and were not run: ${commands.join(", ")}.` : "This request named no web command that this classroom session runs."} Searching is done with search_query (searching by query text); its results already include a text snippet of each page. Do not retry the unsupported commands. Do not use shell commands (curl, wget, scripts) to get that information some other way. If that is not enough, tell the user this classroom session cannot do it.`;
 }
 
 // open, click and find read a page Codex already knows the address of. That is not Web
-// Search (CONTEXT.md): no Router call and no class switch, the agent fetches it itself.
+// Search (CONTEXT.md): Router is not called, so whether the Class Session allows Web
+// Search is never asked, and the Coding Agent fetches the page itself.
 const READ_COMMANDS = ["open", "click", "find"];
+// What is written back to the model; a longer ref_id is still answered, just not quoted.
+const MAX_URL_LENGTH = 2000;
 
-function readYourself(commands: Record<string, unknown>, names: string[]): string {
+/** `afterRefusal`: the reply already carries a refusal this must not be read as part of. */
+function readYourself(commands: Record<string, unknown>, names: string[], afterRefusal: boolean): string {
   const refs = names.flatMap(name => Array.isArray(commands[name]) ? commands[name] as unknown[] : [])
     .map(item => (item as { ref_id?: unknown } | null)?.ref_id)
-    .filter((ref): ref is string => typeof ref === "string" && ref.length <= MAX_QUERY_LENGTH);
-  const urls = [...new Set(refs.filter(ref => /^https?:\/\/\S+$/.test(ref)))];
-  // The model reads only `output`, which lists each result's URL and never its ref_id.
-  const id = refs.find(ref => /^\w+$/.test(ref));
-  return [`課堂模式沒有開網頁的指令，要讀的網頁請自行讀取。The ${names.join(", ")} command${names.length > 1 ? "s are" : " is"} not run for you in this classroom session. To read a page, fetch it yourself.`,
+    .filter((ref): ref is string => typeof ref === "string");
+  const urls = [...new Set(refs.filter(ref => ref.length <= MAX_URL_LENGTH && /^https?:\/\/\S+$/i.test(ref)))];
+  // The model reads only `output`, where resultsText numbers the results from 1 and
+  // never prints the ref_id (turn0search0 is result [1]) that envelope gives the client.
+  const referenceId = refs.find(ref => /^\w{1,64}$/.test(ref));
+  const resultNumber = /^turn\d+search(\d+)$/.exec(referenceId ?? "");
+  return [`課堂模式沒有開網頁的指令，要讀的網頁請自行讀取。The ${names.join(", ")} command${names.length > 1 ? "s are" : " is"} not run for you in this classroom session.`,
+    ...(afterRefusal ? ["This is separate from the above: reading a page is not a web search, and asking to read a page is not retrying it."] : []),
+    "To read a page, fetch it yourself.",
     ...(urls.length ? [`Requested: ${urls.join(" ")}`] : []),
     "Fetch only the page you asked for, once, with a single shell command; keep the readable text rather than the full HTML, and truncate long output.",
-    ...(id ? [`A reference id such as ${id} is not kept in this classroom session: use the URL listed for that result in the web search results, or the URL of the page you fetched.`] : []),
-    ...(names.includes("click") ? ["For a numbered link, find the link in the page you fetched and fetch the URL that link points to."] : []),
+    ...(resultNumber ? [`Reference ids are not kept in this classroom session: ${referenceId} is result [${Number(resultNumber[1]) + 1}] of your latest web search results, so use the URL listed there.`]
+      : referenceId ? [`A reference id such as ${referenceId} is not kept in this classroom session: use the URL of the page itself.`] : []),
+    ...(names.includes("click") ? ["Link numbers are not kept either: for a numbered link, fetch the page, find the link you meant, and then fetch the URL it points to."] : []),
     ...(names.includes("find") ? ["To find text in a page, fetch the page and search its text for the pattern yourself."] : []),
     "Do not follow links from a page on your own. To read another page, call open or click again and the same applies to that page."].join(" ");
 }
@@ -57,10 +68,12 @@ export async function codexWebSearch(upstream: UpstreamSend, baseUrl: string): P
     && commands[name] != null && !(Array.isArray(commands[name]) && (commands[name] as unknown[]).length === 0));
   const readCommands = otherCommands.filter(name => READ_COMMANDS.includes(name));
   const unsupportedCommands = otherCommands.filter(name => !READ_COMMANDS.includes(name));
-  const notes = [...(readCommands.length ? [readYourself(commands, readCommands)] : []),
-    ...(unsupportedCommands.length || (queries.length === 0 && readCommands.length === 0) ? [unsupported(unsupportedCommands)] : [])];
-  if (queries.length === 0) return envelope(notes.join("\n\n"));
-  const reply = await webSearch(queries, baseUrl, upstream.apiKey ?? "", upstream.signal);
-  if ("errorCode" in reply) return envelope([explainSearchFailure(reply.errorCode), ...notes].join("\n\n"));
-  return envelope([resultsText(queries, reply.results), ...notes].join("\n\n"), reply.results);
+  const nothingToRun = queries.length === 0 && readCommands.length === 0;
+  const reply = queries.length ? await webSearch(queries, baseUrl, upstream.apiKey ?? "", upstream.signal) : undefined;
+  const failure = reply && "errorCode" in reply ? explainSearchFailure(reply.errorCode) : undefined;
+  const refusals = [...(failure ? [failure] : []), ...(unsupportedCommands.length || nothingToRun ? [unsupported(unsupportedCommands)] : [])];
+  // The permission to read a page comes last, after every refusal it is an exception to.
+  const output = [...(reply && "results" in reply ? [resultsText(queries, reply.results)] : []), ...refusals,
+    ...(readCommands.length ? [readYourself(commands, readCommands, refusals.length > 0)] : [])].join("\n\n");
+  return envelope(output, reply && "results" in reply ? reply.results : []);
 }

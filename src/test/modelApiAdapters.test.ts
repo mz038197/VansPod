@@ -1105,7 +1105,7 @@ test("Codex web search sends Router only the first three queries and names the c
 
 test("Codex is told to read a page itself when it asks to open a URL, without contacting Router", async () => {
   const sample = codexSearchSample("open");
-  // Reading a known URL is not Web Search, so the class session's switch is never asked.
+  // Reading a known URL is not Web Search, so a Class Session that does not allow Web Search still gets this reply.
   await withFakeRouter(() => new Failure(403, { error: { code: "web_search_disabled" } }), async (routerBaseUrl, calls) => {
     const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(sample.body) }, routerBaseUrl);
     assert.equal(response.status, 200);
@@ -1124,8 +1124,10 @@ test("Codex is told to read a page itself when it asks to open a URL, without co
 test("Codex is told how to read a page for a search result id, a numbered link and a find, without contacting Router", async () => {
   const sample = codexSearchSample("open");
   const cases: Array<[Record<string, unknown>, RegExp[]]> = [
-    [{ open: [{ ref_id: "turn0search0" }] }, [/The open command is not run for you/, /turn0search0 is not kept/, /URL listed for that result/]],
-    [{ click: [{ ref_id: "turn0fetch3", id: 17 }] }, [/The click command is not run for you/, /fetch the URL that link points to/]],
+    [{ open: [{ ref_id: "turn0search0" }] }, [/The open command is not run for you/, /turn0search0 is result \[1\] of your latest web search results, so use the URL listed there/]],
+    [{ open: [{ ref_id: "turn2search4" }] }, [/turn2search4 is result \[5\]/]],
+    [{ open: [{ ref_id: "HTTPS://Example.com/A" }] }, [/Requested: HTTPS:\/\/Example\.com\/A /]],
+    [{ click: [{ ref_id: "turn0fetch3", id: 17 }] }, [/The click command is not run for you/, /turn0fetch3 is not kept/, /Link numbers are not kept either/, /fetch the URL it points to/]],
     [{ find: [{ ref_id: "https://example.com/docs", pattern: "Annie Case" }] }, [/The find command is not run for you/, /Requested: https:\/\/example\.com\/docs /, /search its text for the pattern yourself/]],
     [{ open: [{ ref_id: "https://example.com", lineno: 120 }, { ref_id: "https://example.com" }], find: [{ ref_id: "turn0fetch3", pattern: "x" }] }, [/The open, find commands are not run for you/, /Requested: https:\/\/example\.com Fetch only/]],
   ];
@@ -1142,7 +1144,35 @@ test("Codex is told how to read a page for a search result id, a numbered link a
   });
 });
 
-test("Codex web commands other than search_query get a clear unsupported result and never reach Router", async () => {
+test("Codex keeps permission to read a page apart from a refusal in the same reply", async () => {
+  const sample = codexSearchSample("search-query");
+  const open = [{ ref_id: "https://example.com" }];
+  const separate = /This is separate from the above: reading a page is not a web search, and asking to read a page is not retrying it\. To read a page, fetch it yourself\./;
+  const send = async (commands: Record<string, unknown>, routerBaseUrl: string) => {
+    const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: "synthetic-key", body: JSON.stringify({ ...sample.body, commands }) }, routerBaseUrl);
+    assert.equal(response.status, 200);
+    return (await response.json() as { output: string }).output;
+  };
+  // The search is refused by the Class Session, the page can still be read.
+  await withFakeRouter(() => new Failure(403, { error: { code: "web_search_disabled" } }), async (routerBaseUrl, calls) => {
+    const output = await send({ ...sample.body.commands, open }, routerBaseUrl);
+    assert.match(output, /not enabled for this class session/);
+    assert.match(output, separate);
+    assert.ok(output.indexOf("Do not retry this tool") < output.indexOf("This is separate from the above"), output);
+    assert.equal(calls.length, 1);
+  });
+  await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
+    const refused = await send({ open, finance: [{ ticker: "2330" }] }, routerBaseUrl);
+    assert.match(refused, /were not run: finance\./);
+    assert.match(refused, separate);
+    assert.ok(refused.indexOf("tell the user this classroom session cannot do it") < refused.indexOf("This is separate from the above"), refused);
+    assert.equal(calls.length, 0);
+    // Nothing was refused, so there is nothing to set the permission apart from.
+    assert.doesNotMatch(await send({ ...sample.body.commands, open }, routerBaseUrl), /separate from the above/);
+  });
+});
+
+test("Codex web commands that neither search nor read a page get a clear unsupported result and never reach Router", async () => {
   const blank = codexSearchSample("search-query");
   const samples = [codexSearchSample("finance"), { ...blank, body: { ...blank.body, commands: { search_query: [], weather: [{ location: "Taichung" }] } } }];
   await withFakeRouter(() => ({ results: [] }), async (routerBaseUrl, calls) => {
@@ -1153,6 +1183,7 @@ test("Codex web commands other than search_query get a clear unsupported result 
       assert.match(reply.output, /not supported/);
       assert.ok(reply.output.includes(command), reply.output);
       assert.match(reply.output, /search_query/);
+      assert.match(reply.output, /Do not use shell commands \(curl, wget, scripts\) to get that information some other way/);
       assert.deepEqual([reply.encrypted_output, reply.results], [null, []]);
     }
     assert.equal(calls.length, 0);
