@@ -3,11 +3,13 @@ import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const execute = promisify(execFile);
 const entry = path.join(__dirname, "..", "entry.js");
+const expectedVersion = JSON.parse(readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).version;
 
 test("failed client initialization reports a useful error and leaves no unmanageable worker", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-start-failure-"));
@@ -42,7 +44,7 @@ test("start returns while one background service survives and repeated starts sh
     await execute(process.execPath, [entry, "start"], { env, timeout: 20000 });
     const second = JSON.parse((await execute(process.execPath, [entry, "status", "--json"], { env })).stdout);
     assert.equal(first.pid, second.pid);
-    assert.equal(second.version, "0.1.0");
+    assert.equal(second.version, expectedVersion);
     const response = await fetch(`${second.origin}/`);
     const html = await response.text();
     assert.match(html, /rel="icon"/);
@@ -53,7 +55,7 @@ test("start returns while one background service survives and repeated starts sh
     const runtime = JSON.parse(await fs.readFile(path.join(home, "local", "VansPod", "runtime", "instance.json"), "utf8"));
     await fetch(`${second.origin}/_vanspod/open`, { method: "POST", headers: {Authorization: `Bearer ${runtime.token}`}, body: JSON.stringify({version: "0.0.9"}) });
     const mismatch = await (await fetch(`${second.origin}/_vanspod/status`, {headers: {Authorization: `Bearer ${runtime.token}`}})).json() as { launchVersion: string; version: string };
-    assert.equal(mismatch.version, "0.1.0");
+    assert.equal(mismatch.version, expectedVersion);
     assert.equal(mismatch.launchVersion, "0.0.9");
     const marker = path.join(home, "local", "VansPod", "uninstall-ready");
     await fs.writeFile(marker, JSON.stringify({pid: process.pid}));
@@ -113,7 +115,7 @@ test("version and help work without starting a service or creating student data"
   try {
     const env = { ...process.env, USERPROFILE: home, HOME: home, CLASSROOM_APP_PORT: "invalid-port" };
     const version = await execute(process.execPath, [entry, "--version"], { env });
-    assert.equal(version.stdout.trim(), "0.1.0");
+    assert.equal(version.stdout.trim(), expectedVersion);
     const help = await execute(process.execPath, [entry, "--help"], { env });
     assert.match(help.stdout, /start.*status.*stop.*uninstall/s);
     assert.doesNotMatch(help.stdout, /vanspod open/);

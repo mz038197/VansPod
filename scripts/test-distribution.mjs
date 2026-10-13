@@ -9,6 +9,7 @@ import { fakeRouter, sandbox } from './test-windows-exe.mjs';
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
 const npmCli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 const box = await sandbox();
 const router = await fakeRouter();
@@ -28,7 +29,7 @@ const manage = async (action, body) => {
 try {
   await fs.mkdir(exeDirectory);
   await fs.copyFile(path.join(root, 'dist/VansPod.exe'), exe);
-  assert.equal((await execute(exe, ['--version'], { env })).stdout.trim(), '0.1.0');
+  assert.equal((await execute(exe, ['--version'], { env })).stdout.trim(), expectedVersion);
   // Pack excludes SEA output, tests, and build-machine paths.
   const packed = JSON.parse((await execute(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', box.root], { cwd: root })).stdout)[0];
   assert(!packed.files.some(file => /sea-|\.exe$|dist\/test\//.test(file.path)));

@@ -1,0 +1,79 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out version tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check types
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify release version
+        run: |
+          node -e "const pkg = require('./package.json'); const { VERSION } = require('./dist/version.js'); if (process.env.GITHUB_REF_NAME !== 'v' + pkg.version || VERSION !== pkg.version) throw new Error('Tag, package.json and runtime versions must match');"
+
+      - name: Build Windows executable
+        run: npm run dist
+
+      - name: Verify exe and npm lifecycle
+        run: node scripts/test-distribution.mjs
+
+      - name: Verify Windows executable
+        run: node scripts/test-windows-exe.mjs
+
+      - name: Create checksum
+        run: |
+          node -e "const fs = require('node:fs'); const crypto = require('node:crypto'); const hash = crypto.createHash('sha256').update(fs.readFileSync('dist/VansPod.exe')).digest('hex'); fs.writeFileSync('dist/SHA256SUMS.txt', hash + '  VansPod.exe\n');"
+
+      - name: Save release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: VansPod-${{ github.ref_name }}-windows-x64
+          path: |
+            dist/VansPod.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG dist/VansPod.exe dist/SHA256SUMS.txt --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $env:RELEASE_TAG dist/VansPod.exe dist/SHA256SUMS.txt --verify-tag --generate-notes --title "VansPod $env:RELEASE_TAG" --repo $env:GITHUB_REPOSITORY
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -42,6 +42,20 @@ exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.1.0.tgz`；�
 
 exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry；正式上架需先確認套件名稱及發佈帳號權限。更新時不要執行完整移除，否則會清除課堂資料。
 
+## GitHub Actions 發佈 exe
+
+一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。此流程不會發佈 npm 套件。
+
+發版前同步 `package.json`、`package-lock.json` 與 `src/version.ts` 的版本；tag 必須等於 `v` 加版本號，否則流程失敗。以 `0.1.0` 為例：
+
+```powershell
+git push origin master
+git tag -a v0.1.0 -m "VansPod 0.1.0"
+git push origin v0.1.0
+```
+
+新版本使用新的版本號與 tag。相同 tag 的 Actions 重跑會更新該 Release 的產物。
+
 本機課堂 app。規格是 [classroom-one-click-install#8](https://github.com/mz038197/classroom-one-click-install/issues/8)。
 
 不放進凡思課堂安裝擴充，也不從 opencodex fork。領域詞以該 repo 的 CONTEXT.md 為準。視窗決定見該 repo 的 ADR 0017。
