@@ -2,7 +2,7 @@ import { VERSION } from "./version";
 import { spawn } from "node:child_process";
 import { isSea } from "node:sea";
 import path from "node:path";
-import { readInstance, reserveInstance, saveInstance, releaseInstance, isAlive, control, managementDirectory } from "./instance";
+import { readInstance, reserveInstance, saveInstance, releaseInstance, isAlive, control, managementDirectory, removalInProgress } from "./instance";
 import fs from "node:fs/promises";
 import { openBrowser } from "./desktop";
 import { registerInstallation } from "./installations";
@@ -48,6 +48,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     return;
   }
   if (command === "uninstall") {
+    if (await removalInProgress()) throw new Error("VansPod 完整移除中，請等待移除結果。");
     await registerInstallation();
     let instance = await readInstance();
     if (!instance || !isAlive(instance.pid)) { await runCli(["start"]); instance = await readInstance(); }
@@ -84,7 +85,15 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
       const failure = await fs.readFile(path.join(managementDirectory(), "startup-error.json"), "utf8").then(raw => (JSON.parse(raw) as {message: string}).message).catch(() => "請檢查本機環境與連接埠後重試。");
       throw new Error(`VansPod 啟動失敗：${failure}`);
     }
-    if (current.origin) { ready = await control(current, "status"); break; }
+    if (current.origin) {
+      const status = await control(current, "status").catch(async error => {
+        const failure = await fs.readFile(path.join(managementDirectory(), "startup-error.json"), "utf8").then(raw => (JSON.parse(raw) as {message: string}).message).catch(() => undefined);
+        if (failure) throw new Error(failure);
+        throw error;
+      });
+      if (status.startupError) throw new Error(status.startupError);
+      if (status.ready !== false) { ready = status; break; }
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (!ready) throw new Error("VansPod 啟動逾時，請稍後用 vanspod status 檢查。");

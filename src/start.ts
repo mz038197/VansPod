@@ -30,7 +30,7 @@ import { sendRouter, relayResponse } from "./modelProxy";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
 import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
-import { asset } from "./desktop";
+import { asset, openBrowser } from "./desktop";
 import { lifecyclePage } from "./lifecyclePage";
 import { removalPreview, prepareRemoval } from "./removal";
 
@@ -329,20 +329,6 @@ function redirect(res: http.ServerResponse, location = "/"): void {
   res.end();
 }
 
-function openBrowser(url: string): void {
-  if (process.platform === "darwin") {
-    spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
-    return;
-  }
-  if (process.platform === "win32") {
-    spawn("cmd.exe", ["/d", "/c", "start", "", url], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    }).unref();
-  }
-}
-
 async function openTray(url: string): Promise<ChildProcess> {
   const directory = path.join(managementDirectory(), "desktop-assets");
   await fs.mkdir(directory, { recursive: true });
@@ -471,6 +457,8 @@ export async function main(instance?: Instance): Promise<void> {
   let app!: ClassroomApp;
   let exitRequested = false;
   let launchVersion: string | undefined;
+  let ready = false;
+  let startupError: string | undefined;
   let tray: ChildProcess | undefined;
   const exit = async () => {
     tray?.kill();
@@ -551,7 +539,7 @@ export async function main(instance?: Instance): Promise<void> {
           res.writeHead(403); res.end(JSON.stringify({ id: instance.id, ok: false })); return;
         }
         const reply = (value: object) => { res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify({ id: instance.id, ...value })); };
-        if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
+        if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, ready, startupError, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
         if (req.method === "POST" && pathname === "/_vanspod/open") {
           const body = JSON.parse(await readBody(req)) as { version?: string };
           if (typeof body.version === "string" && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(body.version)) launchVersion = body.version;
@@ -575,7 +563,7 @@ export async function main(instance?: Instance): Promise<void> {
             await app.stop();
             restored = true;
             if (uninstall) {
-              const launchRemoval = await prepareRemoval(Number.isSafeInteger(body.waitForPid) && body.waitForPid! > 0 ? body.waitForPid : undefined);
+              const launchRemoval = await prepareRemoval(Number.isSafeInteger(body.waitForPid) && body.waitForPid! > 0 ? body.waitForPid : undefined, instance.id);
               await launchRemoval();
             }
             reply({ ok: true, message: uninstall ? "完整移除已開始；結果會以 Windows 訊息顯示。未完成時會保留移除工具供重試。" : "VansPod 已結束，可關閉此分頁。" });
@@ -814,9 +802,22 @@ export async function main(instance?: Instance): Promise<void> {
   };
 
   const ui = await clientRouteRuntime.startUi!();
-  await app.start();
   const home = `${ui.origin}/`;
-  if (instance) { instance.pid = process.pid; instance.origin = ui.origin; await saveInstance(instance); }
+  try { if (instance) { instance.pid = process.pid; instance.origin = ui.origin; await saveInstance(instance); } }
+  catch (error) { await clientRouteRuntime.stop(); throw error; }
+  try { await app.start(); ready = true; }
+  catch {
+    startupError = "客戶端初始化失敗，請檢查本機 Client Route 設定、備份格式與檔案權限。";
+    await fs.writeFile(path.join(managementDirectory(), "startup-error.json"), JSON.stringify({message: startupError}), {mode: 0o600}).catch(() => undefined);
+    let restored = false;
+    try { await app.stop(); restored = true; } catch { /* Keep the UI and management API for a safe retry. */ }
+    if (restored) {
+      await clientRouteRuntime.stop();
+      if (instance) await releaseInstance(instance.id);
+      throw new Error(startupError);
+    }
+    startupError += " 設定恢復未完成，服務已保留；修復後請重試 vanspod stop。";
+  }
   tray = runtimeOptions.desktop && process.platform === "win32" && instance ? await openTray(home) : undefined;
   if (runtimeOptions.desktop && !process.env.VANSPOD_WORKER_TOKEN) openBrowser(home);
   const shutdown = () => {

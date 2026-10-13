@@ -5,7 +5,7 @@ import path from "node:path";
 import { VERSION } from "./version";
 
 export type Instance = { pid: number; id: string; token: string; version: string; origin?: string };
-export type ControlResult = { id: string; ok?: boolean; running?: boolean; pid?: number; version?: string; origin?: string; message?: string; confirmation?: boolean; launchVersion?: string; activeRequests?: number; installing?: boolean };
+export type ControlResult = { id: string; ok?: boolean; running?: boolean; ready?: boolean; startupError?: string; pid?: number; version?: string; origin?: string; message?: string; confirmation?: boolean; launchVersion?: string; activeRequests?: number; installing?: boolean };
 export const dataDirectory = () => path.join(os.homedir(), ".vanspod");
 export const managementDirectory = () => path.join(process.env.LOCALAPPDATA || os.homedir(), "VansPod");
 const lockDirectory = () => path.join(managementDirectory(), "runtime");
@@ -27,10 +27,24 @@ export function isAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
+export async function removalInProgress(): Promise<boolean> {
+  try {
+    const value = JSON.parse(await fs.readFile(path.join(managementDirectory(), "uninstall-ready"), "utf8")) as {pid: number};
+    return !Number.isSafeInteger(value.pid) || isAlive(value.pid);
+  } catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
+}
+
 export async function saveInstance(instance: Instance): Promise<void> {
   const temporary = `${stateFile()}.${instance.id}.${process.pid}.tmp`;
   await fs.writeFile(temporary, JSON.stringify(instance), { mode: 0o600 });
-  await fs.rename(temporary, stateFile());
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(temporary, stateFile()); return; }
+    catch (error) {
+      if (attempt >= 40 || !["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      // Windows may briefly hold the old record while a launcher reads it.
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
 }
 
 export async function releaseInstance(id: string): Promise<void> {
@@ -47,8 +61,10 @@ export async function releaseInstance(id: string): Promise<void> {
 export async function reserveInstance(): Promise<{ instance: Instance; owner: boolean }> {
   await fs.mkdir(managementDirectory(), { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < 200; attempt++) {
+    if (await removalInProgress()) throw new Error("VansPod 完整移除中，請等待移除結果。");
     try {
       await fs.mkdir(lockDirectory(), { mode: 0o700 });
+      if (await removalInProgress()) { await fs.rmdir(lockDirectory()); throw new Error("VansPod 完整移除中，請等待移除結果。"); }
       const instance: Instance = { pid: process.pid, id: randomBytes(16).toString("hex"), token: randomBytes(32).toString("hex"), version: VERSION };
       await saveInstance(instance);
       return { instance, owner: true };
@@ -63,6 +79,10 @@ export async function reserveInstance(): Promise<{ instance: Instance; owner: bo
         const retired = path.join(lockDirectory(), file);
         const value = await fs.readFile(retired, "utf8").then(raw => JSON.parse(raw) as Instance).catch(() => undefined);
         if (value && file === `retired-${value.id}.json` && !isAlive(value.pid)) { await fs.rm(retired, { force: true }); removedRetired = true; }
+      }
+      for (const file of files) {
+        const temporary = /^instance\.json\.[a-f0-9]{32}\.(\d+)\.tmp$/.exec(file);
+        if (temporary && !isAlive(Number(temporary[1]))) { await fs.rm(path.join(lockDirectory(), file), {force: true}); removedRetired = true; }
       }
       const state = await fs.stat(lockDirectory()).catch(() => undefined);
       if (state && (removedRetired || Date.now() - state.mtimeMs > 30000)) await fs.rmdir(lockDirectory()).catch(() => undefined);
@@ -85,6 +105,7 @@ export async function control(instance: Instance, action: string, body?: unknown
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(20000),
   });
+  if (!response.ok) throw new Error("VansPod 管理操作授權失敗，請確認本機執行紀錄。");
   const result = await response.json() as ControlResult;
   if (result.id !== instance.id) throw new Error("VansPod 實例身分驗證失敗。");
   return result;

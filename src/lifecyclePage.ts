@@ -29,6 +29,7 @@ export function lifecyclePage(html: string, token: string): string {
         finally { button.disabled = false; }
       });
       request('status').then(function (status) {
+        if (status.startupError) { document.querySelector('[data-lifecycle-message]').textContent = status.startupError; return; }
         if (status.launchVersion && status.launchVersion !== status.version) document.querySelector('[data-lifecycle-message]').textContent = '目前執行版本 ' + status.version + '，本次開啟版本 ' + status.launchVersion + '。換版請先結束 VansPod。';
       }).catch(function () {});
     })();

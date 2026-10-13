@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isSea } from "node:sea";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { managementDirectory } from "./instance";
+import { managementDirectory, removalInProgress } from "./instance";
 
 export type Installation = { kind: "exe"; file: string; sha256: string } | { kind: "npm"; root: string; prefix: string; node: string; npmCli: string };
 const manifestFile = () => path.join(managementDirectory(), "installations.json");
@@ -16,6 +16,7 @@ export async function installations(): Promise<Installation[]> {
 }
 
 export async function registerInstallation(): Promise<void> {
+  if (await removalInProgress()) throw new Error("VansPod 完整移除中，請稍後重試。");
   let installation: Installation | undefined;
   if (isSea()) installation = { kind: "exe", file: process.execPath, sha256: createHash("sha256").update(await fs.readFile(process.execPath)).digest("hex") };
   else {

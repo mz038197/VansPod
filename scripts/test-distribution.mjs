@@ -13,7 +13,8 @@ const npmCli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/n
 const box = await sandbox();
 const router = await fakeRouter();
 const env = { ...box.env, CLASSROOM_ROUTER_BASE_URL: router.url, CLASSROOM_APP_PORT: '49901' };
-const exe = path.join(box.root, 'VansPod.exe');
+const exeDirectory = path.join(box.root, 'tools');
+const exe = path.join(exeDirectory, 'VansPod.exe');
 let runtime;
 const wait = async condition => {
   for (let attempt = 0; attempt < 300; attempt++) { if (await condition()) return; await new Promise(resolve => setTimeout(resolve, 100)); }
@@ -25,13 +26,17 @@ const manage = async (action, body) => {
   return response.json();
 };
 try {
+  await fs.mkdir(exeDirectory);
   await fs.copyFile(path.join(root, 'dist/VansPod.exe'), exe);
   assert.equal((await execute(exe, ['--version'], { env })).stdout.trim(), '0.1.0');
   // Pack excludes SEA output, tests, and build-machine paths.
   const packed = JSON.parse((await execute(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', box.root], { cwd: root })).stdout)[0];
   assert(!packed.files.some(file => /sea-|\.exe$|dist\/test\//.test(file.path)));
   const prefix = path.join(box.root, 'npm');
-  await execute(process.execPath, [npmCli, 'install', '--global', '--prefix', prefix, '--ignore-scripts', path.join(box.root, packed.filename)], { env, timeout: 60000 });
+  await execute(process.execPath, [npmCli, 'install', '--global', '--prefix', prefix, path.join(box.root, packed.filename)], { env, timeout: 60000 });
+  const registration = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/installations.json'), 'utf8'));
+  assert.equal(registration.some(item => item.kind === 'npm' && item.root === path.join(prefix, 'node_modules/vanspod')), true);
+  assert.equal(await fs.stat(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime')).catch(() => undefined), undefined);
   const npmEntry = path.join(prefix, 'node_modules/vanspod/bin/vanspod.cjs');
   await execute(exe, ['start'], { env, timeout: 20000 });
   runtime = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime/instance.json'), 'utf8'));
@@ -84,12 +89,37 @@ try {
   await wait(async () => !!(await fs.stat(path.join(box.env.LOCALAPPDATA, 'VansPod/removal-result.json')).catch(() => undefined)));
   const incomplete = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/removal-result.json'), 'utf8'));
   assert.equal(incomplete.ok, false);
-  assert.equal(incomplete.remaining, exe);
+  assert(incomplete.remaining.includes(exe));
+  assert(incomplete.remaining.includes(path.join(prefix, 'node_modules/vanspod')));
   assert(await fs.stat(path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-tool.ps1')));
   assert(await fs.stat(path.join(prefix, 'node_modules/vanspod')));
   await fs.copyFile(path.join(root, 'dist/VansPod.exe'), exe);
-  await execute('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-tool.ps1'), '-Plan', path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-plan.json')], {env, timeout: 40000});
-  try { await wait(async () => !(await fs.stat(path.join(box.env.USERPROFILE, '.vanspod')).catch(() => undefined))); }
+  await execute(process.execPath, [npmEntry, 'start'], {env, timeout: 20000});
+  runtime = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime/instance.json'), 'utf8'));
+  await post('redeem', {invite_code: 'first', nickname: 'Student'});
+  await post('switch', {client: 'vscode', mode: 'classroom'});
+  const classroomProviders = await fs.readFile(box.paths.copilot, 'utf8');
+  await assert.rejects(execute('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-tool.ps1')], {env, timeout: 10000}));
+  assert.equal((await manage('status')).running, true);
+  assert.equal(await fs.readFile(box.paths.copilot, 'utf8'), classroomProviders);
+  assert(await fs.stat(box.paths.connection));
+  assert(await fs.stat(path.join(prefix, 'node_modules/vanspod')));
+  assert.equal((await manage('stop', {confirmed: true})).ok, true);
+  await wait(async () => !(await fs.stat(path.join(box.env.LOCALAPPDATA, 'VansPod/runtime')).catch(() => undefined)));
+  // A registered ordinary leaf beneath a replaced ancestor must never delete
+  // the identical binary in the student's other folder.
+  const savedDirectory = path.join(box.root, 'tools-saved');
+  const foreignDirectory = path.join(box.root, 'student-binaries');
+  await fs.mkdir(foreignDirectory);
+  await fs.copyFile(exe, path.join(foreignDirectory, 'VansPod.exe'));
+  await fs.rename(exeDirectory, savedDirectory);
+  await fs.symlink(foreignDirectory, exeDirectory, 'junction');
+  await assert.rejects(execute('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-tool.ps1')], {env, timeout: 10000}));
+  assert(await fs.stat(path.join(foreignDirectory, 'VansPod.exe')));
+  await fs.unlink(exeDirectory);
+  await fs.rename(savedDirectory, exeDirectory);
+  await execute('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(box.env.LOCALAPPDATA, 'VansPod/uninstall-tool.ps1')], {env, timeout: 40000});
+  try { await wait(async () => !(await fs.stat(path.join(box.env.LOCALAPPDATA, 'VansPod')).catch(() => undefined))); }
   catch (error) {
     const result = await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/removal-result.json'), 'utf8').catch(() => error.message);
     throw new Error(result);

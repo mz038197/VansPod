@@ -9,6 +9,29 @@ import path from "node:path";
 const execute = promisify(execFile);
 const entry = path.join(__dirname, "..", "entry.js");
 
+test("failed client initialization reports a useful error and leaves no unmanageable worker", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-start-failure-"));
+  const bin = path.join(home, "bin");
+  const env = {...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), PATH: bin + path.delimiter + process.env.PATH, CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: "49891"};
+  try {
+    await fs.mkdir(bin); await fs.mkdir(path.join(home, ".codex"));
+    await fs.writeFile(path.join(bin, "codex.cmd"), "@exit /b 0\r\n");
+    await fs.writeFile(path.join(home, ".codex", "classroom-model-backup.json"), "{broken");
+    await assert.rejects(execute(process.execPath, [entry, "start"], {env, timeout: 8000}), /初始化失敗|備份/);
+    const status = JSON.parse((await execute(process.execPath, [entry, "status", "--json"], {env})).stdout);
+    if (status.running) {
+      assert.equal(status.ready, false);
+      assert.match(status.startupError, /初始化失敗/);
+    }
+    await fs.rm(path.join(home, ".codex", "classroom-model-backup.json"));
+    await execute(process.execPath, [entry, "stop"], {env, timeout: 10000});
+  } finally {
+    const state = await fs.readFile(path.join(home, "local", "VansPod", "runtime", "instance.json"), "utf8").then(raw => JSON.parse(raw) as {pid: number}).catch(() => undefined);
+    if (state) { try { process.kill(state.pid); } catch {} }
+    await fs.rm(home, {recursive: true, force: true});
+  }
+});
+
 test("start returns while one background service survives and repeated starts share it", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-background-"));
   const env = { ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, "roaming"), LOCALAPPDATA: path.join(home, "local"), CLASSROOM_APP_HEADLESS: "1", CLASSROOM_APP_PORT: "49871" };
@@ -32,6 +55,15 @@ test("start returns while one background service survives and repeated starts sh
     const mismatch = await (await fetch(`${second.origin}/_vanspod/status`, {headers: {Authorization: `Bearer ${runtime.token}`}})).json() as { launchVersion: string; version: string };
     assert.equal(mismatch.version, "0.1.0");
     assert.equal(mismatch.launchVersion, "0.0.9");
+    const marker = path.join(home, "local", "VansPod", "uninstall-ready");
+    await fs.writeFile(marker, JSON.stringify({pid: process.pid}));
+    await assert.rejects(execute(process.execPath, [entry, "start"], {env}), /完整移除中/);
+    assert.equal(JSON.parse((await execute(process.execPath, [entry, "status", "--json"], {env})).stdout).pid, first.pid);
+    await fs.rm(marker);
+    const recordFile = path.join(home, "local", "VansPod", "runtime", "instance.json");
+    await fs.writeFile(recordFile, JSON.stringify({...runtime, token: "0".repeat(64)}));
+    try { await assert.rejects(execute(process.execPath, [entry, "status", "--json"], {env}), /授權|身分/); }
+    finally { await fs.writeFile(recordFile, JSON.stringify(runtime)); }
     const denied = await fetch(`${second.origin}/_vanspod/stop`, { method: "POST", headers: { Authorization: `Bearer ${runtime.token}`, Origin: "https://unrelated.example" }, body: "{}" });
     assert.equal(denied.status, 403);
     await execute(process.execPath, [entry, "stop"], { env, timeout: 20000 });

@@ -9,9 +9,15 @@ $expectedRoot = [System.IO.Path]::GetFullPath((Join-Path $localRoot 'VansPod'))
 $root = [System.IO.Path]::GetFullPath($planData.root)
 $dataRoot = [System.IO.Path]::GetFullPath($planData.dataRoot)
 if ($planData.version -ne 1 -or $root -ne $expectedRoot -or $dataRoot -ne [System.IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.vanspod')) -or [System.IO.Path]::GetFullPath($Plan) -ne (Join-Path $root 'uninstall-plan.json')) { throw 'Invalid removal plan' }
-[System.IO.File]::WriteAllText((Join-Path $root 'uninstall-ready'), 'ready', $utf8)
+[System.IO.File]::WriteAllText((Join-Path $root 'uninstall-ready'), (@{pid = $PID} | ConvertTo-Json -Compress), $utf8)
 
 function Assert-NoLinks([string]$Target) {
+  # A regular leaf can still resolve through a junction in any ancestor.
+  $ancestor = [System.IO.Path]::GetFullPath($Target)
+  while ($ancestor) {
+    if ((Test-Path -LiteralPath $ancestor) -and ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw "拒絕移除連結：$ancestor" }
+    $ancestor = [System.IO.Path]::GetDirectoryName($ancestor)
+  }
   if (Test-Path -LiteralPath $Target) {
     $item = Get-Item -LiteralPath $Target -Force
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "拒絕移除連結：$Target" }
@@ -35,6 +41,13 @@ try {
       for ($attempt = 0; $attempt -lt 300 -and (Get-Process -Id $processId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 100 }
       if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { throw 'VansPod 尚未退出，請結束後重試。' }
     }
+  }
+  $currentStateFile = Join-Path $root 'runtime/instance.json'
+  if (Test-Path -LiteralPath (Join-Path $root 'runtime')) {
+    if (-not (Test-Path -LiteralPath $currentStateFile)) { throw 'VansPod 正在啟動，請從畫面或 vanspod uninstall 重試完整移除。' }
+    $currentState = [System.IO.File]::ReadAllText($currentStateFile, $utf8) | ConvertFrom-Json
+    if ($currentState.id -ne $planData.instanceId) { throw 'VansPod 已有新的執行紀錄，請從畫面或 vanspod uninstall 重試完整移除，以先恢復客戶端設定。' }
+    if (Get-Process -Id $currentState.pid -ErrorAction SilentlyContinue) { throw 'VansPod 已重新啟動，請從畫面或 vanspod uninstall 重試完整移除。' }
   }
   foreach ($name in @('connection.json', 'settings.json', 'vscode-route-journal.json')) { $failedTarget = Join-Path $dataRoot $name; Remove-Owned $name $dataRoot }
   $legacyRoot = [System.IO.Path]::GetFullPath((Join-Path $localRoot 'classroom-app'))
@@ -93,8 +106,24 @@ try {
   Assert-NoLinks $root
   [System.IO.File]::WriteAllText((Join-Path $root 'uninstall-plan.json'), $planSource, $utf8)
   [System.IO.File]::WriteAllText((Join-Path $root 'uninstall-tool.ps1'), $toolSource, (New-Object System.Text.UTF8Encoding($true)))
-  $message = "移除未完成：$failedTarget`n$($_.Exception.Message)`n請重試完整移除；也可執行保留的 uninstall-tool.ps1，指定 uninstall-plan.json。"
-  [System.IO.File]::WriteAllText((Join-Path $root 'removal-result.json'), (@{ok = $false; message = $message; remaining = $failedTarget} | ConvertTo-Json), $utf8)
+  $reason = $_.Exception.Message
+  $remaining = @($failedTarget)
+  foreach ($installation in $planData.installations) {
+    $location = if ($installation.kind -eq 'exe') { $installation.file } else { $installation.root }
+    if (Test-Path -LiteralPath $location) { $remaining += $location }
+  }
+  foreach ($name in @('runtime', 'desktop-assets', 'logs', 'installations.json', 'installations.lock', 'installations.json.tmp', 'uninstall-plan.json', 'uninstall-tool.ps1', 'uninstall-ready', 'startup-error.json', 'removal-result.json')) {
+    $location = Join-Path $root $name
+    if (Test-Path -LiteralPath $location) { $remaining += $location }
+  }
+  $legacyFile = Join-Path $localRoot 'classroom-app/connection.json'
+  if (Test-Path -LiteralPath $legacyFile) { $remaining += $legacyFile }
+  if (Test-Path -LiteralPath $dataRoot) {
+    foreach ($file in Get-ChildItem -LiteralPath $dataRoot -File -Force) { if ($file.Name -match '^(connection\.json|settings\.json|vscode-route-journal\.json)(\..*tmp)?$') { $remaining += $file.FullName } }
+  }
+  $remaining = @($remaining | Select-Object -Unique)
+  $message = "移除未完成：$reason`n剩餘項目：`n$($remaining -join "`n")`n請重試完整移除；若 VansPod 已重新啟動，請從畫面或 vanspod uninstall 重試。保留的 uninstall-tool.ps1 僅在服務已結束時可直接執行。"
+  [System.IO.File]::WriteAllText((Join-Path $root 'removal-result.json'), (@{ok = $false; message = $message; remaining = $remaining} | ConvertTo-Json), $utf8)
   if (-not $planData.headless) { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show($message, 'VansPod') | Out-Null }
   exit 1
 }
