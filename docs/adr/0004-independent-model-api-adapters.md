@@ -126,12 +126,22 @@ code-review 的 Standards 軸最初提出 1 項重複驗證邏輯的維護建議
 同日 reasoning 回放（使用者決定，實作於 `src/adapters/claude-reasoning.ts`）：沒有回放時，推理模型在工具呼叫迴圈的每一輪都看不到自己先前的推理。實測 Claude Code 2.1.296 會把收到的 thinking 區塊連同 signature 原樣放回下一輪請求，包含 thinking 文字為空的區塊，因此以 signature 作為載體：
 
 - 請求的 `thinking` 為 `enabled`／`adaptive` 時才啟用；否則維持略過上游 reasoning，不回傳 thinking 區塊。
-- Responses：請求加上 `include: ["reasoning.encrypted_content"]`；上游的 reasoning 項目轉成 thinking 區塊，signature 為 `vpr1.` 加上 base64url 的 JSON，內含該項目回送時需要的欄位（`id`、`summary`、`content`、`encrypted_content`）與其文字。下一輪在原位置還原成同一個 reasoning 輸入項目。串流時在 `response.output_item.done` 一次送出整個區塊，因為加密內容到那時才完整；沒有文字也沒有加密內容的項目不產生區塊。
+- Responses：請求加上 `include: ["reasoning.encrypted_content"]`；上游的 reasoning 項目轉成 thinking 區塊，signature 為 `vpr1.` 加上 base64url 的 JSON，內含該項目回送時需要的欄位（`id`、`summary`、`content`、`encrypted_content`）。下一輪在原位置還原成同一個 reasoning 輸入項目。串流時在 `response.output_item.done` 一次送出整個區塊，因為加密內容到那時才完整；沒有文字也沒有加密內容的項目不產生區塊。
 - Chat：`reasoning_content`／`reasoning` 轉成只帶文字的 thinking 區塊，下一輪掛回同一則 assistant 訊息的 `reasoning_content`，與 Codex → Chat 的回放格式相同。
 - `display: "omitted"` 時 thinking 文字留空，內容只放在 signature；否則顯示文字，且 Responses 另送 `reasoning.summary: "auto"`。
 - 跨 adapter：Responses 產生的區塊送到 Chat 時以其文字回放；Chat 產生的區塊沒有 Responses 項目，送到 Responses 時略過。
 - signature 由客戶端送回，內容不可信：回放時只接受 `type: "reasoning"` 的項目，且只取用上述欄位；其他類型視為回放資料損毀而報錯。
 - 這是 VansPod 自有格式，不讀 opencodex 的 ocxr1 信封。opencodex 經 Claude Code 往返時只保留推理文字，VansPod 連同上游的加密內容一起保留。
+
+2026-10-13 reasoning 回放的防護（GitHub #31）：回放的內容留在對話歷史裡，上游一旦拒絕其中一項，之後每一輪都會失敗，學生只能清除對話。以下防護都還沒有在真實 Router 上重現過對應的失敗，是依程式碼推斷預先加上的。
+
+- signature 記錄產生它的模型，推理文字不再另存一份（文字可由項目取得）。Responses 只把 reasoning 項目回放給同一個模型；沒有記錄模型的舊 signature 照舊回放。Chat 回放的是文字，不受模型限制。
+- Responses 的 reasoning 項目只在同一則 assistant 訊息內、其後還有文字或工具呼叫時才送出；後面沒有輸出的項目不送，因為上游要求 reasoning 項目後面緊跟它對應的輸出。
+- 上游以 400 或 422 拒絕 Claude Code 的 Chat／Responses 請求時，去掉回放加進去的內容（reasoning 項目、`include`、`reasoning.summary`、`reasoning_content`）重送一次。重送成功就用它的回應；重送也失敗，回傳第一次的錯誤。沒有東西可去掉時不重送。代價：拒絕 `include` 的模型每個請求都會多送一次，且該模型實際上沒有回放。
+- Messages adapter 送出前移除 signature 為 `vpr1.` 的 thinking 區塊，因為 Anthropic 格式的上游會把它當成無效簽章。
+- 串流時沒有 `id` 的 reasoning 項目改以輸出位置區分，不再只留第一個。
+
+沒有處理、接受現狀的：切回 Native 後續接舊對話時，請求不經 VansPod，`vpr1.` 區塊會直接送到 Anthropic；每一輪的加密內容仍留在歷史並重送；`display: "omitted"` 時推理內容仍以 base64 存在 signature，會寫進 Claude Code 的本機對話紀錄。
 
 驗證：以真實 Claude Code CLI 經建置後的 Responses adapter 連到本機假上游，第一輪回傳 reasoning 與工具呼叫，第二輪上游收到的 input 在工具呼叫之前帶有相同的 reasoning 項目（id、summary、encrypted_content 都一致）。
 

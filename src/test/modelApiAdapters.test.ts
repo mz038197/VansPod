@@ -724,6 +724,100 @@ test("a thinking signature only replays a reasoning item's own fields", async ()
   await send(signed({ text: "", item: { ...replayedItem, role: "developer", status: "completed" } }), (status, input) => { assert.equal(status, 200); assert.deepEqual(input![1], replayedItem); });
 });
 
+const signedThinking = (carried: unknown) => ({ type: "thinking", thinking: "", signature: `vpr1.${Buffer.from(JSON.stringify(carried), "utf8").toString("base64url")}` });
+const claudeSend = (adapter: "chat" | "responses" | "messages", routerBaseUrl: string, history: unknown[]) =>
+  modelApiAdapter(adapter).send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn("omitted", false, history) });
+const emptyResponses = { id: "r", status: "completed", output: [] };
+
+test("a reasoning item is replayed only to the model that made it and only in front of its output", async () => {
+  const item = (id: string) => ({ ...replayedItem, id });
+  const history = [
+    { role: "assistant", content: [signedThinking({ model: "allowed", item: item("rs_same") }), { type: "text", text: "一" }] },
+    { role: "user", content: "next" },
+    { role: "assistant", content: [signedThinking({ model: "another", item: item("rs_other_model") }), { type: "text", text: "二" }] },
+    { role: "user", content: "next" },
+    { role: "assistant", content: [{ type: "text", text: "三" }, signedThinking({ model: "allowed", item: item("rs_unpaired") })] },
+    { role: "user", content: "next" },
+    { role: "assistant", content: [signedThinking({ item: item("rs_unlabelled") }), { type: "tool_use", id: "call_1", name: "read", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] },
+  ];
+  await withFakeRouter([emptyResponses], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("responses", routerBaseUrl, history)).status, 200);
+    const input = calls[0].body.input as Array<Record<string, unknown>>;
+    assert.deepEqual(input.filter(entry => entry.type === "reasoning").map(entry => entry.id), ["rs_same", "rs_unlabelled"]);
+    assert.equal(input[input.findIndex(entry => entry.id === "rs_same") + 1].role, "assistant");
+    assert.equal(input[input.findIndex(entry => entry.id === "rs_unlabelled") + 1].type, "function_call");
+  });
+});
+
+test("a thinking signature names its model and stores reasoning text once", async () => {
+  await withFakeRouter([{ id: "r", status: "completed", output: [reasoningItem, { type: "message", id: "m", content: [{ type: "output_text", text: "好" }] }] }], async routerBaseUrl => {
+    const { content } = await (await claudeSend("responses", routerBaseUrl, [])).json() as { content: ClaudeBlock[] };
+    assert.deepEqual(JSON.parse(Buffer.from(content[0].signature!.slice("vpr1.".length), "base64url").toString("utf8")), { model: "allowed", item: replayedItem });
+  });
+});
+
+for (const status of [400, 422]) test(`a Responses request the upstream rejects with ${status} is sent once more without replayed reasoning`, async () => {
+  const history = [{ role: "assistant", content: [signedThinking({ model: "allowed", item: replayedItem }), { type: "text", text: "好" }] }, { role: "user", content: "next" }];
+  await withFakeRouter([new Failure(status, { error: { message: "encrypted content could not be verified" } }), emptyResponses], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("responses", routerBaseUrl, history)).status, 200);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].body.include, ["reasoning.encrypted_content"]);
+    assert.equal(calls[1].body.include, undefined);
+    assert.deepEqual((calls[1].body.input as Array<Record<string, unknown>>).map(entry => entry.type ?? entry.role), ["user", "assistant", "user"]);
+  });
+});
+
+test("the first rejection is returned when the request without replayed reasoning also fails, and other failures are not retried", async () => {
+  await withFakeRouter([new Failure(400, { error: { message: "first" } }), new Failure(400, { error: { message: "second" } })], async (routerBaseUrl, calls) => {
+    const response = await claudeSend("responses", routerBaseUrl, []);
+    assert.equal(response.status, 400); assert.match(await response.text(), /first/); assert.equal(calls.length, 2);
+  });
+  await withFakeRouter([new Failure(429, { error: { message: "slow down" } })], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("responses", routerBaseUrl, [])).status, 429); assert.equal(calls.length, 1);
+  });
+});
+
+test("a Chat request the upstream rejects is sent once more without reasoning_content", async () => {
+  const history = [{ role: "assistant", content: [signedThinking({ model: "allowed", text: "先想" }), { type: "text", text: "好" }] }, { role: "user", content: "next" }];
+  const answer = { id: "c", choices: [{ message: { content: "ok" }, finish_reason: "stop" }] };
+  await withFakeRouter([new Failure(400, { error: { message: "reasoning_content is not allowed" } }), answer], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("chat", routerBaseUrl, history)).status, 200);
+    assert.equal((calls[0].body.messages as Array<Record<string, unknown>>)[1].reasoning_content, "先想");
+    assert.deepEqual((calls[1].body.messages as unknown[])[1], { role: "assistant", content: "好" });
+  });
+  // Nothing to take out, so the rejection stands.
+  await withFakeRouter([new Failure(400, { error: { message: "bad" } })], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("chat", routerBaseUrl, [])).status, 400); assert.equal(calls.length, 1);
+  });
+});
+
+test("the Messages adapter does not send thinking blocks made for another adapter", async () => {
+  const anthropic = { type: "thinking", thinking: "real", signature: "anthropic-signature" };
+  const history = [
+    { role: "assistant", content: [signedThinking({ model: "allowed", item: replayedItem }), anthropic, { type: "text", text: "好" }] },
+    { role: "user", content: "next" },
+  ];
+  await withFakeRouter([{ id: "msg", type: "message", role: "assistant", content: [] }], async (routerBaseUrl, calls) => {
+    assert.equal((await claudeSend("messages", routerBaseUrl, history)).status, 200);
+    assert.deepEqual((calls[0].body.messages as Array<Record<string, unknown>>)[1].content, [anthropic, { type: "text", text: "好" }]);
+  });
+});
+
+test("reasoning items without an id each become their own thinking block in a stream", async () => {
+  const first = { type: "reasoning", summary: [], encrypted_content: "one" }, second = { type: "reasoning", summary: [], encrypted_content: "two" };
+  const output = [first, second, { type: "message", id: "m", content: [{ type: "output_text", text: "好" }] }];
+  const events = [
+    { type: "response.output_item.done", output_index: 0, item: first }, { type: "response.output_item.done", output_index: 1, item: second },
+    { type: "response.output_text.delta", item_id: "m", output_index: 2, content_index: 0, delta: "好" },
+    { type: "response.completed", response: { id: "r", status: "completed", output } },
+  ];
+  await withFakeRouter([events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")], async routerBaseUrl => {
+    const response = await modelApiAdapter("responses").send({ client: "claude", model: "allowed", routerBaseUrl, apiKey: "synthetic-key", signal: new AbortController().signal, body: thinkingTurn("omitted", true) });
+    assert.equal((await response.text()).match(/"type":"signature_delta"/g)?.length, 2);
+  });
+});
+
 test("Responses reasoning reaches Claude Code as a thinking block and returns to the upstream unchanged", async () => {
   const output = [reasoningItem, { type: "message", id: "m", content: [{ type: "output_text", text: "好" }] }, { type: "function_call", id: "f", call_id: "call_1", name: "read", arguments: "{}" }];
   const events = [
