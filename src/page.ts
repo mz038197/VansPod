@@ -71,9 +71,18 @@ function notices(view: ClassroomAppView): string {
   return `${klass}${notice}${running}`;
 }
 
-function connectInner(view: ClassroomAppView): string {
-  const message = view.connectionError || view.connectionNotice || (view.detail !== "Classroom API Key 已設定。" ? view.detail : "");
+const COPY_KEY_NOTICE = "已複製 Classroom API Key。請勿分享給不信任的人。";
+
+function connectionFeedback(view: ClassroomAppView): string {
+  const original = view.connectionError || view.connectionNotice || (view.detail !== "Classroom API Key 已設定。" ? view.detail : "");
+  const message = original === COPY_KEY_NOTICE
+    ? "複製好了！API Key 不是群組伴手禮，別發給不信任的人喔。" : original;
   const feedback = `<div class="connection-feedback">${message ? `<div class="${view.connectionError ? "connection-error" : "connection-message"}" role="${view.connectionError ? "alert" : "status"}"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 15v2"/></svg><p>${escapeHtml(message)}</p></div>` : ""}</div>`;
+  return feedback;
+}
+
+function connectInner(view: ClassroomAppView): string {
+  const feedback = connectionFeedback(view);
   if (view.canCopyKey) {
     const off = locked(view);
     return `<form method="post" action="/copy">
@@ -744,6 +753,13 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
       };
       if (title === "連線") {
         moveForm("clear");
+        if (actions && !view.connectionError && view.connectionNotice === COPY_KEY_NOTICE) {
+          const feedback = connectionFeedback(view);
+          body = body.replace(feedback, "");
+          const speech = `<div class="mascot-speech">${feedback}<button type="button" class="mascot-speech-close" aria-label="收起法鬥台詞">知道啦</button></div>`;
+          body = body.replace('class="connection-mascot"', 'class="connection-mascot mascot-waiting mascot-speaking"')
+            .replace('<div class="mascot-traveler">', `${speech}<div class="mascot-traveler">`);
+        }
         if (!actions) {
           body = body.replace('action="/redeem"', 'action="/redeem" id="settings-redeem"');
           body = body.replace(/<button[\s\S]*?<\/button>/, (button) => {

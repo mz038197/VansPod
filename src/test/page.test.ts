@@ -38,6 +38,18 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
 });
 
 describe("VansPod page", () => {
+  it("lets the mascot announce a copied Classroom API Key without exposing the key", () => {
+    const notice = "已複製 Classroom API Key。請勿分享給不信任的人。";
+    const html = renderPage(view({ connectionNotice: notice, notice }));
+    const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.match(card, /mascot-speaking/);
+    assert.match(card, /複製好了！API Key 不是群組伴手禮，別發給不信任的人喔。/);
+    assert.match(card, /role="status"/);
+    assert.match(card, /aria-label="收起法鬥台詞"/);
+    assert.doesNotMatch(card, /已複製 Classroom API Key。/);
+    assert.equal(html.includes(KEY), false);
+  });
+
   it("keeps the disconnected mascot outside the redeem form and its connect button attached to that form", () => {
     const html = renderPage(view({ connected: false, canCopyKey: false, detail: "" }));
     const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
@@ -109,9 +121,11 @@ describe("VansPod page", () => {
     for (const state of messages) {
       const html = renderPage(view({ ...state, connectionNotice: state.notice }));
       const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
-      assert.ok(card.includes(state.notice));
+      const expected = state.notice === "已複製 Classroom API Key。請勿分享給不信任的人。"
+        ? "複製好了！API Key 不是群組伴手禮，別發給不信任的人喔。" : state.notice;
+      assert.ok(card.includes(expected));
       assert.ok(card.indexOf('class="connection-feedback"') < card.indexOf('class="settings-actions"'));
-      assert.equal(html.split(state.notice).length - 1, 1);
+      assert.equal(html.split(expected).length - 1, 1);
       assert.equal(html.includes(`<p class="notice">${state.notice}</p>`), false);
     }
     for (const state of [

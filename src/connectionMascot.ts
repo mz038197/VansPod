@@ -80,6 +80,9 @@ export const connectionMascotStyles = `
   .mascot-quote { color: var(--text); }
   .mascot-speech .connection-error, .mascot-speech .connection-message { padding: 0; margin-top: 6px; border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; }
   .mascot-speech .connection-error svg, .mascot-speech .connection-message svg { display: none; }
+  .mascot-speaking .connection-message { margin-top: 0; color: var(--text); font-size: 12px; }
+  main button.mascot-speech-close { margin-top: 6px; padding: 4px 0; min-height: 24px; background: transparent; color: var(--muted); border: 0; border-radius: 4px; font-size: 11px; }
+  main button.mascot-speech-close:hover { color: var(--text); }
   main button.mascot-pause { position: absolute; right: 0; bottom: 0; display: grid; place-items: center; min-height: 24px; width: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); opacity: 0.65; }
   main button.mascot-pause:hover, main button.mascot-pause:focus-visible { opacity: 1; background: var(--input); }
   .connection-mascot:hover .mascot-traveler, .connection-mascot:hover .mascot-facing, .connection-mascot:hover .mascot-logo, .connection-mascot:hover .mascot-foot,
@@ -136,9 +139,18 @@ export const connectionMascotStyles = `
 `;
 
 export const connectionMascotScript = `
+  var mascotSpeechDismissed = false;
+  function hideMascotSpeech(stage) {
+    stage.querySelector('.mascot-speech')?.remove();
+    stage.classList.remove('mascot-waiting', 'mascot-speaking');
+    stage.getAnimations({ subtree: true }).forEach(function (animation) {
+      if (animation.animationName === 'mascot-arrive') animation.currentTime = 780;
+      if (['mascot-walk', 'mascot-turn', 'mascot-left-step', 'mascot-right-step'].includes(animation.animationName)) animation.currentTime = 27780;
+    });
+  }
   function mascotAnimationState() {
     var mascot = document.querySelector('.connection-mascot');
-    return { paused: mascot?.hasAttribute('data-paused') || false, animations: mascot ? mascot.getAnimations({ subtree: true }).filter(function (animation) {
+    return { speechDismissed: mascotSpeechDismissed, paused: mascot?.hasAttribute('data-paused') || false, animations: mascot ? mascot.getAnimations({ subtree: true }).filter(function (animation) {
       return typeof animation.animationName === 'string';
     }).map(function (animation) {
       return { name: animation.animationName, time: animation.currentTime };
@@ -147,6 +159,8 @@ export const connectionMascotScript = `
   function restoreMascotAnimationState(state) {
     var mascot = document.querySelector('.connection-mascot');
     if (!mascot) return;
+    mascotSpeechDismissed = Boolean(state.speechDismissed);
+    if (mascotSpeechDismissed && mascot.classList.contains('mascot-speaking')) hideMascotSpeech(mascot);
     if (state.paused) {
       mascot.setAttribute('data-paused', '');
       var pause = mascot.querySelector('.mascot-pause');
@@ -160,6 +174,14 @@ export const connectionMascotScript = `
     });
   }
   document.addEventListener('click', function (event) {
+    var close = event.target.closest?.('.mascot-speech-close');
+    if (close && !close.disabled) {
+      var speaking = close.closest('.connection-mascot');
+      mascotSpeechDismissed = true;
+      hideMascotSpeech(speaking);
+      speaking.closest('.settings-card').querySelector('.connection-copy').focus({ preventScroll: true });
+      return;
+    }
     var pause = event.target.closest?.('.mascot-pause');
     if (pause && !pause.disabled) {
       var stage = pause.closest('.connection-mascot');

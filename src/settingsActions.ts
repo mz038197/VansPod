@@ -32,6 +32,7 @@ export const settingsActionsScript = `
       var connectionDraft = redeemForm && !form.matches('form[action="/redeem"], form[action="/clear"]')
         ? Array.from(redeemForm.querySelectorAll('input'), function (input) { return { name: input.name, value: input.value }; }) : [];
       var mascotState = typeof mascotAnimationState === "function" && !form.matches('form[action="/redeem"], form[action="/clear"]') ? mascotAnimationState() : [];
+      if (form.matches('form[action="/copy"]')) mascotState.speechDismissed = false;
       main.replaceChildren(...updated.childNodes);
       var updatedRedeemForm = main.querySelector?.('form[action="/redeem"]');
       updatedRedeemForm?.querySelectorAll('input').forEach(function (input) {
