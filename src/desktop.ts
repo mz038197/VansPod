@@ -15,5 +15,5 @@ export function openBrowser(url: string): void {
 export function asset(name: string): Promise<Buffer> {
   return isSea()
     ? Promise.resolve(Buffer.from(getAsset(name)))
-    : fs.readFile(path.join(__dirname, "..", name.startsWith("brand-") ? "media" : "scripts", name));
+    : fs.readFile(path.join(__dirname, "..", name.startsWith("brand-") || name.startsWith("fadou-superhero") ? "media" : "scripts", name));
 }

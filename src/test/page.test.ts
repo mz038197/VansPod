@@ -38,6 +38,36 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
 });
 
 describe("VansPod page", () => {
+  it("keeps the disconnected mascot outside the redeem form and its connect button attached to that form", () => {
+    const html = renderPage(view({ connected: false, canCopyKey: false, detail: "" }));
+    const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const form = card.match(/<form[^>]*action="\/redeem"[\s\S]*?<\/form>/)?.[0] ?? "";
+    assert.match(form, /id="settings-redeem"/);
+    assert.match(form, /name="invite_code"/);
+    assert.match(form, /name="nickname"/);
+    assert.doesNotMatch(form, /和法鬥超人打招呼|mascot-pause/);
+    assert.match(card, /<button form="settings-redeem" type="submit"[^>]*>連線<\/button>/);
+    assert.match(card, /aria-label="和法鬥超人打招呼"/);
+    assert.ok(card.indexOf('class="connection-mascot mascot-waiting"') > card.indexOf("</form>"));
+  });
+
+  it("preserves the real connection error and input draft safely inside the mascot dialogue", () => {
+    const error = '連線失敗，請確認邀請碼。<script>alert("oops")</script>';
+    const html = renderPage(view({
+      connected: false, canCopyKey: false, detail: "", connectionError: error,
+      connectionDraft: { inviteCode: 'bad"<code>', nickname: 'Nick & "Name"' },
+    }));
+    const card = html.match(/<section[^>]*data-setting="連線"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.match(card, /class="mascot-speech"/);
+    assert.match(card, /role="alert"/);
+    assert.match(card, /披風倒是先上班了/);
+    assert.equal(card.split('連線失敗，請確認邀請碼。').length - 1, 1);
+    assert.match(card, /&lt;script&gt;alert\(&quot;oops&quot;\)&lt;\/script&gt;/);
+    assert.match(card, /value="bad&quot;&lt;code&gt;"/);
+    assert.match(card, /value="Nick &amp; &quot;Name&quot;"/);
+    assert.doesNotMatch(card, /<script>/);
+  });
+
   it("shows independent switches, subtle detection lights, gated adapters and the escaped classroom list", () => {
     const html = renderPage(view({
       clientModes: { codex: "native", claude: "classroom" },
@@ -127,6 +157,34 @@ describe("VansPod page", () => {
     assert.deepEqual(newDetails.map((detail) => detail.open), [true, false]);
     assert.equal(button.disabled, false);
   });
+  it("preserves unsubmitted connection inputs when another setting updates the page", async () => {
+    let submit!: (event: unknown) => Promise<void>;
+    let replaced = false;
+    const oldInputs = [{ name: "invite_code", value: "not-submitted" }, { name: "nickname", value: "Student" }];
+    const newInputs = [{ name: "invite_code", value: "" }, { name: "nickname", value: "" }];
+    const main = {
+      querySelectorAll: () => [],
+      querySelector: () => ({ querySelectorAll: () => replaced ? newInputs : oldInputs }),
+      replaceChildren() { replaced = true; },
+    };
+    const card = { querySelector: () => null, setAttribute() {}, removeAttribute() {} };
+    const form = {
+      action: "/project-folder", querySelector: () => null, closest: () => card,
+      matches: (selector: string) => selector.includes("project-folder"),
+    };
+    vm.runInNewContext(settingsActionsScript, {
+      document: { addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; }, querySelector: (selector: string) => selector === "main" ? main : null },
+      window: { scrollY: 0, scrollTo() {} }, installBusy: false, installOpening: false,
+      initializeCourseSections() {},
+      FormData: class { *[Symbol.iterator]() {} }, URLSearchParams,
+      DOMParser: class { parseFromString() { return { querySelector: () => ({ childNodes: [] }) }; } },
+      fetch: async () => ({ ok: true, text: async () => "updated page" }),
+    });
+    await submit({ target: form, preventDefault() {} });
+    assert.equal(replaced, true);
+    assert.deepEqual(newInputs.map(input => input.value), ["not-submitted", "Student"]);
+  });
+
   it("shows the full VS Code restart notice when mustRestart includes vscode", () => {
     const html = renderPage(view({ modelRestart: ["vscode"] }));
     assert.equal(

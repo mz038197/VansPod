@@ -3,6 +3,7 @@ import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
 import { modelStatusScript } from "./modelStatus";
+import { connectionMascot, connectionMascotStyles, connectionMascotScript } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
@@ -749,6 +750,13 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
             actions = button.replace('<button ', '<button form="settings-redeem" ');
             return "";
           });
+          const feedback = body.match(/<div class="connection-feedback">[\s\S]*?<\/div>(?=\s*<\/form>)/)?.[0] ?? '<div class="connection-feedback"></div>';
+          body = body.replace(feedback, "");
+          const quote = view.connectionError === "請先輸入邀請碼與課堂暱稱，再按「連線」。"
+            ? "我披風都穿好了，你的邀請碼跟暱稱呢？"
+            : "連線這關還沒過，披風倒是先上班了。照下面的提示再試一次！";
+          const speech = `<div class="mascot-speech"><p class="mascot-quote">${escapeHtml(quote)}</p>${feedback}</div>`;
+          body += connectionMascot.replace('class="connection-mascot"', 'class="connection-mascot mascot-waiting"').replace('<div class="mascot-traveler">', `${speech}<div class="mascot-traveler">`);
         }
       } else if (title === "模型") {
         body = body.replace(/<div class="model-update"[\s\S]*?<\/div><\/div>/, (block) => {
@@ -836,7 +844,8 @@ export function renderPage(view: ClassroomAppView): string {
     const identity = course || meta
       ? `<div class="connection-identity">${course}${meta ? `<p class="connection-meta">${meta}</p>` : ""}</div>`
       : "";
-    const block = `${identity}<div class="key-row"><p>API Key 已設定</p><form method="post" action="/copy"><button type="submit" class="connection-copy" aria-label="複製 Classroom API Key"${off}>${COPY_ICON}<span>複製</span></button></form></div><form method="post" action="/clear"><button type="submit" class="connection-clear"${off}>清除連線</button></form>`;
+    const mascot = connectionMascot;
+    const block = `${identity}<div class="key-row"><p>API Key 已設定</p><form method="post" action="/copy"><button type="submit" class="connection-copy" aria-label="複製 Classroom API Key"${off}>${COPY_ICON}<span>複製</span></button></form></div>${mascot}<form method="post" action="/clear"><button type="submit" class="connection-clear"${off}>清除連線</button></form>`;
     html = html.replace(
       /<form method="post" action="\/copy">[\s\S]*?<\/form>\s*<form method="post" action="\/clear">[\s\S]*?<\/form>/,
       block,
@@ -997,6 +1006,7 @@ export function renderPage(view: ClassroomAppView): string {
     .key-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .key-row p { color: var(--muted); font-size: 13px; }
     .key-row form { flex-shrink: 0; }
+    ${connectionMascotStyles}
     .page-head { margin: 0.75rem 0 0.15rem; }
     .page-head h2 { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: 0; }
     .page-head p { margin-top: 4px; color: var(--muted); font-size: 14px; font-weight: 400; }
@@ -1012,7 +1022,7 @@ export function renderPage(view: ClassroomAppView): string {
     main button.connection-copy:hover:not(:disabled) { background: var(--input); color: var(--text); }
     main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
   </style>
-  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${settingsActionsScript}${modelStatusScript}
+  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }

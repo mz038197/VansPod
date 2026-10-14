@@ -35,6 +35,9 @@ try {
   // Pack excludes SEA output, tests, and build-machine paths.
   const packed = JSON.parse((await execute(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', box.root], { cwd: root })).stdout)[0];
   assert(!packed.files.some(file => /sea-|\.exe$|dist\/test\//.test(file.path)));
+  for (const name of ['fadou-superhero.png', 'fadou-superhero-blink.png']) {
+    assert(packed.files.some(file => file.path === `media/${name}`), `npm package is missing ${name}`);
+  }
   const prefix = path.join(box.root, 'npm');
   await execute(process.execPath, [npmCli, 'install', '--global', '--prefix', prefix, path.join(box.root, packed.filename)], { env, timeout: 60000 });
   const registration = JSON.parse(await fs.readFile(path.join(box.env.LOCALAPPDATA, 'VansPod/installations.json'), 'utf8'));
@@ -48,6 +51,12 @@ try {
   await execute(process.execPath, [npmEntry, 'start'], { env, timeout: 20000 });
   assert.equal((await manage('status')).pid, runtime.pid);
   assert.equal((await fetch(`${runtime.origin}/brand-logo.png`)).status, 200);
+  for (const name of ['fadou-superhero.png', 'fadou-superhero-blink.png']) {
+    const response = await fetch(`${runtime.origin}/${name}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), await fs.readFile(path.join(root, 'media', name)));
+  }
   const icon = Buffer.from(await (await fetch(`${runtime.origin}/favicon.ico`)).arrayBuffer());
   assert.deepEqual(icon, await fs.readFile(path.join(root, 'media/brand-icon.ico')));
   // Enter Classroom, then verify exit restores personal files and remembers mode.

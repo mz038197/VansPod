@@ -28,7 +28,17 @@ export const settingsActionsScript = `
       if (!updated) throw new Error("settings page unavailable");
       var top = window.scrollY;
       var openDetails = Array.from(main.querySelectorAll("details"), function (detail) { return detail.open; });
+      var redeemForm = main.querySelector?.('form[action="/redeem"]');
+      var connectionDraft = redeemForm && !form.matches('form[action="/redeem"], form[action="/clear"]')
+        ? Array.from(redeemForm.querySelectorAll('input'), function (input) { return { name: input.name, value: input.value }; }) : [];
+      var mascotState = typeof mascotAnimationState === "function" && !form.matches('form[action="/redeem"], form[action="/clear"]') ? mascotAnimationState() : [];
       main.replaceChildren(...updated.childNodes);
+      var updatedRedeemForm = main.querySelector?.('form[action="/redeem"]');
+      updatedRedeemForm?.querySelectorAll('input').forEach(function (input) {
+        var draft = connectionDraft.find(function (entry) { return entry.name === input.name; });
+        if (draft) input.value = draft.value;
+      });
+      if (typeof restoreMascotAnimationState === "function") restoreMascotAnimationState(mascotState);
       initializeCourseSections();
       main.querySelectorAll("details").forEach(function (detail, index) {
         if (index < openDetails.length) detail.open = openDetails[index];

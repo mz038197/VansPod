@@ -605,8 +605,8 @@ export async function main(instance?: Instance): Promise<void> {
         res.end(instance ? lifecyclePage(html, instance.token) : html);
         return;
       }
-      if (req.method === "GET" && (pathname === "/brand-logo.png" || pathname === "/favicon.ico")) {
-        const bytes = await asset(pathname === "/favicon.ico" ? "brand-icon.ico" : "brand-logo.png");
+      if (req.method === "GET" && (pathname === "/brand-logo.png" || pathname === "/favicon.ico" || pathname === "/fadou-superhero.png" || pathname === "/fadou-superhero-blink.png")) {
+        const bytes = await asset(pathname === "/favicon.ico" ? "brand-icon.ico" : pathname.slice(1));
         res.writeHead(200, {
           "Content-Type": pathname === "/favicon.ico" ? "image/x-icon" : "image/png",
           "Cache-Control": "no-store",

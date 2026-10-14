@@ -65,6 +65,8 @@ buildSea({
     "tray.ps1": path.join(root, "scripts", "tray.ps1"),
     "uninstall.ps1": path.join(root, "scripts", "uninstall.ps1"),
     "brand-logo.png": path.join(root, "media", "brand-logo.png"),
+    "fadou-superhero.png": path.join(root, "media", "fadou-superhero.png"),
+    "fadou-superhero-blink.png": path.join(root, "media", "fadou-superhero-blink.png"),
     "brand-icon.ico": path.join(root, "media", "brand-icon.ico"),
   },
   icon: path.join(root, "media", "brand-icon.ico"),
