@@ -12,16 +12,29 @@ export const connectionMascot = `<div class="connection-mascot">
             <clipPath id="mascot-left-foot-clip"><rect x="235" y="915" width="175" height="100"/></clipPath>
             <clipPath id="mascot-right-foot-clip"><rect x="490" y="927" width="185" height="88"/></clipPath>
             <clipPath id="mascot-logo-clip"><rect x="283" y="612" width="315" height="105"/></clipPath>
-            <mask id="mascot-detail-mask"><rect width="1024" height="1024" fill="white"/><rect x="235" y="915" width="175" height="100" fill="black"/><rect x="490" y="927" width="185" height="88" fill="black"/><rect x="283" y="612" width="315" height="105" fill="black"/></mask>
+            <filter id="mascot-logo-alpha" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+              <feColorMatrix in="SourceGraphic" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 32 -32 0 0.6" result="lettering"/>
+              <feColorMatrix in="SourceGraphic" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 -16 0 0 3.5" result="outline"/>
+              <feComposite in="lettering" in2="outline" operator="arithmetic" k2="1" k3="1" result="ink"/>
+              <feComposite in="SourceGraphic" in2="ink" operator="in"/>
+            </filter>
+            <filter id="mascot-logo-erase" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+              <feColorMatrix in="SourceGraphic" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 32 -32 0 0.6" result="lettering"/>
+              <feColorMatrix in="SourceGraphic" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -16 0 0 3.5" result="outline"/>
+              <feComposite in="lettering" in2="outline" operator="arithmetic" k2="1" k3="1"/>
+            </filter>
+            <linearGradient id="mascot-shirt-fill"><stop stop-color="#3d6878"/><stop offset="0.5" stop-color="#3a677a"/><stop offset="1" stop-color="#356270"/></linearGradient>
+            <mask id="mascot-detail-mask"><rect width="1024" height="1024" fill="white"/><rect x="235" y="915" width="175" height="100" fill="black"/><rect x="490" y="927" width="185" height="88" fill="black"/><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-logo-clip)" filter="url(#mascot-logo-erase)"/></mask>
             <clipPath id="mascot-body-clip"><path d="M0 0H1024V490H700L670 534L739 601L768 638L765 681L740 718L702 749L691 778L668 803L646 813V1024H0Z"/></clipPath>
             <clipPath id="mascot-cape-clip"><path d="M688 490L1024 490V850H640V789L670 760L704 730L744 679L744 620L668 545Z"/></clipPath>
             <clipPath id="mascot-eyes-clip"><ellipse cx="334" cy="359" rx="52" ry="43"/><ellipse cx="535" cy="369" rx="53" ry="43"/></clipPath>
           </defs>
           <g class="mascot-cape"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-cape-clip)"/></g>
+          <rect x="283" y="612" width="315" height="105" fill="url(#mascot-shirt-fill)"/>
           <g mask="url(#mascot-detail-mask)"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-body-clip)" mask="url(#mascot-arm-mask)"/></g>
           <g class="mascot-foot mascot-left-foot"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-left-foot-clip)"/></g>
           <g class="mascot-foot mascot-right-foot"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-right-foot-clip)"/></g>
-          <g class="mascot-logo"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-logo-clip)"/></g>
+          <g class="mascot-logo"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-logo-clip)" filter="url(#mascot-logo-alpha)"/></g>
           <g class="mascot-arm"><image href="/fadou-superhero.png" width="1024" height="1024" clip-path="url(#mascot-arm-clip)"/></g>
           <g class="mascot-blink" clip-path="url(#mascot-eyes-clip)"><image href="/fadou-superhero-blink.png" x="11" y="4" width="1024" height="1024"/></g>
         </svg>
