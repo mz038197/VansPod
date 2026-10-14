@@ -72,6 +72,18 @@ _Avoid_: 從畫面選取金鑰文字、複製 Invite Code、清除連線後仍�
 學生主動撤去本機的 Classroom Connection，移除憑證與 Class Label，並讓 Model Switch 回到 Native；不刪除其他客戶端的個人設定。
 _Avoid_: 僅清除畫面狀態卻保留憑證、刪除其他 provider、刪除 Workspace MCP Config
 
+**Course Install Action**:
+老師在 Course Catalog 提供、學生確認後在專案資料夾執行一次的安裝指令，種類為 Skill、套件或 MCP。它預期會自行結束；執行中即為「安裝中」。
+_Avoid_: 用來啟動長駐網站或服務、把仍在執行的網站稱為安裝中、Environment Install
+
+**Environment Install**:
+VansPod 內建、為學生電腦安裝開發工具（如 uv、Git、Node.js、PowerShell）的安裝流程。它與 Course Install Action 不同，不由 Course Catalog 定義。
+_Avoid_: Course Install Action、課程資源安裝
+
+**Abort Install**:
+學生明確確認後，終止仍在執行的安裝及其衍生程序；結果為「已中止」，既不是成功也不是一般失敗。結束 VansPod 時遇到安裝中，須經學生確認中止才繼續結束，不得默默中斷。
+_Avoid_: 結束 VansPod 時自動中斷安裝、把已中止視為安裝成功、只停止畫面卻留下背景程序
+
 ### Discord 與 ACP
 
 **Discord Agent**:
