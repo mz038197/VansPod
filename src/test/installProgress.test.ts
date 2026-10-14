@@ -4,10 +4,11 @@ import vm from "node:vm";
 import { installProgressScript } from "../installProgress";
 
 
-function harness(cancelOk = true) {
+function harness(cancelOk = true, confirmAbort = true) {
   let submit!: (event: unknown) => Promise<void>;
   let click!: (event: unknown) => void;
-  let complete!: (response: { ok: boolean; succeeded?: boolean; output?: string; installedActionIds?: string[] }) => void;
+  let complete!: (response: { ok: boolean; succeeded?: boolean; aborted?: boolean; output?: string; installedActionIds?: string[] }) => void;
+  let aborts = 0;
   let nextUpdate!: () => Promise<void>;
   let reloads = 0;
   let confirmations = 0;
@@ -26,11 +27,14 @@ function harness(cancelOk = true) {
     querySelector(selector: string) {
       if (selector === "[data-install-dismiss]") return dismiss;
       if (selector === ".choices") return choices;
+      if (selector === "form[data-abort-install]") return abortForm;
       return selector === "h2" ? title : selector === "[data-install-status]" ? status : output;
     },
     querySelectorAll() { return buttons; },
     setAttribute() {},
   };
+  const abortButton = { disabled: false };
+  const abortForm = { hidden: true, action: "/abort-install", querySelector: () => abortButton, matches: (selector: string) => selector.includes("data-abort-install"), closest: (selector: string) => selector === ".confirm-panel" ? panel : undefined };
   const form = { action: "/confirm", matches: (selector: string) => selector.includes('action="/confirm"'), closest: (selector: string) => selector === ".confirm-dialog" ? dialog : panel };
   const pending = new Promise<{ ok: boolean; json: () => Promise<unknown> }>((resolve) => {
     complete = (response) => resolve({ ...response, json: async () => response });
@@ -43,10 +47,11 @@ function harness(cancelOk = true) {
       querySelectorAll() { return [{ value: "demo", closest: () => ({ querySelector: (selector: string) => selector === ".installed-tag" ? installedTag : { appendChild(tag: typeof installedTag) { installedTag = tag; } } }) }]; },
       createElement() { return {}; },
     },
-    window: { location: { reload() { reloads += 1; } } },
+    window: { location: { reload() { reloads += 1; } }, confirm: () => confirmAbort },
     FormData: class {},
     URLSearchParams: class {},
     fetch: async (url: string) => {
+      if (url === "/abort-install") { aborts += 1; return { ok: true }; }
       if (url === "/confirm") { confirmations += 1; return pending; }
       if (url === "/cancel") { cancellations += 1; return { ok: cancelOk }; }
       return { ok: true, json: async () => ({ running: true, output: latestOutput }) };
@@ -57,6 +62,8 @@ function harness(cancelOk = true) {
   return {
     submit: () => submit({ target: form, preventDefault() {} }),
     cancel: () => submit({ target: { ...form, action: "/cancel", matches: (selector: string) => selector.includes('action="/cancel"') }, preventDefault() {} }),
+    abort: () => submit({ target: abortForm, preventDefault() {} }),
+    abortForm, abortButton, aborts: () => aborts,
     complete, title, status, output, buttons, dismiss, choices,
     acknowledge: () => click({ target: { closest: () => dismiss } }),
     update: async (value: string) => { latestOutput = value; await nextUpdate(); },
@@ -170,4 +177,33 @@ it("keeps the result warning visible if confirmation fails without allowing a du
   assert.equal(ui.counts().reloads, 0);
   await ui.submit();
   assert.equal(ui.counts().confirmations, 1);
+});
+
+it("offers 停止安裝 while installing and shows 已中止 after a confirmed abort", async () => {
+  const ui = harness();
+  const running = ui.submit();
+  assert.equal(ui.abortForm.hidden, false);
+  assert.equal(ui.abortButton.disabled, false);
+  await ui.abort();
+  assert.equal(ui.aborts(), 1);
+  assert.equal(ui.status.textContent, "正在停止安裝…");
+  ui.complete({ ok: true, succeeded: false, aborted: true, output: "serving\n已中止。\n" });
+  await running;
+  assert.equal(ui.title.textContent, "已中止");
+  assert.equal(ui.abortForm.hidden, true);
+  assert.equal(ui.dismiss.hidden, false);
+});
+
+it("keeps installing when the student declines to abort", async () => {
+  const ui = harness(true, false);
+  void ui.submit();
+  await ui.abort();
+  assert.equal(ui.aborts(), 0);
+  assert.equal(ui.abortForm.hidden, false);
+});
+
+it("lets 停止安裝 reload the page when this page did not start the install", async () => {
+  const ui = harness();
+  await ui.abort();
+  assert.equal(ui.aborts(), 0);
 });

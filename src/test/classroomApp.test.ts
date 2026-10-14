@@ -12,6 +12,7 @@ import type { ClientRouteSettingsStorage } from "../clientRoutes";
 import type { ClientRouteRuntime, ClientRouteStart } from "../clientRouteRuntime";
 import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
 import { sendRouter } from "../modelProxy";
+import type { CommandResult } from "../commandRunner";
 import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
@@ -346,7 +347,7 @@ function harness(
     catalogError?: Error;
     catalogFetch?: (key: string) => Promise<{ course_catalog_yaml?: unknown }>;
     files?: Record<string, string | undefined>;
-    run?: (cwd: string, command: string, onOutput?: (output: string) => void) => Promise<string>;
+    run?: (cwd: string, command: string, onOutput?: (output: string) => void, signal?: AbortSignal) => Promise<string | CommandResult>;
     runExitCode?: number;
     write?: (path: string, contents: string) => Promise<void>;
     sessionModels?: (apiKey: string) => Promise<string[] | Array<Record<string, unknown>>>;
@@ -357,7 +358,8 @@ function harness(
     install?: (
       tool: EnvironmentToolId,
       cwd: string,
-    ) => Promise<{ exitCode: number | undefined; output: string }>;
+      signal?: AbortSignal,
+    ) => Promise<CommandResult>;
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
@@ -453,10 +455,11 @@ function harness(
     },
     storage,
     commands: {
-      async run(cwd, command, onOutput) {
+      async run(cwd, command, onOutput, signal) {
         runCalls.push({ cwd, command });
         if (options?.run) {
-          return { output: await options.run(cwd, command, onOutput), exitCode: options.runExitCode ?? 0 };
+          const result = await options.run(cwd, command, onOutput, signal);
+          return typeof result === "string" ? { output: result, exitCode: options.runExitCode ?? 0 } : result;
         }
         return { output: "ok", exitCode: options?.runExitCode ?? 0 };
       },
@@ -474,10 +477,10 @@ function harness(
         }
         return { installed: false };
       },
-      async install(tool, cwd) {
+      async install(tool, cwd, signal) {
         installCalls.push({ tool, cwd });
         if (options?.install) {
-          return options.install(tool, cwd);
+          return options.install(tool, cwd, signal);
         }
         return { exitCode: 0, output: "" };
       },
@@ -3996,5 +3999,67 @@ it("Classroom Codex search goes to Router with the Classroom API Key whatever mo
     assert.equal(h.sent().at(-1)?.target, "chatgpt");
     assert.equal(responses.length, 0);
     assert.equal(routerCalls.length, 0);
+  });
+});
+
+describe("Abort Install", () => {
+  function untilAborted(output: string, onOutput?: (output: string) => void, signal?: AbortSignal): Promise<CommandResult> {
+    onOutput?.(output);
+    return new Promise((resolve) => {
+      signal?.addEventListener("abort", () => resolve({ output: `${output}\n已中止。\n`, exitCode: undefined, aborted: true }), { once: true });
+    });
+  }
+
+  it("aborts a never-ending Course Install Action, keeps it uninstalled, and unblocks Stop", async () => {
+    const { app, runCalls } = harness(undefined, {
+      run: async (_cwd, _command, onOutput, signal) => runCalls.length === 1 ? untilAborted("serving\n", onOutput, signal) : "done\n",
+    });
+    await app.setProjectFolder("D:\lesson");
+    await app.redeem("ABC12345", "Ada");
+    app.prepare("demo");
+    const installing = app.confirm();
+    assert.equal(app.view().commandOutput, "serving\n");
+    await assert.rejects(app.stop(), /安裝中/);
+    assert.equal(app.view().commandRunning, true);
+    app.abortInstall();
+    await installing;
+    const view = app.view();
+    assert.equal(view.commandRunning, false);
+    assert.equal(view.commandAborted, true);
+    assert.equal(view.commandSucceeded, false);
+    assert.match(view.commandOutput ?? "", /serving[\s\S]*已中止/);
+    assert.deepEqual(view.installedActionIds ?? [], []);
+    app.prepare("demo");
+    await app.confirm();
+    assert.equal(runCalls.length, 2);
+    assert.equal(app.view().commandAborted, undefined);
+    assert.deepEqual(app.view().installedActionIds, ["demo"]);
+    await app.stop();
+  });
+
+  it("aborts an Environment Install, skips later tools, and re-detects what is actually installed", async () => {
+    const { app, installCalls, probeCalls } = harness(undefined, {
+      install: async (_tool, _cwd, signal) => untilAborted("waiting for installer", undefined, signal),
+      probe: async (tool) => ({ installed: tool === "uv" }),
+    });
+    await app.setProjectFolder("D:\lesson");
+    app.selectEnvironment(["uv", "git"]);
+    const installing = app.confirmEnvironment();
+    assert.equal(app.view().commandRunning, true);
+    app.abortInstall();
+    await installing;
+    assert.deepEqual(installCalls.map((call) => call.tool), ["uv"]);
+    const view = app.view();
+    assert.equal(view.commandRunning, false);
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
+    assert.equal(view.tools.find((tool) => tool.id === "uv")?.installed, true);
+    assert.match(view.environmentNotice ?? "", /已中止.*可能仍在執行/);
+  });
+
+  it("does nothing when no install is running", () => {
+    const { app } = harness();
+    app.abortInstall();
+    assert.equal(app.view().commandRunning, false);
+    assert.equal(app.view().commandAborted, undefined);
   });
 });

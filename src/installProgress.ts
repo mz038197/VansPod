@@ -12,6 +12,25 @@ export const installProgressScript = `
   });
   document.addEventListener("submit", async function (event) {
     var form = event.target;
+    if (form?.matches?.("form[data-abort-install]")) {
+      if (!window.confirm("停止後安裝可能不完整，確定停止？")) { event.preventDefault(); return; }
+      if (!installBusy || !form.closest(".confirm-panel")) return;
+      event.preventDefault();
+      var abortButton = form.querySelector("button");
+      abortButton.disabled = true;
+      form.closest(".confirm-panel").querySelector("[data-install-status]").textContent = "正在停止安裝…";
+      try {
+        var stopped = await fetch(form.action, { method: "POST", headers: { "X-Classroom-Progress": "1" } });
+        if (!stopped.ok) throw new Error("abort failed");
+      } catch (error) {
+        abortButton.disabled = false;
+      }
+      return;
+    }
+    if (form?.matches?.('form[action="/environment"]')) {
+      form.closest("section")?.querySelectorAll("form[data-abort-install]").forEach(function (abort) { abort.hidden = false; });
+      return;
+    }
     if (form?.matches?.('form[action="/prepare"]')) {
       event.preventDefault();
       if (installOpening || installBusy || document.querySelector(".confirm-dialog")) return;
@@ -72,6 +91,8 @@ export const installProgressScript = `
       }
       return;
     }
+    var abortForm = panel.querySelector("form[data-abort-install]");
+    if (abortForm) { abortForm.hidden = false; abortForm.querySelector("button").disabled = false; }
     panel.setAttribute("aria-busy", "true");
     title.textContent = "安裝中";
     status.textContent = "正在執行，請稍候…";
@@ -116,8 +137,9 @@ export const installProgressScript = `
       }
       finished = true;
       clearTimeout(timer);
+      if (abortForm) abortForm.hidden = true;
       panel.setAttribute("aria-busy", "false");
-      title.textContent = outcome.succeeded ? "安裝成功" : "安裝失敗";
+      title.textContent = outcome.aborted ? "已中止" : outcome.succeeded ? "安裝成功" : "安裝失敗";
       status.textContent = "請查看執行結果，按下確認後關閉。";
       output.textContent = outcome.output || (outcome.succeeded ? "安裝完成。" : "指令執行失敗。");
       choices.hidden = true;
@@ -126,6 +148,7 @@ export const installProgressScript = `
     } catch (error) {
       finished = true;
       clearTimeout(timer);
+      if (abortForm) abortForm.hidden = true;
       panel.setAttribute("aria-busy", "false");
       title.textContent = "無法確認安裝結果";
       status.textContent = "請重新整理頁面查看結果，避免重複安裝。";

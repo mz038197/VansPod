@@ -506,3 +506,31 @@ describe("VansPod page", () => {
     assert.equal(official.includes(KEY), false);
   });
 });
+
+describe("Abort Install on the page", () => {
+  const abortForms = (html: string) => [...html.matchAll(/<form[^>]*action="\/abort-install"[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);
+
+  it("offers 停止安裝 inside the running Course Install Action dialog", () => {
+    const html = renderPage(view({ commandRunning: true, pendingCommand: "uv run streamlit run app.py", projectFolder: "D:\lesson" }));
+    const dialog = html.match(/<div class="confirm-dialog"[\s\S]*?data-install-dismiss[^>]*>/)?.[0] ?? "";
+    const form = abortForms(dialog)[0] ?? "";
+    assert.match(form, /停止安裝/);
+    assert.doesNotMatch(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
+  });
+
+  it("offers 停止安裝 in the environment card while an Environment Install runs", () => {
+    const html = renderPage(view({ commandRunning: true }));
+    const card = html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const form = abortForms(card)[0] ?? "";
+    assert.match(form, /停止安裝/);
+    assert.doesNotMatch(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
+  });
+
+  it("keeps every 停止安裝 hidden when nothing is installing, and asks before aborting", () => {
+    const html = renderPage(view({ pendingCommand: "echo hi", projectFolder: "D:\lesson" }));
+    const forms = abortForms(html);
+    assert.ok(forms.length >= 2);
+    for (const form of forms) assert.match(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
+    assert.match(html, /停止後安裝可能不完整，確定停止？/);
+  });
+});

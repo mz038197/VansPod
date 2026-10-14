@@ -187,7 +187,12 @@ function environmentInner(view: ClassroomAppView): string {
       <div class="tools">${tools}</div>
       <button type="submit" class="go"${confirmOff}>確認安裝</button>
     </form>
-    ${note}`;
+    ${note}${abortInstallForm(view)}`;
+}
+
+/** Abort Install 入口；僅在安裝執行中顯示，送出前由 installProgressScript 確認。 */
+function abortInstallForm(view: ClassroomAppView): string {
+  return `<form method="post" action="/abort-install" data-abort-install${view.commandRunning ? "" : " hidden"}><button type="submit" class="quiet">停止安裝</button></form>`;
 }
 
 function catalogInner(view: ClassroomAppView): string {
@@ -626,13 +631,13 @@ function installActionCards(view: ClassroomAppView): string {
     .join("");
 }
 
-function presentCommand(body: string): { inline: string; dialog: string } {
+function presentCommand(body: string, view: ClassroomAppView): { inline: string; dialog: string } {
   let inline = body;
   const pending = inline.match(/<pre class="pending">[\s\S]*?<\/pre>/);
   const choices = inline.match(/<div class="choices">[\s\S]*?<\/div>/);
   let dialog = "";
   if (pending) {
-    dialog = `<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><div class="confirm-panel"><h2 id="confirm-title">確認安裝</h2>${pending[0]}<p data-install-status role="status" aria-live="polite"></p><pre data-install-output aria-label="安裝輸出" hidden></pre>${choices?.[0] ?? ""}<button type="button" data-install-dismiss hidden>確認</button></div></div>`;
+    dialog = `<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><div class="confirm-panel"><h2 id="confirm-title">確認安裝</h2>${pending[0]}<p data-install-status role="status" aria-live="polite"></p><pre data-install-output aria-label="安裝輸出" hidden></pre>${choices?.[0] ?? ""}${abortInstallForm(view)}<button type="button" data-install-dismiss hidden>確認</button></div></div>`;
     inline = inline.replace(pending[0], "");
     if (choices) inline = inline.replace(choices[0], "");
   }
@@ -658,7 +663,7 @@ function splitCourseCards(html: string, view: ClassroomAppView): string {
   const commandBody = commandMatch[1].includes("沒有待確認的指令。")
     ? ""
     : commandMatch[1];
-  const presented = presentCommand(commandBody);
+  const presented = presentCommand(commandBody, view);
   const snippetHeading = "<h3>本課片段</h3>";
   const snippetAt = courseMatch[1].indexOf(snippetHeading);
   const courseBody =

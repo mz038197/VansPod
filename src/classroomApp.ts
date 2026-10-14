@@ -77,14 +77,15 @@ export type ClassroomAppDeps = {
     write(text: string): Promise<void>;
   };
   commands: {
-    run(cwd: string, command: string, onOutput?: (output: string) => void): Promise<CommandResult>;
+    run(cwd: string, command: string, onOutput?: (output: string) => void, signal?: AbortSignal): Promise<CommandResult>;
   };
   environment: {
     probe(tool: EnvironmentToolId): Promise<{ installed: boolean }>;
     install(
       tool: EnvironmentToolId,
       cwd: string,
-    ): Promise<{ exitCode: number | undefined; output: string }>;
+      signal?: AbortSignal,
+    ): Promise<CommandResult>;
   };
   // 測試注入的寫檔口。核心不呼叫它，MCP 動作只跑 catalog command。
   files: {
@@ -179,6 +180,7 @@ export type ClassroomAppView = {
   commandOutput?: string;
   commandRunning: boolean;
   commandSucceeded?: boolean;
+  commandAborted?: boolean;
   installedActionIds?: string[];
   mode: ModelSwitchMode;
   clientModes?: ClientModes;
@@ -198,6 +200,7 @@ export type ClassroomAppView = {
 const LOCAL_LIST_NOTE = "這是本機清單。";
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
+const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
   private adapters = defaultAdapters();
@@ -227,6 +230,8 @@ export class ClassroomApp {
   private installedActions = new Map<string, Map<string, string>>();
   private commandOutput: string | undefined;
   private commandRunning = false;
+  private commandAborted: boolean | undefined;
+  private runningInstall: { abort: AbortController; settled: Promise<void>; settle(): void } | undefined;
   private stopping = false;
   private commandSucceeded: boolean | undefined;
   private clientModes: ClientModes = { codex: "native", claude: "native" };
@@ -322,6 +327,7 @@ export class ClassroomApp {
       view.commandOutput = this.commandOutput;
     }
     if (this.commandSucceeded !== undefined) view.commandSucceeded = this.commandSucceeded;
+    if (this.commandAborted) view.commandAborted = true;
     if (this.mode === "classroom" && this.modelIds[0]) {
       view.modelId = this.modelIds[0];
     }
@@ -390,24 +396,29 @@ export class ClassroomApp {
     const cwd = this.projectFolder;
     this.commandRunning = true;
     this.environmentNotice = undefined;
+    const abort = this.beginInstall();
     let succeeded = false;
     try {
       for (const tool of selected) {
-        let result: { exitCode: number | undefined; output: string };
+        let result: CommandResult;
         try {
-          result = await this.deps.environment.install(tool, cwd);
+          result = await this.deps.environment.install(tool, cwd, abort.signal);
         } catch {
           break;
         }
-        if (!environmentInstallSucceeded(result)) {
+        if (abort.signal.aborted || !environmentInstallSucceeded(result)) {
           break;
         }
         succeeded = true;
       }
     } finally {
+      this.endInstall();
       this.commandRunning = false;
     }
-    if (succeeded) {
+    if (abort.signal.aborted) {
+      await this.checkEnvironment();
+      this.environmentNotice = ENVIRONMENT_ABORTED;
+    } else if (succeeded) {
       this.environmentNotice = REOPEN_TERMINAL;
     }
   }
@@ -700,6 +711,7 @@ export class ClassroomApp {
     this.pendingCommand = action.command;
     this.pendingActionId = action.id;
     this.commandOutput = undefined;
+    this.commandAborted = undefined;
     this.commandSucceeded = undefined;
   }
 
@@ -713,12 +725,15 @@ export class ClassroomApp {
     this.commandRunning = true;
     this.commandOutput = undefined;
     this.commandSucceeded = undefined;
+    this.commandAborted = undefined;
+    const abort = this.beginInstall();
     try {
       const result = await this.deps.commands.run(cwd, command, (output) => {
         this.commandOutput = output;
-      });
+      }, abort.signal);
       this.commandOutput = result.output;
-      this.commandSucceeded = result.exitCode === 0;
+      if (result.aborted) this.commandAborted = true;
+      this.commandSucceeded = !result.aborted && result.exitCode === 0;
       if (this.commandSucceeded && actionId) {
         let installed = this.installedActions.get(cwd);
         if (!installed) {
@@ -733,8 +748,29 @@ export class ClassroomApp {
     } finally {
       this.pendingCommand = undefined;
       this.pendingActionId = undefined;
+      this.endInstall();
       this.commandRunning = false;
     }
+  }
+
+  private beginInstall(): AbortController {
+    const abort = new AbortController();
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    this.runningInstall = { abort, settled, settle };
+    return abort;
+  }
+
+  private endInstall(): void {
+    this.runningInstall?.settle();
+    this.runningInstall = undefined;
+  }
+
+  /** Abort Install：學生確認後終止執行中的安裝；沒有安裝時不做事。 */
+  async abortInstall(): Promise<void> {
+    const install = this.runningInstall;
+    install?.abort.abort();
+    await install?.settled;
   }
 
   cancel(): void {

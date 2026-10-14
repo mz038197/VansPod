@@ -40,7 +40,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     const instance = await readInstance();
     if (!instance || !isAlive(instance.pid)) { process.stdout.write("VansPod 未執行。\n"); return; }
     let result = await control(instance, "stop", {});
-    if (result.confirmation && await confirm(result.message ?? "中斷目前回答並結束？")) result = await control(instance, "stop", { confirmed: true });
+    if (result.confirmation && await confirm(result.message ?? "確認中止並結束 VansPod？")) result = await control(instance, "stop", { confirmed: true });
     if (!result.ok) throw new Error(result.message ?? "無法結束 VansPod。");
     for (let attempt = 0; attempt < 200 && isAlive(instance.pid); attempt++) await new Promise(resolve => setTimeout(resolve, 50));
     if (isAlive(instance.pid)) throw new Error("VansPod 尚未完成結束。");
@@ -59,7 +59,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     if (!await confirm("確定完整移除 VansPod？")) throw new Error("已取消移除。請在互動終端機或 VansPod 頁面確認移除。");
     const body = { confirmed: true, waitForPid: isSea() ? process.pid : undefined };
     let result = await control(instance, "uninstall", body);
-    if (result.confirmation && await confirm(result.message ?? "中斷目前回答並移除？")) result = await control(instance, "uninstall", { ...body, interruptConfirmed: true });
+    if (result.confirmation && await confirm(result.message ?? "確認中止並移除 VansPod？")) result = await control(instance, "uninstall", { ...body, interruptConfirmed: true });
     if (!result.ok) throw new Error(result.message);
     process.stdout.write(`${result.message}\n`);
     return;

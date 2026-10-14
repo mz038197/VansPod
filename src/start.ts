@@ -18,7 +18,8 @@ import {
 } from "./classroomApp";
 import { modelStatus, renderPage } from "./page";
 import { pickProjectFolder } from "./folderPicker";
-import { collectOutput, shellLaunch, runCommand } from "./commandRunner";
+import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./commandRunner";
+import { exitDecision, removalInterruptions } from "./exitGuard";
 import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody } from "./responsesChat";
@@ -224,12 +225,14 @@ function probeEnvironment(
 function installEnvironment(
   tool: EnvironmentToolId,
   cwd: string,
-): Promise<{ exitCode: number | undefined; output: string }> {
+  signal?: AbortSignal,
+): Promise<CommandResult> {
   const launch =
     process.platform === "darwin" && tool === "pwsh"
       ? { command: "open", args: [MAC_PWSH_PAGE] }
       : shellLaunch(environmentInstallCommand(tool));
-  return collectOutput(launch.command, launch.args, cwd).then((result) => {
+  return collectOutput(launch.command, launch.args, cwd, undefined, signal).then((result) => {
+    if (result.aborted) return { exitCode: result.exitCode, output: result.output, aborted: true };
     if (result.spawnError) {
       return { exitCode: 1, output: "安裝命令無法啟動。" };
     }
@@ -456,6 +459,7 @@ export async function main(instance?: Instance): Promise<void> {
   ) => Promise<void>;
   let app!: ClassroomApp;
   let exitRequested = false;
+  const exitWork = () => ({ installing: app.view().commandRunning, activeRequests: activeRequests.size });
   let launchVersion: string | undefined;
   let ready = false;
   let startupError: string | undefined;
@@ -546,17 +550,17 @@ export async function main(instance?: Instance): Promise<void> {
           reply({ ok: true }); return;
         }
         if (req.method === "GET" && pathname === "/_vanspod/uninstall-preview") {
-          if (app.view().commandRunning) { reply({ ok: false, message: "安裝中，請完成後再移除。" }); return; }
-          reply({ ok: true, message: `${await removalPreview()}${activeRequests.size ? "\n仍有模型回答，移除將中斷目前回答。" : ""}` }); return;
+          reply({ ok: true, message: `${await removalPreview()}${removalInterruptions(exitWork())}` }); return;
         }
         if (req.method === "POST" && (pathname === "/_vanspod/stop" || pathname === "/_vanspod/uninstall")) {
           const body = JSON.parse(await readBody(req)) as { confirmed?: boolean; interruptConfirmed?: boolean; waitForPid?: number };
           const uninstall = pathname === "/_vanspod/uninstall";
           if (uninstall && body.confirmed !== true) { reply({ ok: false, confirmation: true, message: "請先確認將刪除的內容，再完整移除 VansPod。" }); return; }
-          if (app.view().commandRunning) { reply({ ok: false, message: "安裝中，請完成後再結束。" }); return; }
-          if (activeRequests.size && (uninstall ? body.interruptConfirmed !== true : body.confirmed !== true)) { reply({ ok: false, confirmation: true, message: "仍有模型回答，請確認中斷目前回答並結束。" }); return; }
+          const decision = exitDecision(uninstall ? "uninstall" : "stop", exitWork(), uninstall ? body.interruptConfirmed === true : body.confirmed === true);
+          if (!decision.proceed) { reply({ ok: false, confirmation: true, message: decision.message }); return; }
           if (exitRequested) { reply({ ok: false, message: "正在結束 VansPod。" }); return; }
           exitRequested = true;
+          await app.abortInstall();
           abortRequests();
           let restored = false;
           try {
@@ -659,7 +663,7 @@ export async function main(instance?: Instance): Promise<void> {
         if (req.headers["x-classroom-progress"] === "1") {
           const view = app.view();
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-          res.end(JSON.stringify({ succeeded: view.commandSucceeded, output: view.commandOutput ?? "", installedActionIds: view.installedActionIds ?? [] }));
+          res.end(JSON.stringify({ succeeded: view.commandSucceeded, aborted: view.commandAborted === true, output: view.commandOutput ?? "", installedActionIds: view.installedActionIds ?? [] }));
           return;
         }
         goHome(params);
@@ -672,6 +676,17 @@ export async function main(instance?: Instance): Promise<void> {
           const canceled = !app.view().pendingCommand;
           res.writeHead(canceled ? 200 : 409, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
           res.end(JSON.stringify({ canceled }));
+          return;
+        }
+        goHome(params);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/abort-install") {
+        const params = new URLSearchParams(await readBody(req));
+        await app.abortInstall();
+        if (req.headers["x-classroom-progress"] === "1") {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ aborted: true }));
           return;
         }
         goHome(params);
@@ -821,6 +836,7 @@ export async function main(instance?: Instance): Promise<void> {
   tray = runtimeOptions.desktop && process.platform === "win32" && instance ? await openTray(home) : undefined;
   if (runtimeOptions.desktop && !process.env.VANSPOD_WORKER_TOKEN) openBrowser(home);
   const shutdown = () => {
+    if (app.view().commandRunning && !exitRequested) process.stderr.write("安裝仍在執行，請在 VansPod 畫面停止安裝後再結束。\n");
     if (exitRequested || app.view().commandRunning || activeRequests.size) return;
     exitRequested = true;
     void app.stop().then(exit).catch(() => { exitRequested = false; process.stderr.write("客戶端設定恢復失敗，請重試結束。\n"); });
