@@ -6,13 +6,14 @@ export const settingsActionsScript = `
     event.preventDefault();
     if (settingsBusy || installBusy || installOpening || document.querySelector(".confirm-dialog")) return;
     settingsBusy = true;
+    var copyAction = form.matches('form[action="/copy"]');
     var main = document.querySelector("main");
     var card = form.closest(".settings-card, .project-folder-row") || form;
     card.querySelector(".settings-action-error")?.remove();
     form.querySelector(".connection-error")?.remove();
     var body = new URLSearchParams(new FormData(form));
     if (event.submitter?.name) body.set(event.submitter.name, event.submitter.value);
-    var buttons = main.querySelectorAll("button, select");
+    var buttons = (copyAction ? form : main).querySelectorAll("button, select");
     var disabled = Array.from(buttons, function (button) { return button.disabled; });
     buttons.forEach(function (button) { button.disabled = true; });
     card.setAttribute("aria-busy", "true");
@@ -26,6 +27,7 @@ export const settingsActionsScript = `
       var page = new DOMParser().parseFromString(await response.text(), "text/html");
       var updated = page.querySelector("main");
       if (!updated) throw new Error("settings page unavailable");
+      if (copyAction && typeof updateCopyFeedback === "function" && updateCopyFeedback(updated)) return;
       var top = window.scrollY;
       var openDetails = Array.from(main.querySelectorAll("details"), function (detail) { return detail.open; });
       var redeemForm = main.querySelector?.('form[action="/redeem"]');

@@ -6,6 +6,7 @@ import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
 import { settingsActionsScript } from "../settingsActions";
+import { connectionMascotScript } from "../connectionMascot";
 
 const KEY = "vcr_sk_nick";
 
@@ -150,7 +151,7 @@ describe("VansPod page", () => {
       replaceChildren() { replaced = true; },
     };
     const card = { querySelector: () => null, setAttribute() {}, removeAttribute() {} };
-    const form = { action: "/switch", matches: () => true, querySelector: () => null, closest: () => card };
+    const form = { action: "/switch", matches: (selector: string) => selector.includes('form[action="/switch"]'), querySelector: () => null, closest: () => card };
     const window = { scrollY: 240, scrollTo({ top }: { top: number }) { this.scrollY = top; } };
     vm.runInNewContext(settingsActionsScript, {
       document: { addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; }, querySelector: (selector: string) => selector === "main" ? main : null },
@@ -197,6 +198,49 @@ describe("VansPod page", () => {
     await submit({ target: form, preventDefault() {} });
     assert.equal(replaced, true);
     assert.deepEqual(newInputs.map(input => input.value), ["not-submitted", "Student"]);
+  });
+
+  it("copies without replacing the existing page or mascot and leaves other controls enabled", async () => {
+    let submit!: (event: unknown) => Promise<void>;
+    let replaced = false;
+    let shownSpeech: unknown;
+    const copyButton = { disabled: false };
+    const otherButton = { disabled: false };
+    const speech = {};
+    const stage = {
+      querySelector: () => null,
+      classList: { add() {} },
+      prepend(node: unknown) { shownSpeech = node; },
+    };
+    const card = {
+      querySelector: (selector: string) => selector === ".connection-mascot" ? stage : null,
+      setAttribute() {}, removeAttribute() {},
+    };
+    const nextStage = { querySelector: () => speech, classList: { contains: () => true } };
+    const nextCard = { querySelector: (selector: string) => selector === ".connection-mascot" ? nextStage : selector === ".connection-copy" ? {} : null };
+    const main = { querySelectorAll: () => [copyButton, otherButton], replaceChildren() { replaced = true; } };
+    const form = {
+      action: "/copy", matches: (selector: string) => selector.includes('form[action="/copy"]'),
+      querySelector: () => null, querySelectorAll: () => [copyButton], closest: () => card,
+    };
+    vm.runInNewContext(connectionMascotScript + settingsActionsScript, {
+      document: {
+        addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; },
+        querySelector: (selector: string) => selector === "main" ? main : selector === '[data-setting="連線"]' ? card : null,
+      },
+      installBusy: false, installOpening: false,
+      FormData: class { *[Symbol.iterator]() {} }, URLSearchParams,
+      DOMParser: class { parseFromString() { return { querySelector: () => ({ querySelector: () => nextCard }) }; } },
+      fetch: async () => {
+        assert.equal(copyButton.disabled, true);
+        assert.equal(otherButton.disabled, false);
+        return { ok: true, text: async () => "copied page" };
+      },
+    });
+    await submit({ target: form, preventDefault() {} });
+    assert.equal(replaced, false);
+    assert.equal(shownSpeech, speech);
+    assert.equal(copyButton.disabled, false);
   });
 
   it("shows the full VS Code restart notice when mustRestart includes vscode", () => {

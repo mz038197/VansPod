@@ -81,6 +81,7 @@ export const connectionMascotStyles = `
   .mascot-speech .connection-error, .mascot-speech .connection-message { padding: 0; margin-top: 6px; border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; }
   .mascot-speech .connection-error svg, .mascot-speech .connection-message svg { display: none; }
   .mascot-speaking .connection-message { margin-top: 0; color: var(--text); font-size: 12px; }
+  .mascot-speaking { flex-basis: 144px; min-height: 144px; padding-bottom: 0; }
   main button.mascot-speech-close { margin-top: 6px; padding: 4px 0; min-height: 24px; background: transparent; color: var(--muted); border: 0; border-radius: 4px; font-size: 11px; }
   main button.mascot-speech-close:hover { color: var(--text); }
   main button.mascot-pause { position: absolute; right: 0; bottom: 0; display: grid; place-items: center; min-height: 24px; width: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); opacity: 0.65; }
@@ -140,6 +141,28 @@ export const connectionMascotStyles = `
 
 export const connectionMascotScript = `
   var mascotSpeechDismissed = false;
+  function updateCopyFeedback(updated) {
+    var card = document.querySelector('[data-setting="連線"]');
+    var nextCard = updated.querySelector('[data-setting="連線"]');
+    var stage = card?.querySelector('.connection-mascot');
+    var nextStage = nextCard?.querySelector('.connection-mascot');
+    if (!stage || !nextStage || !nextCard.querySelector('.connection-copy')) return false;
+    var speech = nextStage.querySelector('.mascot-speech');
+    var feedback = nextCard.querySelector('.settings-content > .connection-feedback');
+    if (!speech && !feedback) return false;
+    card.querySelector('.settings-content > .connection-feedback')?.remove();
+    stage.querySelector('.mascot-speech')?.remove();
+    if (nextStage.classList.contains('mascot-speaking')) {
+      if (!speech) return false;
+      mascotSpeechDismissed = false;
+      stage.classList.add('mascot-waiting', 'mascot-speaking');
+      stage.prepend(speech);
+    } else {
+      if (stage.classList.contains('mascot-speaking')) hideMascotSpeech(stage);
+      card.querySelector('.settings-content').append(feedback);
+    }
+    return true;
+  }
   function hideMascotSpeech(stage) {
     stage.querySelector('.mascot-speech')?.remove();
     stage.classList.remove('mascot-waiting', 'mascot-speaking');
