@@ -28,7 +28,10 @@ export const installProgressScript = `
       return;
     }
     if (form?.matches?.('form[action="/environment"]')) {
-      form.closest("section")?.querySelectorAll("form[data-abort-install]").forEach(function (abort) { abort.hidden = false; });
+      var card = form.closest("section");
+      if (!card) return;
+      card.querySelectorAll('button[form="settings-environment"]').forEach(function (start) { start.hidden = true; });
+      card.querySelectorAll("form[data-abort-install]").forEach(function (abort) { abort.hidden = false; });
       return;
     }
     if (form?.matches?.('form[action="/prepare"]')) {
@@ -92,7 +95,13 @@ export const installProgressScript = `
       return;
     }
     var abortForm = panel.querySelector("form[data-abort-install]");
-    if (abortForm) { abortForm.hidden = false; abortForm.querySelector("button").disabled = false; }
+    if (abortForm) {
+      panel.querySelector('form[action="/confirm"]')?.setAttribute("data-reserved", "");
+      var cancelForm = panel.querySelector('form[action="/cancel"]');
+      if (cancelForm) cancelForm.hidden = true;
+      abortForm.hidden = false;
+      abortForm.querySelector("button").disabled = false;
+    }
     panel.setAttribute("aria-busy", "true");
     title.textContent = "安裝中";
     status.textContent = "正在執行，請稍候…";

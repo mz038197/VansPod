@@ -510,24 +510,30 @@ describe("VansPod page", () => {
 describe("Abort Install on the page", () => {
   const abortForms = (html: string) => [...html.matchAll(/<form[^>]*action="\/abort-install"[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);
 
-  it("offers 停止安裝 inside the running Course Install Action dialog", () => {
-    const html = renderPage(view({ commandRunning: true, pendingCommand: "uv run streamlit run app.py", projectFolder: "D:\lesson" }));
-    const dialog = html.match(/<div class="confirm-dialog"[\s\S]*?data-install-dismiss[^>]*>/)?.[0] ?? "";
-    const form = abortForms(dialog)[0] ?? "";
-    assert.match(form, /停止安裝/);
-    assert.doesNotMatch(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
+  it("puts 停止安裝 where 取消 was in the running Course Install Action dialog", () => {
+    const html = renderPage(view({ commandRunning: true, pendingCommand: "uv run streamlit run app.py", projectFolder: "D:\\lesson" }));
+    const choices = html.match(/<div class="confirm-dialog"[\s\S]*?<div class="choices">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    const forms = [...choices.matchAll(/<form[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);
+    assert.deepEqual(forms.map((form) => form.match(/action="([^"]+)"/)?.[1]), ["/confirm", "/cancel", "/abort-install"]);
+    assert.match(forms[0], /<form[^>]*data-reserved/);
+    assert.match(forms[1], /<form[^>]*hidden/);
+    assert.match(forms[2], /停止安裝/);
+    assert.doesNotMatch(forms[2].match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
   });
 
-  it("offers 停止安裝 in the environment card while an Environment Install runs", () => {
+  it("replaces 確認安裝 with 停止安裝 in the environment card while an Environment Install runs", () => {
     const html = renderPage(view({ commandRunning: true }));
     const card = html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
-    const form = abortForms(card)[0] ?? "";
+    const actions = card.match(/<div class="settings-actions">([\s\S]*)<\/div>/)?.[1] ?? "";
+    assert.match(actions, /<button[^>]*form="settings-environment"[^>]*hidden[^>]*>確認安裝/);
+    const form = abortForms(actions)[0] ?? "";
+    assert.ok(actions.trimEnd().endsWith(form), "停止安裝 takes the last slot");
     assert.match(form, /停止安裝/);
     assert.doesNotMatch(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
   });
 
   it("keeps every 停止安裝 hidden when nothing is installing, and asks before aborting", () => {
-    const html = renderPage(view({ pendingCommand: "echo hi", projectFolder: "D:\lesson" }));
+    const html = renderPage(view({ pendingCommand: "echo hi", projectFolder: "D:\\lesson" }));
     const forms = abortForms(html);
     assert.ok(forms.length >= 2);
     for (const form of forms) assert.match(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);

@@ -22,12 +22,16 @@ function harness(cancelOk = true, confirmAbort = true) {
   const output = { textContent: "", hidden: true, scrollTop: 0, clientHeight: 100, scrollHeight: 100 };
   const dismiss = { disabled: false, hidden: true, closest: () => dialog };
   const choices = { hidden: false };
+  const confirmSlot = { reserved: false, setAttribute(name: string) { if (name === "data-reserved") confirmSlot.reserved = true; } };
+  const cancelSlot = { hidden: false };
   const buttons = [{ disabled: false }, { disabled: false }, dismiss];
   const panel = {
     querySelector(selector: string) {
       if (selector === "[data-install-dismiss]") return dismiss;
       if (selector === ".choices") return choices;
       if (selector === "form[data-abort-install]") return abortForm;
+      if (selector === 'form[action="/confirm"]') return confirmSlot;
+      if (selector === 'form[action="/cancel"]') return cancelSlot;
       return selector === "h2" ? title : selector === "[data-install-status]" ? status : output;
     },
     querySelectorAll() { return buttons; },
@@ -63,7 +67,7 @@ function harness(cancelOk = true, confirmAbort = true) {
     submit: () => submit({ target: form, preventDefault() {} }),
     cancel: () => submit({ target: { ...form, action: "/cancel", matches: (selector: string) => selector.includes('action="/cancel"') }, preventDefault() {} }),
     abort: () => submit({ target: abortForm, preventDefault() {} }),
-    abortForm, abortButton, aborts: () => aborts,
+    abortForm, abortButton, confirmSlot, cancelSlot, aborts: () => aborts,
     complete, title, status, output, buttons, dismiss, choices,
     acknowledge: () => click({ target: { closest: () => dismiss } }),
     update: async (value: string) => { latestOutput = value; await nextUpdate(); },
@@ -184,6 +188,8 @@ it("offers 停止安裝 while installing and shows 已中止 after a confirmed a
   const running = ui.submit();
   assert.equal(ui.abortForm.hidden, false);
   assert.equal(ui.abortButton.disabled, false);
+  assert.equal(ui.confirmSlot.reserved, true, "確認執行 keeps its space so 停止安裝 lands where 取消 was");
+  assert.equal(ui.cancelSlot.hidden, true);
   await ui.abort();
   assert.equal(ui.aborts(), 1);
   assert.equal(ui.status.textContent, "正在停止安裝…");
@@ -206,4 +212,19 @@ it("lets 停止安裝 reload the page when this page did not start the install",
   const ui = harness();
   await ui.abort();
   assert.equal(ui.aborts(), 0);
+});
+
+it("swaps 確認安裝 for 停止安裝 in the environment card once the install is submitted", async () => {
+  let submit!: (event: unknown) => Promise<void>;
+  const start = { hidden: false };
+  const abort = { hidden: true };
+  const card = { querySelectorAll: (selector: string) => selector.includes("settings-environment") ? [start] : selector.includes("data-abort-install") ? [abort] : [] };
+  vm.runInNewContext(installProgressScript, {
+    document: { addEventListener(event: string, handler: typeof submit) { if (event === "submit") submit = handler; } },
+  });
+  let prevented = false;
+  await submit({ target: { matches: (selector: string) => selector.includes('action="/environment"'), closest: () => card }, preventDefault() { prevented = true; } });
+  assert.equal(start.hidden, true);
+  assert.equal(abort.hidden, false);
+  assert.equal(prevented, false, "the install request itself still goes to the server");
 });

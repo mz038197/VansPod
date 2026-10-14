@@ -185,7 +185,7 @@ function environmentInner(view: ClassroomAppView): string {
     </form>
     <form class="stack" method="post" action="/environment">
       <div class="tools">${tools}</div>
-      <button type="submit" class="go"${confirmOff}>確認安裝</button>
+      <button type="submit" class="go"${confirmOff}${view.commandRunning ? " hidden" : ""}>確認安裝</button>
     </form>
     ${note}${abortInstallForm(view)}`;
 }
@@ -216,13 +216,15 @@ function commandInner(view: ClassroomAppView): string {
   const command = view.pendingCommand
     ? `<pre class="pending">${escapeHtml(view.pendingCommand)}</pre>`
     : "";
-  const choices =
-    view.pendingCommand && !view.commandRunning
-      ? `<div class="choices">
-          <form method="post" action="/confirm"><button type="submit" class="go">確認執行</button></form>
-          <form method="post" action="/cancel"><button type="submit" class="quiet">取消</button></form>
+  // 執行中保留「確認執行」的空間，讓「停止安裝」落在「取消」的位置，避免連點誤觸。
+  const running = view.commandRunning;
+  const choices = view.pendingCommand
+    ? `<div class="choices">
+          <form method="post" action="/confirm"${running ? " data-reserved" : ""}><button type="submit" class="go"${running ? " disabled" : ""}>確認執行</button></form>
+          <form method="post" action="/cancel"${running ? " hidden" : ""}><button type="submit" class="quiet">取消</button></form>
+          ${abortInstallForm(view)}
         </div>`
-      : "";
+    : "";
   const output = hasOutput
     ? `<h3>指令輸出</h3><pre>${escapeHtml(view.commandOutput ?? "")}</pre>`
     : "";
@@ -637,7 +639,7 @@ function presentCommand(body: string, view: ClassroomAppView): { inline: string;
   const choices = inline.match(/<div class="choices">[\s\S]*?<\/div>/);
   let dialog = "";
   if (pending) {
-    dialog = `<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><div class="confirm-panel"><h2 id="confirm-title">確認安裝</h2>${pending[0]}<p data-install-status role="status" aria-live="polite"></p><pre data-install-output aria-label="安裝輸出" hidden></pre>${choices?.[0] ?? ""}${abortInstallForm(view)}<button type="button" data-install-dismiss hidden>確認</button></div></div>`;
+    dialog = `<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><div class="confirm-panel"><h2 id="confirm-title">確認安裝</h2>${pending[0]}<p data-install-status role="status" aria-live="polite"></p><pre data-install-output aria-label="安裝輸出" hidden></pre>${choices?.[0] ?? ""}<button type="button" data-install-dismiss hidden>確認</button></div></div>`;
     inline = inline.replace(pending[0], "");
     if (choices) inline = inline.replace(choices[0], "");
   }
@@ -790,6 +792,10 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
         body = body.replace('action="/environment"', 'action="/environment" id="settings-environment"');
         body = body.replace(/<button[\s\S]*?<\/button>/, (button) => {
           actions += button.replace('<button ', '<button form="settings-environment" ');
+          return "";
+        });
+        body = body.replace(/<form[^>]*data-abort-install[\s\S]*?<\/form>/, (abort) => {
+          actions += abort;
           return "";
         });
         const missing = view.tools.filter((tool) => !tool.installed).length;
@@ -960,6 +966,7 @@ export function renderPage(view: ClassroomAppView): string {
     .confirm-panel .pending { max-height: min(12dvh, 5rem); min-height: 0; flex-shrink: 1; }
     .confirm-panel [data-install-output] { height: min(32dvh, 16rem); max-height: min(32dvh, 16rem); min-height: 0; flex: 0 1 16rem; padding: 14px 16px; border-radius: 10px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-family: "Cascadia Code", "Cascadia Mono", Consolas, monospace; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; color-scheme: dark; }
     .confirm-panel [hidden] { display: none; }
+    .confirm-panel [data-reserved] { visibility: hidden; }
     .confirm-panel button { min-height: 34px; padding: 8px 16px; border-radius: 999px; border: 1px solid transparent; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 500; }
     .confirm-panel button.quiet { background: light-dark(#ffffff, #212121); color: light-dark(#0d0d0d, #ececec); border-color: light-dark(#e6e6e6, #3d3d3d); }
     .restart { color: light-dark(#9a4a08, #fbbf24); }
