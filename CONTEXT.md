@@ -73,8 +73,12 @@ _Avoid_: 從畫面選取金鑰文字、複製 Invite Code、清除連線後仍�
 _Avoid_: 僅清除畫面狀態卻保留憑證、刪除其他 provider、刪除 Workspace MCP Config
 
 **Course Install Action**:
-老師在 Course Catalog 提供、學生確認後在專案資料夾執行一次的安裝指令，種類為 Skill、套件或 MCP。它預期會自行結束；執行中即為「安裝中」。
+老師在 Course Catalog 提供、學生確認後在專案資料夾執行一次的安裝指令，種類為 Skill、套件或 MCP。它必須會自行結束；執行中即為「安裝中」。會持續執行的指令（網站、伺服器、watch）應改以 Lesson Snippet 提供。
 _Avoid_: 用來啟動長駐網站或服務、把仍在執行的網站稱為安裝中、Environment Install
+
+**Lesson Snippet**:
+老師在 Course Catalog 提供、學生自行複製使用的文字片段，畫面稱為「課程片段」。VansPod 只顯示與複製，不執行；課程網站等長駐指令以此提供，由學生在自己的終端機或 Coding Agent 執行與停止。
+_Avoid_: Course Install Action、由 VansPod 在背景啟動課程網站
 
 **Environment Install**:
 VansPod 內建、為學生電腦安裝開發工具（如 uv、Git、Node.js、PowerShell）的安裝流程。它與 Course Install Action 不同，不由 Course Catalog 定義。
