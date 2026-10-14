@@ -11,7 +11,7 @@ $dataRoot = [System.IO.Path]::GetFullPath($planData.dataRoot)
 if ($planData.version -ne 1 -or $root -ne $expectedRoot -or $dataRoot -ne [System.IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.vanspod')) -or [System.IO.Path]::GetFullPath($Plan) -ne (Join-Path $root 'uninstall-plan.json')) { throw 'Invalid removal plan' }
 [System.IO.File]::WriteAllText((Join-Path $root 'uninstall-ready'), (@{pid = $PID} | ConvertTo-Json -Compress), $utf8)
 
-function Assert-NoLinks([string]$Target) {
+function Assert-NoLinks([string]$Target, [bool]$InspectChildren = $true) {
   # A regular leaf can still resolve through a junction in any ancestor.
   $ancestor = [System.IO.Path]::GetFullPath($Target)
   while ($ancestor) {
@@ -21,7 +21,7 @@ function Assert-NoLinks([string]$Target) {
   if (Test-Path -LiteralPath $Target) {
     $item = Get-Item -LiteralPath $Target -Force
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "拒絕移除連結：$Target" }
-    if ($item.PSIsContainer) { foreach ($child in Get-ChildItem -LiteralPath $Target -Force) { Assert-NoLinks $child.FullName } }
+    if ($InspectChildren -and $item.PSIsContainer) { foreach ($child in Get-ChildItem -LiteralPath $Target -Force) { Assert-NoLinks $child.FullName } }
   }
 }
 
@@ -34,14 +34,18 @@ function Remove-Owned([string]$Name, [string]$Directory = $root) {
 
 $failedTarget = $root
 try {
-  Assert-NoLinks $root
-  Assert-NoLinks $dataRoot
+  # Validate roots and ancestors now, but the worker still owns mutable runtime
+  # entries until it exits. Inspect their final tree only after that handoff.
+  Assert-NoLinks $root $false
+  Assert-NoLinks $dataRoot $false
   foreach ($processId in @($planData.pid, $planData.waitForPid)) {
     if ($processId) {
       for ($attempt = 0; $attempt -lt 300 -and (Get-Process -Id $processId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 100 }
       if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { throw 'VansPod 尚未退出，請結束後重試。' }
     }
   }
+  Assert-NoLinks $root
+  Assert-NoLinks $dataRoot
   $currentStateFile = Join-Path $root 'runtime/instance.json'
   if (Test-Path -LiteralPath (Join-Path $root 'runtime')) {
     if (-not (Test-Path -LiteralPath $currentStateFile)) { throw 'VansPod 正在啟動，請從畫面或 vanspod uninstall 重試完整移除。' }
