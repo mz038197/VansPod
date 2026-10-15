@@ -9,7 +9,7 @@ export const settingsActionsScript = `
     var copyAction = form.matches('form[action="/copy"]');
     var reloadAction = form.matches('form[action="/reload"]');
     if (typeof classroomUpdateBusy === "function") classroomUpdateBusy(true);
-    if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("幫你確認課堂內容…");
+    if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("幫你去催課堂內容了，披風都還沒熱，等一下。");
     var main = document.querySelector("main");
     var card = form.closest(".settings-card, .project-folder-row, .classroom-update") || form;
     card.querySelector(".settings-action-error")?.remove();
@@ -63,6 +63,7 @@ export const settingsActionsScript = `
       });
       window.scrollTo({ top: top, behavior: "instant" });
       if (typeof positionClassroomUpdate === "function") positionClassroomUpdate();
+      if (typeof refreshClassroomRestart === "function") refreshClassroomRestart();
       window.scrollTo({ top: top, behavior: "instant" });
       if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback();
     } catch (error) {
@@ -75,7 +76,7 @@ export const settingsActionsScript = `
       if (!reloadAction || typeof classroomUpdateFeedback !== "function") {
         (card.querySelector(".connection-feedback") || card.querySelector(".settings-content") || card).appendChild(message);
       }
-      if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("更新未完成，請再試一次。");
+      if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("這次沒更新成，披風也有收訊死角。按更新再試一次。");
     } finally {
       buttons.forEach(function (button, index) { button.disabled = disabled[index]; });
       card.removeAttribute("aria-busy");

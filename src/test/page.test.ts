@@ -282,7 +282,7 @@ describe("VansPod page", () => {
       document: {
         hidden: false,
         querySelectorAll: () => [light],
-        querySelector: () => card,
+        querySelector: (selector: string) => selector === '[data-setting="模型"]' ? card : null,
         createElement: () => ({ innerHTML: "", content: { firstElementChild: null } }),
       },
       fetch: async (url: string) => { assert.equal(url, "/model-status"); return { ok: true, json: async () => status }; },
@@ -460,7 +460,7 @@ describe("VansPod page", () => {
     assert.match(classroom, /class="badge">課堂可用 1 個</);
     assert.match(classroom, /<li>gpt<\/li>/);
     assert.doesNotMatch(classroom, /class="model-value"/);
-    assert.match(classroom, /設定已更新，重新開啟 Codex 後生效。/);
+    assert.match(classroom, /Codex 還在裝睡。重新開啟 Codex 後生效/);
     assert.match(official, /\.restart \{ color: light-dark\(#9a4a08, #fbbf24\); \}/);
     assert.match(official, /:root:not\(\[data-appearance="light"\]\) \{ --bg: #212121; \}/);
     assert.doesNotMatch(official, /data-setting="資料夾"/);

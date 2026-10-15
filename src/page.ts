@@ -50,10 +50,10 @@ function restartHtml(view: ClassroomAppView): string {
       names.length === 1
         ? names[0]
         : `${names.slice(0, -1).join("、")} 與 ${names[names.length - 1]}`;
-    parts.push(`<p>設定已更新，重新開啟 ${escapeHtml(joined)} 後生效。</p>`);
+    parts.push(`<p>設定幫你更新好了，${escapeHtml(joined)} 還在裝睡。重新開啟 ${escapeHtml(joined)} 後生效，披風可不包叫醒服務。</p>`);
   }
   if (clients.includes("vscode")) {
-    parts.push(`<p>設定已更新，請完全退出 VS Code 再打開，不要只重載視窗。</p>`);
+    parts.push(`<p>設定幫你更新好了，VS Code 還在裝睡。請完全退出 VS Code 再打開，不要只重載視窗。別敷衍牠，牠真的會繼續睡。</p>`);
   }
   return parts.length ? `<div class="model-update" role="status" data-restart-clients="${clients.join(",")}"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7v2"/></svg><div>${parts.join("")}</div></div>` : "";
 }
@@ -788,7 +788,7 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
           return "";
         });
         moveForm("reload");
-        if (view.connected && view.canCopyKey) actions = "";
+        if (view.connected && view.canCopyKey) { actions = ""; reminder = ""; }
       } else {
         moveForm("environment-check");
         body = body.replace('action="/environment"', 'action="/environment" id="settings-environment"');

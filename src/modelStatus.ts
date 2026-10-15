@@ -28,8 +28,8 @@ export const modelStatusScript = `
     var holder = document.createElement("template");
     holder.innerHTML = status.restart;
     var updated = holder.content.firstElementChild;
-    var companionRestart = document.querySelector('.classroom-update-restart');
-    if (companionRestart && companionRestart.innerHTML !== status.restart) companionRestart.innerHTML = status.restart;
+    if (typeof refreshClassroomRestart === 'function') refreshClassroomRestart(status.restart);
+    if (document.querySelector('[data-classroom-restart]')) return;
     if (banner?.getAttribute("data-restart-clients") === updated?.getAttribute("data-restart-clients")) return;
     if (banner && updated) banner.replaceWith(updated);
     else if (banner) banner.remove();
