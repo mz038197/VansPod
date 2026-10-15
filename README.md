@@ -42,9 +42,9 @@ exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.1.2.tgz`；�
 
 exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry 的 [`vanspod`](https://www.npmjs.com/package/vanspod) 套件。更新時不要執行完整移除，否則會清除課堂資料。
 
-## GitHub Actions 發佈 exe
+## GitHub Actions 發佈
 
-一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。此流程不會發佈 npm 套件。
+一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release，最後發佈 npm 套件。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。
 
 發版前同步 `package.json`、`package-lock.json` 與 `src/version.ts` 的版本；tag 必須等於 `v` 加版本號，否則流程失敗。以 `0.1.2` 為例：
 
@@ -56,15 +56,11 @@ git push origin v0.1.2
 
 新版本使用新的版本號與 tag。相同 tag 的 Actions 重跑會更新該 Release 的產物。
 
-## 手動發佈 npm
+## 發佈 npm
 
-npm 套件不由 Actions 發佈。tag 推送後，由套件維護者在本機 PowerShell 執行；帳號須開啟 2FA，提示時按 Enter 在瀏覽器完成驗證：
+GitHub Release 建立後，同一流程以 npm Trusted Publishing（OIDC）發佈 `vanspod`，不在 GitHub 保存 npm token，並附上來源證明（provenance）。npm 上須將 `mz038197/VansPod` 的 `release.yml` 設為 Trusted Publisher。npm 已有該版本時略過發佈，因此重跑同一 tag 只更新 Release 產物。
 
-```powershell
-npm publish
-```
-
-看到 `+ vanspod@<版本>` 即完成，可用 `npm view vanspod dist-tags` 確認 `latest`。npm 同一版本號只能發佈一次，發佈 72 小時後幾乎無法撤下。
+可用 `npm view vanspod dist-tags` 確認 `latest`。npm 同一版本號只能發佈一次，發佈 72 小時後幾乎無法撤下。若 Actions 的 npm 步驟失敗，修正後重跑該 tag，或由維護者在本機 PowerShell 執行 `npm publish` 並完成 2FA。
 
 本機課堂 app。規格是 [classroom-one-click-install#8](https://github.com/mz038197/classroom-one-click-install/issues/8)。
 
