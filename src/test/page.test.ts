@@ -423,8 +423,8 @@ describe("VansPod page", () => {
     assert.equal(outputted.includes('class="confirm-dialog"'), false);
     assert.match(withSnippet, /骨架/);
     assert.match(withSnippet, /<article class="snippet-card"><span class="snippet-number" aria-hidden="true">1<\/span>/);
-    assert.match(withSnippet, /<strong><span class="visually-hidden">片段 1：<\/span>骨架<\/strong>/);
-    assert.match(withSnippet, /<p class="hint">main\.py<\/p>/);
+    assert.match(withSnippet, /<div class="snippet-line"><strong><span class="visually-hidden">片段 1：<\/span>骨架<\/strong><span class="snippet-hint">main\.py<\/span><\/div>/);
+    assert.equal(withSnippet.includes('<p class="hint">main.py</p>'), false);
     assert.match(withSnippet, /<button type="button" data-copy-snippet="stub" aria-label="複製「骨架」"><svg[^]*?<\/svg><span>複製<\/span><\/button>/);
     assert.match(withSnippet, /<details class="snippet-peek"><summary>查看內容<\/summary><pre class="snippet-code">print\(1\)\n<\/pre><\/details>/);
     assert.equal(withSnippet.includes('data-kind="snippet"'), false);

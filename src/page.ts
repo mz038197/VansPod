@@ -677,9 +677,9 @@ function splitCourseCards(html: string, view: ClassroomAppView): string {
     const title = escapeHtml(snippet.title);
     const done = copied.has(snippet.id);
     const hint = snippet.pasteHint
-      ? `<p class="hint">${escapeHtml(snippet.pasteHint)}</p>`
+      ? `<span class="snippet-hint">${escapeHtml(snippet.pasteHint)}</span>`
       : "";
-    return `<article class="snippet-card${done ? " copied" : ""}"><span class="snippet-number" aria-hidden="true">${number}</span><div class="snippet-main"><strong><span class="visually-hidden">片段 ${number}：</span>${title}</strong>${hint}<details class="snippet-peek"><summary>查看內容</summary><pre class="snippet-code">${escapeHtml(snippet.body)}</pre></details></div><button type="button"${done ? ' class="quiet"' : ""} data-copy-snippet="${escapeHtml(snippet.id)}" aria-label="${done ? "再複製一次" : "複製"}「${title}」">${COPY_ICON}<span>${done ? "✓ 已複製" : "複製"}</span></button><span class="visually-hidden" data-snippet-copy-status role="status" aria-live="polite"></span></article>`;
+    return `<article class="snippet-card${done ? " copied" : ""}"><span class="snippet-number" aria-hidden="true">${number}</span><div class="snippet-main"><div class="snippet-line"><strong><span class="visually-hidden">片段 ${number}：</span>${title}</strong>${hint}</div><details class="snippet-peek"><summary>查看內容</summary><pre class="snippet-code">${escapeHtml(snippet.body)}</pre></details></div><button type="button"${done ? ' class="quiet"' : ""} data-copy-snippet="${escapeHtml(snippet.id)}" aria-label="${done ? "再複製一次" : "複製"}「${title}」">${COPY_ICON}<span>${done ? "✓ 已複製" : "複製"}</span></button><span class="visually-hidden" data-snippet-copy-status role="status" aria-live="polite"></span></article>`;
   }).join("") || `<p class="empty">這堂課沒有片段。</p>`;
   const chevron = `<svg class="course-chevron" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>`;
   const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
@@ -977,8 +977,9 @@ export function renderPage(view: ClassroomAppView): string {
     .snippet-number { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: light-dark(#0d0d0d, #ececec); color: light-dark(#ffffff, #0d0d0d); font: 700 16px Consolas, "Cascadia Mono", monospace; }
     .snippet-card.copied .snippet-number { background: light-dark(#047857, #6ee7b7); }
     .snippet-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .snippet-main strong { display: flex; align-items: center; min-height: 32px; overflow-wrap: anywhere; }
-    .snippet-main .hint { font-size: 13px; }
+    .snippet-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 32px; }
+    .snippet-line strong { min-width: 0; overflow-wrap: anywhere; }
+    .snippet-hint { display: inline-flex; align-items: center; min-height: 22px; max-width: 100%; padding: 0 8px; border-radius: 999px; background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); color: var(--muted); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
     .snippet-peek summary { width: fit-content; margin-top: 4px; color: var(--muted); font-size: 12px; cursor: pointer; }
     .snippet-code { width: 100%; max-height: 12rem; margin-top: 6px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
     main .snippet-card > button { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
