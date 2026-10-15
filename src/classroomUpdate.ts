@@ -18,9 +18,9 @@ export const classroomUpdateStyles = `
   .classroom-update-control p { margin: 0; flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
   .classroom-update-control small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
   .classroom-update-control button { flex-shrink: 0; min-height: 40px; padding: 8px 16px; border: 0; border-radius: 24px; background: var(--accent); color: var(--on-accent); font: inherit; font-size: 13px; }
-  body.has-classroom-update main { padding-bottom: 88px; }
-  .classroom-update.docked { position: fixed; z-index: 20; right: 24px; bottom: 0; width: 288px; }
-  .classroom-update.docked .classroom-update-control { border-radius: 16px 16px 0 0; }
+  body.has-classroom-update { --classroom-update-bottom-gap: 24px; }
+  body.has-classroom-update main { padding-bottom: var(--classroom-update-bottom-gap); }
+  .classroom-update.docked { position: fixed; z-index: 20; right: 24px; bottom: var(--classroom-update-bottom-gap); width: 288px; }
   .classroom-update.docked .connection-mascot { flex: none; width: 90px; height: 84px; min-height: 84px; margin-left: auto; overflow: visible; padding: 0; }
   .classroom-update.docked .mascot-traveler { width: 84px; max-width: none; left: 0; right: auto; bottom: -4px; animation: none; transform: none; }
   .classroom-update.docked .mascot-facing, .classroom-update.docked .mascot-logo, .classroom-update.docked .mascot-foot { animation: none; }
@@ -30,7 +30,7 @@ export const classroomUpdateStyles = `
   .classroom-update.docked .mascot-quote { max-height: min(40dvh, 280px); overflow-y: auto; overflow-x: hidden; }
   .classroom-update.docked button.mascot-speech-close { background: transparent; color: var(--muted); padding: 4px 0; border: 0; font: inherit; font-size: 11px; }
   @media (max-width: 640px) {
-    body.has-classroom-update main { padding-bottom: 160px; }
+    body.has-classroom-update main { padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
     .classroom-update.docked { left: 0; right: 0; bottom: 0; width: auto; gap: 0; padding: 4px 12px max(4px, env(safe-area-inset-bottom)); background: var(--tile); border-top: 1px solid var(--line); }
     .classroom-update.docked .connection-mascot { position: absolute; right: 16px; bottom: 100%; width: 88px; height: 88px; min-height: 88px; }
     .classroom-update.docked .mascot-traveler { width: 88px; }
