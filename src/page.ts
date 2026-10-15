@@ -917,6 +917,7 @@ export function renderPage(view: ClassroomAppView): string {
       body { display: block; }
       .mobile-top { display: flex; position: sticky; top: 0; z-index: 20; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(24px) saturate(160%); }
       .mobile-top .brand { flex: 1; min-width: 0; padding: 4px; }
+      .mobile-top .logo-badge { width: 32px; height: 32px; }
       .mobile-top .brand-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .menu-toggle { display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text); }
       .menu-toggle svg { width: 20px; height: 20px; }
