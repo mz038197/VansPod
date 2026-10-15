@@ -77,7 +77,7 @@ _Avoid_: 僅清除畫面狀態卻保留憑證、刪除其他 provider、刪除 W
 _Avoid_: 用來啟動長駐網站或服務、把仍在執行的網站稱為安裝中、Environment Install
 
 **Lesson Snippet**:
-老師在 Course Catalog 提供、學生自行複製使用的文字片段，畫面稱為「課程片段」。VansPod 只顯示與複製，不執行；課程網站等長駐指令以此提供，由學生在自己的終端機或 Coding Agent 執行與停止。
+老師在 Course Catalog 提供、學生自行複製使用的文字片段，畫面稱為「課程片段」。VansPod 只顯示與複製，不執行；課程網站等長駐指令以此提供，由學生在自己的終端機或 Coding Agent 執行與停止。畫面依 Course Catalog 順序自動編號（1、2、3…），讓老師能說「複製 2 號」；新增片段應加在最後，避免既有編號位移。學生複製過的片段會標示為已複製，直到老師修改該片段內容。
 _Avoid_: Course Install Action、由 VansPod 在背景啟動課程網站
 
 **Environment Install**:

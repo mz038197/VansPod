@@ -604,6 +604,24 @@ describe("copy lesson snippets", () => {
     failClipboard(new Error("clipboard unavailable"));
     assert.equal(await app.copySnippet("stub"), false);
     assert.equal(app.view().catalog?.snippets?.[0].body, "print(1)\n");
+    assert.deepEqual(app.view().copiedSnippetIds, []);
+  });
+
+  it("remembers copied snippets until the teacher changes their body", async () => {
+    let yaml = "actions: []\nsnippets:\n  - id: a\n    title: A\n    body: one\n  - id: b\n    title: B\n    body: two\n";
+    const { app } = harness(undefined, {
+      get catalogYaml() {
+        return yaml;
+      },
+    });
+    await app.redeem("ABC12345", "Ada");
+    assert.deepEqual(app.view().copiedSnippetIds, []);
+    assert.equal(await app.copySnippet("a"), true);
+    assert.equal(await app.copySnippet("missing"), false);
+    assert.deepEqual(app.view().copiedSnippetIds, ["a"]);
+    yaml = "actions: []\nsnippets:\n  - id: a\n    title: A\n    body: changed\n  - id: b\n    title: B\n    body: two\n";
+    await app.reloadCatalog();
+    assert.deepEqual(app.view().copiedSnippetIds, []);
   });
 });
 

@@ -422,8 +422,26 @@ describe("VansPod page", () => {
     assert.equal(outputted.includes("Installed 1 package"), false);
     assert.equal(outputted.includes('class="confirm-dialog"'), false);
     assert.match(withSnippet, /骨架/);
-    assert.match(withSnippet, /data-copy-snippet="stub">複製<\/button>/);
-    assert.match(withSnippet, /<pre class="snippet-code">print\(1\)\n<\/pre>/);
+    assert.match(withSnippet, /<article class="snippet-card"><span class="snippet-number" aria-hidden="true">1<\/span>/);
+    assert.match(withSnippet, /<strong><span class="visually-hidden">片段 1：<\/span>骨架<\/strong>/);
+    assert.match(withSnippet, /<p class="hint">main\.py<\/p>/);
+    assert.match(withSnippet, /<button type="button" data-copy-snippet="stub" aria-label="複製「骨架」"><svg[^]*?<\/svg><span>複製<\/span><\/button>/);
+    assert.match(withSnippet, /<details class="snippet-peek"><summary>查看內容<\/summary><pre class="snippet-code">print\(1\)\n<\/pre><\/details>/);
+    assert.equal(withSnippet.includes('data-kind="snippet"'), false);
+    const copiedSnippet = renderPage(view({
+      catalog: {
+        source: "local",
+        actions: [],
+        snippets: [
+          { id: "a", title: "第一段", body: "one" },
+          { id: "b", title: "第二段", body: "two" },
+        ],
+      },
+      copiedSnippetIds: ["b"],
+    }));
+    assert.match(copiedSnippet, /<article class="snippet-card"><span class="snippet-number" aria-hidden="true">1<\/span>[^]*?<span>複製<\/span>/);
+    assert.match(copiedSnippet, /<article class="snippet-card copied"><span class="snippet-number" aria-hidden="true">2<\/span>/);
+    assert.match(copiedSnippet, /<button type="button" class="quiet" data-copy-snippet="b" aria-label="再複製一次「第二段」"><svg[^]*?<\/svg><span>✓ 已複製<\/span><\/button>/);
     assert.equal(withSnippet.includes(">展開</button>"), false);
     assert.equal(withSnippet.includes("<h3>本課片段</h3>"), false);
     assert.equal(withSnippet.includes("這堂課沒有片段。"), false);

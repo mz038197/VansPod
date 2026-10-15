@@ -183,6 +183,7 @@ export type ClassroomAppView = {
   commandSucceeded?: boolean;
   commandAborted?: boolean;
   installedActionIds?: string[];
+  copiedSnippetIds?: string[];
   mode: ModelSwitchMode;
   clientModes?: ClientModes;
   clientRoutes?: ClientRoutes;
@@ -229,6 +230,7 @@ export class ClassroomApp {
   private pendingCommand: string | undefined;
   private pendingActionId: string | undefined;
   private installedActions = new Map<string, Map<string, string>>();
+  private readonly copiedSnippets = new Map<string, string>();
   private commandOutput: string | undefined;
   private commandRunning = false;
   private commandAborted: boolean | undefined;
@@ -317,6 +319,9 @@ export class ClassroomApp {
       view.installedActionIds = this.catalog.actions
         .filter((action) => installed?.get(action.id) === action.command)
         .map((action) => action.id);
+      view.copiedSnippetIds = (this.catalog.snippets ?? [])
+        .filter((snippet) => this.copiedSnippets.get(snippet.id) === snippet.body)
+        .map((snippet) => snippet.id);
     }
     if (this.catalogError) {
       view.catalogError = this.catalogError;
@@ -1516,6 +1521,7 @@ export class ClassroomApp {
     if (!snippet) return false;
     try {
       await this.deps.clipboard.write(snippet.body);
+      this.copiedSnippets.set(snippet.id, snippet.body);
       return true;
     } catch {
       return false;

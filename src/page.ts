@@ -671,11 +671,15 @@ function splitCourseCards(html: string, view: ClassroomAppView): string {
   const snippetAt = courseMatch[1].indexOf(snippetHeading);
   const courseBody =
     snippetAt === -1 ? courseMatch[1] : courseMatch[1].slice(0, snippetAt);
-  const snippetBody = (view.catalog?.snippets ?? []).map((snippet) => {
+  const copied = new Set(view.copiedSnippetIds ?? []);
+  const snippetBody = (view.catalog?.snippets ?? []).map((snippet, index) => {
+    const number = index + 1;
+    const title = escapeHtml(snippet.title);
+    const done = copied.has(snippet.id);
     const hint = snippet.pasteHint
       ? `<p class="hint">${escapeHtml(snippet.pasteHint)}</p>`
       : "";
-    return `<article class="install-card snippet-card"><div class="install-top"><span data-kind="snippet" class="kind-tag">片段</span><strong>${escapeHtml(snippet.title)}</strong></div>${hint}<pre class="snippet-code">${escapeHtml(snippet.body)}</pre><div class="snippet-actions"><button type="button" data-copy-snippet="${escapeHtml(snippet.id)}">複製</button><span class="hint" data-snippet-copy-status role="status" aria-live="polite"></span></div></article>`;
+    return `<article class="snippet-card${done ? " copied" : ""}"><span class="snippet-number" aria-hidden="true">${number}</span><div class="snippet-main"><strong><span class="visually-hidden">片段 ${number}：</span>${title}</strong>${hint}<details class="snippet-peek"><summary>查看內容</summary><pre class="snippet-code">${escapeHtml(snippet.body)}</pre></details></div><button type="button"${done ? ' class="quiet"' : ""} data-copy-snippet="${escapeHtml(snippet.id)}" aria-label="${done ? "再複製一次" : "複製"}「${title}」">${COPY_ICON}<span>${done ? "✓ 已複製" : "複製"}</span></button><span class="visually-hidden" data-snippet-copy-status role="status" aria-live="polite"></span></article>`;
   }).join("") || `<p class="empty">這堂課沒有片段。</p>`;
   const chevron = `<svg class="course-chevron" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>`;
   const install = `<section class="tile wide"><details class="course-section" data-course-section="install" open><summary class="tile-head"><h2>課程安裝</h2>${chevron}</summary><div class="course-content">${courseBody}${presented.inline}</div></details></section>${presented.dialog}`;
@@ -710,7 +714,10 @@ function snippetCopyScript(): string {
       var target = event.target;
       var button = target && target.closest ? target.closest("[data-copy-snippet]") : null;
       if (!button || button.disabled) return;
-      var status = button.closest(".snippet-card").querySelector("[data-snippet-copy-status]");
+      var card = button.closest(".snippet-card");
+      var status = card.querySelector("[data-snippet-copy-status]");
+      var label = button.querySelector("span");
+      var title = button.getAttribute("aria-label").replace(/^(再複製一次|複製)/, "");
       button.disabled = true;
       status.textContent = "";
       try {
@@ -719,11 +726,20 @@ function snippetCopyScript(): string {
           body: new URLSearchParams({ snippet_id: button.getAttribute("data-copy-snippet") }),
         });
         if (!response.ok || !(await response.json()).ok) throw new Error("copy failed");
-        status.textContent = "已複製完整片段。";
+        card.classList.add("copied");
+        button.classList.add("quiet");
+        button.setAttribute("aria-label", "再複製一次" + title);
+        label.textContent = "已複製！";
+        status.textContent = "已複製" + title + "。";
       } catch (error) {
+        label.textContent = "複製失敗";
         status.textContent = "複製失敗，請再試一次。";
       } finally {
         button.disabled = false;
+        clearTimeout(button.snippetCopyTimer);
+        button.snippetCopyTimer = setTimeout(function () {
+          label.textContent = card.classList.contains("copied") ? "✓ 已複製" : "複製";
+        }, 1500);
       }
     });
   `;
@@ -956,11 +972,19 @@ export function renderPage(view: ClassroomAppView): string {
     .kind-tag[data-kind="package"] { background: light-dark(#dbeafe, #172f50); color: light-dark(#1e40af, #93c5fd); }
     .kind-tag[data-kind="skill"] { background: light-dark(#ede9fe, #35254e); color: light-dark(#6d28d9, #c4b5fd); }
     .kind-tag[data-kind="mcp"] { background: light-dark(#d1fae5, #163c30); color: light-dark(#065f46, #6ee7b7); }
-    .kind-tag[data-kind="snippet"] { background: light-dark(#fef3c7, #443516); color: light-dark(#92400e, #fcd34d); }
-    .snippet-code { width: 100%; height: 10rem; flex-shrink: 0; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-    [data-snippet-copy-status]:empty { display: none; }
-    .snippet-actions { display: flex; align-items: center; gap: 10px; }
-    .snippet-actions button, [data-snippet-copy-status] { flex-shrink: 0; white-space: nowrap; }
+    .snippet-card { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 12px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
+    .snippet-card.copied { border-color: light-dark(#6ee7b7, #1f5a45); }
+    .snippet-number { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: light-dark(#0d0d0d, #ececec); color: light-dark(#ffffff, #0d0d0d); font: 700 16px Consolas, "Cascadia Mono", monospace; }
+    .snippet-card.copied .snippet-number { background: light-dark(#047857, #6ee7b7); }
+    .snippet-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .snippet-main strong { display: flex; align-items: center; min-height: 32px; overflow-wrap: anywhere; }
+    .snippet-main .hint { font-size: 13px; }
+    .snippet-peek summary { width: fit-content; margin-top: 4px; color: var(--muted); font-size: 12px; cursor: pointer; }
+    .snippet-code { width: 100%; max-height: 12rem; margin-top: 6px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+    main .snippet-card > button { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .snippet-card > button svg { width: 14px; height: 14px; }
+    .snippet-card.copied > button svg { display: none; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .confirm-dialog { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 24px; background: light-dark(rgba(20, 20, 20, 0.32), rgba(0, 0, 0, 0.52)); }
     .confirm-panel { width: min(36rem, 100%); max-height: min(70dvh, 32rem); overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; background: var(--tile); border: 1px solid var(--line); }
     .confirm-panel > :not(pre) { flex-shrink: 0; }
