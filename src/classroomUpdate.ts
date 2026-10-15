@@ -9,7 +9,7 @@ export function classroomUpdateControl(view: ClassroomAppView, restart: string):
 }
 
 export const classroomUpdateStyles = `
-  .classroom-update-home { min-height: 208px; position: relative; }
+  .classroom-update-home { min-height: 224px; padding-bottom: 16px; position: relative; }
   .classroom-update { display: flex; flex-direction: column; gap: 8px; }
   .classroom-update-home .connection-mascot { height: 144px; }
   .classroom-update-home .connection-mascot.mascot-speaking { height: auto; min-height: 144px; flex-basis: auto; padding: 12px 0 144px; overflow: visible; }
