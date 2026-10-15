@@ -200,9 +200,11 @@ describe("VansPod page", () => {
     assert.deepEqual(newInputs.map(input => input.value), ["not-submitted", "Student"]);
   });
 
-  it("copies without replacing the existing page or mascot and leaves other controls enabled", async () => {
+  it("copies without replacing the page, dimming the copy button, or sending twice", async () => {
     let submit!: (event: unknown) => Promise<void>;
     let replaced = false;
+    let fetches = 0;
+    let secondSubmit: Promise<void> | undefined;
     let shownSpeech: unknown;
     const copyButton = { disabled: false };
     const otherButton = { disabled: false };
@@ -232,12 +234,16 @@ describe("VansPod page", () => {
       FormData: class { *[Symbol.iterator]() {} }, URLSearchParams,
       DOMParser: class { parseFromString() { return { querySelector: () => ({ querySelector: () => nextCard }) }; } },
       fetch: async () => {
-        assert.equal(copyButton.disabled, true);
+        fetches += 1;
+        assert.equal(copyButton.disabled, false);
         assert.equal(otherButton.disabled, false);
+        secondSubmit = submit({ target: form, preventDefault() {} });
         return { ok: true, text: async () => "copied page" };
       },
     });
     await submit({ target: form, preventDefault() {} });
+    await secondSubmit;
+    assert.equal(fetches, 1);
     assert.equal(replaced, false);
     assert.equal(shownSpeech, speech);
     assert.equal(copyButton.disabled, false);

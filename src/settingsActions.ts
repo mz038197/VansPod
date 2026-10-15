@@ -16,7 +16,8 @@ export const settingsActionsScript = `
     form.querySelector(".connection-error")?.remove();
     var body = new URLSearchParams(new FormData(form));
     if (event.submitter?.name) body.set(event.submitter.name, event.submitter.value);
-    var buttons = (copyAction ? form : main).querySelectorAll("button, select");
+    // Copying is guarded by settingsBusy; dimming the button for the clipboard round-trip only flickers.
+    var buttons = copyAction ? [] : main.querySelectorAll("button, select");
     var disabled = Array.from(buttons, function (button) { return button.disabled; });
     buttons.forEach(function (button) { button.disabled = true; });
     card.setAttribute("aria-busy", "true");

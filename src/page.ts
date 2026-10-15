@@ -712,12 +712,12 @@ function snippetCopyScript(): string {
     document.addEventListener("click", async function (event) {
       var target = event.target;
       var button = target && target.closest ? target.closest("[data-copy-snippet]") : null;
-      if (!button || button.disabled) return;
+      if (!button || button.disabled || button.snippetCopying) return;
       var card = button.closest(".snippet-card");
       var status = card.querySelector("[data-snippet-copy-status]");
       var label = button.querySelector("span");
       var title = button.getAttribute("aria-label").replace(/^(再複製一次|複製)/, "");
-      button.disabled = true;
+      button.snippetCopying = true;
       status.textContent = "";
       try {
         var response = await fetch("/copy-snippet", {
@@ -734,7 +734,7 @@ function snippetCopyScript(): string {
         label.textContent = "複製失敗";
         status.textContent = "複製失敗，請再試一次。";
       } finally {
-        button.disabled = false;
+        button.snippetCopying = false;
         clearTimeout(button.snippetCopyTimer);
         button.snippetCopyTimer = setTimeout(function () {
           label.textContent = card.classList.contains("copied") ? "✓ 已複製" : "複製";

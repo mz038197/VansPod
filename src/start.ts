@@ -17,6 +17,7 @@ import {
   type UpstreamTarget,
 } from "./classroomApp";
 import { modelStatus, renderPage } from "./page";
+import { writeClipboard } from "./clipboard";
 import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./commandRunner";
 import { exitDecision, removalInterruptions } from "./exitGuard";
@@ -265,37 +266,6 @@ function environmentInstallCommand(tool: EnvironmentToolId): string {
     return `winget install --id OpenJS.NodeJS.LTS -e ${quiet}`;
   }
   return `winget install --id Microsoft.PowerShell -e ${quiet}`;
-}
-
-function writeClipboard(text: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
-      ],
-      { stdio: ["pipe", "ignore", "pipe"], windowsHide: true },
-    );
-    let failed = false;
-    child.on("error", () => {
-      failed = true;
-      reject(new Error("clipboard failed"));
-    });
-    child.stderr.on("data", () => {
-      failed = true;
-    });
-    child.on("close", (code) => {
-      if (!failed && code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error("clipboard failed"));
-    });
-    child.stdin.write(text);
-    child.stdin.end();
-  });
 }
 
 function readBody(req: http.IncomingMessage, max = 16_384): Promise<string> {
