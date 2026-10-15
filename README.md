@@ -6,7 +6,7 @@ VansPod 是 Windows 學生使用的本機課堂入口。提供含 Node runtime �
 
 雙擊 exe 或執行 `vanspod start`，會啟動背景服務並開啟瀏覽器。再開一次會回到既有畫面；關閉瀏覽器或啟動用終端機不會停止課堂代理。Windows 右下角的 VansPod logo 可重新開啟畫面，右鍵「結束 VansPod」可恢復客戶端個人設定後退出。電腦重新啟動後須手動開啟，不設定開機自動啟動。
 
-公開 npm 發佈完成後，學生可使用下列安裝方式；本機打包不代表套件已上架：
+已有 Node.js 24 以上的學生可從 npm 安裝：
 
 ```powershell
 npm install -g vanspod
@@ -40,7 +40,7 @@ npm pack --pack-destination dist
 
 exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.1.2.tgz`；可在 Windows 用 `npm install -g <套件路徑>` 安裝測試。圖片、favicon、系統匣與移除腳本均包含在發佈產物中。更新 logo 後執行 `powershell.exe -NoProfile -File scripts/build-icon.ps1` 重建多尺寸 Windows icon。
 
-exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry；正式上架需先確認套件名稱及發佈帳號權限。更新時不要執行完整移除，否則會清除課堂資料。
+exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry 的 [`vanspod`](https://www.npmjs.com/package/vanspod) 套件。更新時不要執行完整移除，否則會清除課堂資料。
 
 ## GitHub Actions 發佈 exe
 
@@ -55,6 +55,16 @@ git push origin v0.1.2
 ```
 
 新版本使用新的版本號與 tag。相同 tag 的 Actions 重跑會更新該 Release 的產物。
+
+## 手動發佈 npm
+
+npm 套件不由 Actions 發佈。tag 推送後，由套件維護者在本機 PowerShell 執行；帳號須開啟 2FA，提示時按 Enter 在瀏覽器完成驗證：
+
+```powershell
+npm publish
+```
+
+看到 `+ vanspod@<版本>` 即完成，可用 `npm view vanspod dist-tags` 確認 `latest`。npm 同一版本號只能發佈一次，發佈 72 小時後幾乎無法撤下。
 
 本機課堂 app。規格是 [classroom-one-click-install#8](https://github.com/mz038197/classroom-one-click-install/issues/8)。
 
