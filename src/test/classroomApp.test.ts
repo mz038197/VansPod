@@ -2937,10 +2937,12 @@ describe("confirm one catalog command", () => {
     app.prepare("first");
     await app.confirm();
     assert.deepEqual(app.view().installedActionIds, ["first"]);
-    assert.equal((renderPage(app.view()).match(/class="badge installed-tag"/g) ?? []).length, 1);
+    assert.equal((renderPage(app.view()).match(/class="install-card installed"/g) ?? []).length, 1);
+    assert.match(renderPage(app.view()), /<button type="submit" class="quiet"[^>]*>重新安裝<\/button>/);
+    assert.doesNotMatch(renderPage(app.view()), /installed-tag/);
     await app.setProjectFolder("D:\\other");
     assert.deepEqual(app.view().installedActionIds, []);
-    assert.doesNotMatch(renderPage(app.view()), /class="badge installed-tag"/);
+    assert.doesNotMatch(renderPage(app.view()), /class="install-card installed"/);
     await app.setProjectFolder("D:\\lesson");
     assert.deepEqual(app.view().installedActionIds, ["first"]);
   });
@@ -2955,7 +2957,7 @@ describe("confirm one catalog command", () => {
     app.prepare("demo");
     await app.confirm();
     assert.deepEqual(app.view().installedActionIds, []);
-    assert.doesNotMatch(renderPage(app.view()), /class="badge installed-tag"/);
+    assert.doesNotMatch(renderPage(app.view()), /class="install-card installed"/);
   });
   it("marks nonzero command exits as failed even when the runner resolves", async () => {
     const { app } = harness(undefined, {

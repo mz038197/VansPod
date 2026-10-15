@@ -59,7 +59,7 @@ export const installProgressScript = `
         message.className = "error install-open-error";
         message.setAttribute("role", "alert");
         message.textContent = "無法開啟安裝視窗，請確認專案資料夾已設定後再試。";
-        form.appendChild(message);
+        (card || form).appendChild(message);
       } finally {
         button.disabled = false;
         installOpening = false;
@@ -137,11 +137,11 @@ export const installProgressScript = `
         document.querySelectorAll('form[action="/prepare"] input[name="action_id"]').forEach(function (input) {
           if (!outcome.installedActionIds.includes(input.value)) return;
           var card = input.closest(".install-card");
-          if (!card || card.querySelector(".installed-tag")) return;
-          var tag = document.createElement("span");
-          tag.className = "badge installed-tag";
-          tag.textContent = "已安裝";
-          card.querySelector(".install-top").appendChild(tag);
+          if (!card || card.classList.contains("installed")) return;
+          card.classList.add("installed");
+          var button = card.querySelector('form[action="/prepare"] button');
+          button.classList.add("quiet");
+          button.textContent = "重新安裝";
         });
       }
       finished = true;

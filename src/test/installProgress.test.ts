@@ -14,7 +14,13 @@ function harness(cancelOk = true, confirmAbort = true) {
   let confirmations = 0;
   let cancellations = 0;
   let removals = 0;
-  let installedTag: { className?: string; textContent?: string } | undefined;
+  const installButtonClasses = new Set<string>();
+  const installButton = { textContent: "安裝", classList: { add: (name: string) => installButtonClasses.add(name) } };
+  const installCardClasses = new Set<string>();
+  const installCard = {
+    classList: { add: (name: string) => installCardClasses.add(name), contains: (name: string) => installCardClasses.has(name) },
+    querySelector: (selector: string) => selector === 'form[action="/prepare"] button' ? installButton : undefined,
+  };
   const dialog = { remove() { removals += 1; } };
   let latestOutput = "Downloading demo…\n";
   const title = { textContent: "確認安裝" };
@@ -48,7 +54,7 @@ function harness(cancelOk = true, confirmAbort = true) {
       if (event === "submit") submit = handler;
       if (event === "click") click = handler;
     },
-      querySelectorAll() { return [{ value: "demo", closest: () => ({ querySelector: (selector: string) => selector === ".installed-tag" ? installedTag : { appendChild(tag: typeof installedTag) { installedTag = tag; } } }) }]; },
+      querySelectorAll() { return [{ value: "demo", closest: () => installCard }]; },
       createElement() { return {}; },
     },
     window: { location: { reload() { reloads += 1; } }, confirm: () => confirmAbort },
@@ -72,7 +78,7 @@ function harness(cancelOk = true, confirmAbort = true) {
     acknowledge: () => click({ target: { closest: () => dismiss } }),
     update: async (value: string) => { latestOutput = value; await nextUpdate(); },
     counts: () => ({ confirmations, reloads, cancellations, removals }),
-    installedTag: () => installedTag,
+    installedCard: () => ({ installed: installCardClasses.has("installed"), quiet: installButtonClasses.has("quiet"), label: installButton.textContent }),
   };
 }
 
@@ -129,7 +135,7 @@ it("updates output and holds a successful result until the student acknowledges 
   assert.equal(ui.choices.hidden, true);
   assert.equal(ui.dismiss.hidden, false);
   assert.equal(ui.dismiss.disabled, false);
-  assert.equal(ui.installedTag()?.textContent, "已安裝");
+  assert.deepEqual(ui.installedCard(), { installed: true, quiet: true, label: "重新安裝" });
   ui.acknowledge();
   assert.equal(ui.counts().reloads, 0);
   assert.equal(ui.counts().removals, 1);

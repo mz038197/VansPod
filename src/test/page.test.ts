@@ -408,8 +408,9 @@ describe("VansPod page", () => {
         pendingCommand: "echo hi",
       }));
     assert.match(withSnippet, /class="kind-tag">套件</);
-    assert.match(withSnippet, /class="install-card"/);
-    assert.match(withSnippet, />安裝</);
+    assert.match(withSnippet, /<article class="install-card"><span class="install-number" aria-hidden="true">1<\/span><div class="install-main"><div class="install-line"><strong><span class="visually-hidden">安裝 1：<\/span>安裝 tools<\/strong><span data-kind="package" class="kind-tag">套件<\/span><\/div><\/div><form method="post" action="\/prepare">/);
+    assert.match(withSnippet, /<button type="submit"[^>]*>安裝<\/button>/);
+    assert.equal(withSnippet.includes("install-top"), false);
     assert.equal(withSnippet.includes("查看完整指令"), false);
     assert.equal(withSnippet.includes("<code>echo hi</code>"), false);
     assert.match(withSnippet, /class="confirm-dialog"/);

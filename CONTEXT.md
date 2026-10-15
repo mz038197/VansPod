@@ -73,7 +73,7 @@ _Avoid_: 從畫面選取金鑰文字、複製 Invite Code、清除連線後仍�
 _Avoid_: 僅清除畫面狀態卻保留憑證、刪除其他 provider、刪除 Workspace MCP Config
 
 **Course Install Action**:
-老師在 Course Catalog 提供、學生確認後在專案資料夾執行一次的安裝指令，種類為 Skill、套件或 MCP。它必須會自行結束；執行中即為「安裝中」。會持續執行的指令（網站、伺服器、watch）應改以 Lesson Snippet 提供。
+老師在 Course Catalog 提供、學生確認後在專案資料夾執行一次的安裝指令，種類為 Skill、套件或 MCP。它必須會自行結束；執行中即為「安裝中」。會持續執行的指令（網站、伺服器、watch）應改以 Lesson Snippet 提供。畫面依 Course Catalog 順序自動編號，與 Lesson Snippet 相同；新增項目應加在最後。已安裝的項目改顯示「重新安裝」。
 _Avoid_: 用來啟動長駐網站或服務、把仍在執行的網站稱為安裝中、Environment Install
 
 **Lesson Snippet**:

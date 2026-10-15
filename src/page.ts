@@ -622,14 +622,13 @@ function basePage(view: ClassroomAppView): string {
 function installActionCards(view: ClassroomAppView): string {
   const off = view.commandRunning || !view.projectFolder ? " disabled" : "";
   return (view.catalog?.actions ?? [])
-    .map((action) => {
+    .map((action, index) => {
+      const number = index + 1;
       const description = action.description
         ? `<p class="hint">${escapeHtml(action.description)}</p>`
         : "";
-      const installed = view.installedActionIds?.includes(action.id)
-        ? `<span class="badge installed-tag">已安裝</span>`
-        : "";
-      return `<article class="install-card"><div class="install-top"><span data-kind="${escapeHtml(action.kind)}" class="kind-tag">${escapeHtml(actionKindLabel(action.kind))}</span><strong>${escapeHtml(action.title)}</strong>${installed}</div>${description}<form method="post" action="/prepare"><input type="hidden" name="action_id" value="${escapeHtml(action.id)}"><button type="submit"${off}>安裝</button></form></article>`;
+      const installed = view.installedActionIds?.includes(action.id) ?? false;
+      return `<article class="install-card${installed ? " installed" : ""}"><span class="install-number" aria-hidden="true">${number}</span><div class="install-main"><div class="install-line"><strong><span class="visually-hidden">安裝 ${number}：</span>${escapeHtml(action.title)}</strong><span data-kind="${escapeHtml(action.kind)}" class="kind-tag">${escapeHtml(actionKindLabel(action.kind))}</span></div>${description}</div><form method="post" action="/prepare"><input type="hidden" name="action_id" value="${escapeHtml(action.id)}"><button type="submit"${installed ? ' class="quiet"' : ""}${off}>${installed ? "重新安裝" : "安裝"}</button></form></article>`;
     })
     .join("");
 }
@@ -964,10 +963,16 @@ export function renderPage(view: ClassroomAppView): string {
     .connection-separator { opacity: 0.5; }
     .tool em { color: var(--text); }
     .tool em.missing { color: var(--muted); }
-    .install-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; width: 100%; padding: 14px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
-    .install-top { display: flex; align-items: center; gap: 8px; width: 100%; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-    .install-top strong { min-width: 0; overflow-wrap: anywhere; }
-    .installed-tag { margin-left: auto; flex-shrink: 0; background: light-dark(#d1fae5, #163c30); color: light-dark(#065f46, #6ee7b7); }
+    .install-card { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; width: 100%; padding: 12px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
+    .install-card.installed { border-color: light-dark(#6ee7b7, #1f5a45); }
+    .install-number { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: light-dark(#0d0d0d, #ececec); color: light-dark(#ffffff, #0d0d0d); font: 700 16px Consolas, "Cascadia Mono", monospace; }
+    .install-card.installed .install-number { background: light-dark(#047857, #6ee7b7); }
+    .install-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .install-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 32px; }
+    .install-line strong { min-width: 0; overflow-wrap: anywhere; }
+    .install-main .hint { font-size: 13px; }
+    .install-card > form { flex-shrink: 0; }
+    .install-card > .install-open-error { flex-basis: 100%; margin-left: 44px; }
     .kind-tag { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); color: var(--muted); font-size: 12px; font-weight: 600; }
     .kind-tag[data-kind="package"] { background: light-dark(#dbeafe, #172f50); color: light-dark(#1e40af, #93c5fd); }
     .kind-tag[data-kind="skill"] { background: light-dark(#ede9fe, #35254e); color: light-dark(#6d28d9, #c4b5fd); }
