@@ -144,7 +144,7 @@ export const connectionMascotScript = `
   function updateCopyFeedback(updated) {
     var card = document.querySelector('[data-setting="連線"]');
     var nextCard = updated.querySelector('[data-setting="連線"]');
-    var stage = card?.querySelector('.connection-mascot');
+    var stage = card?.querySelector('.connection-mascot') || document.querySelector('.classroom-update .connection-mascot');
     var nextStage = nextCard?.querySelector('.connection-mascot');
     if (!stage || !nextStage || !nextCard.querySelector('.connection-copy')) return false;
     var speech = nextStage.querySelector('.mascot-speech');
@@ -202,7 +202,7 @@ export const connectionMascotScript = `
       var speaking = close.closest('.connection-mascot');
       mascotSpeechDismissed = true;
       hideMascotSpeech(speaking);
-      speaking.closest('.settings-card').querySelector('.connection-copy').focus({ preventScroll: true });
+      document.querySelector('[data-setting="連線"] .connection-copy')?.focus({ preventScroll: true });
       return;
     }
     var pause = event.target.closest?.('.mascot-pause');

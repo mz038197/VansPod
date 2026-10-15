@@ -433,7 +433,7 @@ describe("VansPod page", () => {
     const titleAt = withSnippet.indexOf("骨架");
     assert.equal(installAt < snippetAt, true);
     assert.equal(actionAt < snippetAt && titleAt > snippetAt, true);
-    assert.match(official, /重新載入/);
+    assert.match(official, /aria-label="更新課堂內容"/);
     const readyTools = [
       { id: "uv" as const, label: "uv", installed: true, selected: false },
       { id: "git" as const, label: "git", installed: true, selected: false },

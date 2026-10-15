@@ -176,6 +176,7 @@ export type ClassroomAppView = {
   installNotice?: string;
   catalog?: CourseCatalogView;
   catalogError?: string;
+  allowlistError?: string;
   pendingCommand?: string;
   commandOutput?: string;
   commandRunning: boolean;
@@ -320,6 +321,7 @@ export class ClassroomApp {
     if (this.catalogError) {
       view.catalogError = this.catalogError;
     }
+    if (this.allowlistError) view.allowlistError = this.allowlistError;
     if (this.pendingCommand) {
       view.pendingCommand = this.pendingCommand;
     }

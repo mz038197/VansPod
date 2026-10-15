@@ -3,6 +3,7 @@ import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
 import { modelStatusScript } from "./modelStatus";
+import { classroomUpdateControl, classroomUpdateStyles, classroomUpdateScript } from "./classroomUpdate";
 import { connectionMascot, connectionMascotStyles, connectionMascotScript } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
@@ -787,6 +788,7 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
           return "";
         });
         moveForm("reload");
+        if (view.connected && view.canCopyKey) actions = "";
       } else {
         moveForm("environment-check");
         body = body.replace('action="/environment"', 'action="/environment" id="settings-environment"');
@@ -871,7 +873,7 @@ export function renderPage(view: ClassroomAppView): string {
     const identity = course || meta
       ? `<div class="connection-identity">${course}${meta ? `<p class="connection-meta">${meta}</p>` : ""}</div>`
       : "";
-    const mascot = connectionMascot;
+    const mascot = `<div class="classroom-update-home"><div class="classroom-update">${connectionMascot}${classroomUpdateControl(view, restartHtml(view))}</div></div>`;
     const block = `${identity}<div class="key-row"><p>API Key 已設定</p><form method="post" action="/copy"><button type="submit" class="connection-copy" aria-label="複製 Classroom API Key"${off}>${COPY_ICON}<span>複製</span></button></form></div>${mascot}<form method="post" action="/clear"><button type="submit" class="connection-clear"${off}>清除連線</button></form>`;
     html = html.replace(
       /<form method="post" action="\/copy">[\s\S]*?<\/form>\s*<form method="post" action="\/clear">[\s\S]*?<\/form>/,
@@ -1049,8 +1051,9 @@ export function renderPage(view: ClassroomAppView): string {
     main button.connection-clear { padding: 6px 0; background: transparent; color: var(--muted); border-radius: 6px; font-size: 12px; font-weight: 400; }
     main button.connection-copy:hover:not(:disabled) { background: var(--input); color: var(--text); }
     main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
+    ${classroomUpdateStyles}
   </style>
-  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${settingsActionsScript}${modelStatusScript}
+  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }

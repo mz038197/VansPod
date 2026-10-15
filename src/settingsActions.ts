@@ -7,8 +7,11 @@ export const settingsActionsScript = `
     if (settingsBusy || installBusy || installOpening || document.querySelector(".confirm-dialog")) return;
     settingsBusy = true;
     var copyAction = form.matches('form[action="/copy"]');
+    var reloadAction = form.matches('form[action="/reload"]');
+    if (typeof classroomUpdateBusy === "function") classroomUpdateBusy(true);
+    if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("幫你確認課堂內容…");
     var main = document.querySelector("main");
-    var card = form.closest(".settings-card, .project-folder-row") || form;
+    var card = form.closest(".settings-card, .project-folder-row, .classroom-update") || form;
     card.querySelector(".settings-action-error")?.remove();
     form.querySelector(".connection-error")?.remove();
     var body = new URLSearchParams(new FormData(form));
@@ -33,13 +36,25 @@ export const settingsActionsScript = `
       var redeemForm = main.querySelector?.('form[action="/redeem"]');
       var connectionDraft = redeemForm && !form.matches('form[action="/redeem"], form[action="/clear"]')
         ? Array.from(redeemForm.querySelectorAll('input'), function (input) { return { name: input.name, value: input.value }; }) : [];
+      var folderDraft = !form.matches('form[action="/project-folder"], form[action="/pick-folder"]')
+        ? main.querySelector?.('input[name="project_folder"]')?.value : undefined;
+      var toolDraft = reloadAction ? Array.from(main.querySelectorAll('input[type="checkbox"]'), function (input) {
+        return { name: input.name, value: input.value, checked: input.checked };
+      }) : [];
       var mascotState = typeof mascotAnimationState === "function" && !form.matches('form[action="/redeem"], form[action="/clear"]') ? mascotAnimationState() : [];
       if (form.matches('form[action="/copy"]')) mascotState.speechDismissed = false;
+      if (typeof returnClassroomUpdateHome === "function") returnClassroomUpdateHome();
       main.replaceChildren(...updated.childNodes);
       var updatedRedeemForm = main.querySelector?.('form[action="/redeem"]');
       updatedRedeemForm?.querySelectorAll('input').forEach(function (input) {
         var draft = connectionDraft.find(function (entry) { return entry.name === input.name; });
         if (draft) input.value = draft.value;
+      });
+      var folderInput = main.querySelector?.('input[name="project_folder"]');
+      if (folderInput && folderDraft !== undefined) folderInput.value = folderDraft;
+      if (reloadAction) main.querySelectorAll('input[type="checkbox"]').forEach(function (input) {
+        var draft = toolDraft.find(function (entry) { return entry.name === input.name && entry.value === input.value; });
+        if (draft && !input.disabled) input.checked = draft.checked;
       });
       if (typeof restoreMascotAnimationState === "function") restoreMascotAnimationState(mascotState);
       initializeCourseSections();
@@ -47,6 +62,9 @@ export const settingsActionsScript = `
         if (index < openDetails.length) detail.open = openDetails[index];
       });
       window.scrollTo({ top: top, behavior: "instant" });
+      if (typeof positionClassroomUpdate === "function") positionClassroomUpdate();
+      window.scrollTo({ top: top, behavior: "instant" });
+      if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback();
     } catch (error) {
       var adapter = form.querySelector('select[name="adapter"]');
       if (adapter) adapter.value = adapter.querySelector("option[selected]").value;
@@ -54,11 +72,15 @@ export const settingsActionsScript = `
       message.className = "error settings-action-error";
       message.setAttribute("role", "alert");
       message.textContent = "操作未完成，請再試一次。";
-      (card.querySelector(".connection-feedback") || card.querySelector(".settings-content") || card).appendChild(message);
+      if (!reloadAction || typeof classroomUpdateFeedback !== "function") {
+        (card.querySelector(".connection-feedback") || card.querySelector(".settings-content") || card).appendChild(message);
+      }
+      if (reloadAction && typeof classroomUpdateFeedback === "function") classroomUpdateFeedback("更新未完成，請再試一次。");
     } finally {
       buttons.forEach(function (button, index) { button.disabled = disabled[index]; });
       card.removeAttribute("aria-busy");
       settingsBusy = false;
+      if (typeof classroomUpdateBusy === "function") classroomUpdateBusy(false);
     }
   });
   document.addEventListener("change", function (event) {
