@@ -43,6 +43,17 @@ export const classroomUpdateStyles = `
 export const classroomUpdateScript = `
   var classroomUpdateDisabled = [];
   var classroomRestartSeen = '';
+  // Remember the reminder Fadou already read in this tab so reloads stay quiet until it changes.
+  var classroomRestartSpokenKey = 'vanspod-classroom-restart-spoken';
+  function classroomRestartSpoken() {
+    try { return sessionStorage.getItem(classroomRestartSpokenKey) || ''; } catch (error) { return ''; }
+  }
+  function rememberClassroomRestart(message) {
+    try {
+      if (message) sessionStorage.setItem(classroomRestartSpokenKey, message);
+      else sessionStorage.removeItem(classroomRestartSpokenKey);
+    } catch (error) {}
+  }
   function showClassroomSpeech(message) {
     var stage = document.querySelector('.classroom-update .connection-mascot');
     if (!stage) return;
@@ -78,7 +89,10 @@ export const classroomUpdateScript = `
       return;
     }
     classroomRestartSeen = message;
-    if (message) showClassroomSpeech(message);
+    var alreadySpoken = message !== '' && message === classroomRestartSpoken();
+    rememberClassroomRestart(message);
+    if (alreadySpoken) mascotSpeechDismissed = true;
+    else if (message) showClassroomSpeech(message);
     else {
       var stage = document.querySelector('.classroom-update .connection-mascot');
       if (stage?.querySelector('[data-classroom-speech]') && !settingsBusy) hideMascotSpeech(stage);
@@ -99,7 +113,7 @@ export const classroomUpdateScript = `
     var docked = card.getBoundingClientRect().bottom < 24;
     if (docked !== companion.classList.contains('docked')) {
       var top = window.scrollY;
-      if (docked) home.style.minHeight = Math.max(208, companion.offsetHeight) + 'px';
+      if (docked) home.style.minHeight = companion.offsetHeight + parseFloat(getComputedStyle(home).paddingBottom) + 'px';
       companion.classList.toggle('docked', docked);
       (docked ? document.body : home).appendChild(companion);
       if (!docked) home.style.minHeight = '';
@@ -128,6 +142,7 @@ export const classroomUpdateScript = `
     var result = message;
     if (!message) {
       classroomRestartSeen = classroomRestartText();
+      rememberClassroomRestart(classroomRestartSeen);
       result = warning ? '有些內容還沒追到，先別急著怪披風。' + warning + (classroomRestartSeen ? ' ' + classroomRestartSeen : '')
         : classroomRestartSeen || '課堂內容幫你更新好了，手速可以不用拿來爬回頁首了。';
     }
