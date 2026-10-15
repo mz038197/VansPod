@@ -887,9 +887,7 @@ export class ClassroomApp {
           adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
           origin: this.vsCodeOrigin,
         });
-        this.clientRoutes.vsCodeChat.health = result?.changed ? "yellow" : "green";
-        this.clientRoutes.vsCodeChat.restart = result?.changed ? "restart-required" : "ready";
-        if (result?.changed) this.noteModelRestart("vscode");
+        this.settleVsCodePublish(result?.changed);
       } catch (error) {
         this.clientRoutes.vsCodeChat.mode = "native";
         this.clientRoutes.vsCodeChat.health = "red";
@@ -1020,9 +1018,12 @@ export class ClassroomApp {
       const result = mode === "classroom"
         ? await this.deps.vsCodeRouteSettings?.publish({ providers: this.modelProviders, adapter: route.adapter as "responses" | "chat", origin: this.vsCodeOrigin! })
         : await this.deps.vsCodeRouteSettings?.restore();
-      route.health = mode === "classroom" && result?.changed ? "yellow" : "green";
-      route.restart = mode === "classroom" && result?.changed ? "restart-required" : "ready";
-      if (result?.changed) this.noteModelRestart("vscode");
+      if (mode === "classroom") this.settleVsCodePublish(result?.changed);
+      else {
+        route.health = "green";
+        route.restart = "ready";
+        if (result?.changed) this.noteModelRestart("vscode");
+      }
       this.notice = undefined;
     } catch (error) {
       this.clientRoutes.vsCodeChat = previous;
@@ -1252,9 +1253,7 @@ export class ClassroomApp {
           adapter: this.clientRoutes.vsCodeChat.adapter as "responses" | "chat",
           origin: started.origin,
         });
-        this.clientRoutes.vsCodeChat.health = result?.changed ? "yellow" : "green";
-        this.clientRoutes.vsCodeChat.restart = result?.changed ? "restart-required" : "ready";
-        if (result?.changed) this.noteModelRestart("vscode");
+        this.settleVsCodePublish(result?.changed);
       } else {
         this.clientRoutes.vsCodeChat.mode = "native";
         await this.deps.vsCodeRouteSettings?.initializeNative();
@@ -1732,6 +1731,14 @@ export class ClassroomApp {
 
   private noteModelRestart(client: MustRestartClient): void {
     if (!this.modelRestart.includes(client)) this.modelRestart.push(client);
+  }
+
+  // An unchanged republish cannot clear a restart VS Code still owes; only its first request can.
+  private settleVsCodePublish(changed: boolean | undefined): void {
+    if (changed) this.noteModelRestart("vscode");
+    const waiting = this.modelRestart.includes("vscode");
+    this.clientRoutes.vsCodeChat.health = waiting ? "yellow" : "green";
+    this.clientRoutes.vsCodeChat.restart = waiting ? "restart-required" : "ready";
   }
 
   closeWindow(): void {

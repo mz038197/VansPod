@@ -1077,6 +1077,35 @@ it("Clear removes the journal-owned VS Code provider and returns the route to he
   assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "ready");
 });
 
+it("keeps VS Code yellow while it still owes a restart after an unchanged republish", async () => {
+  const publishes = [true, false];
+  const runtime: ClientRouteRuntime = {
+    async start(route) { return { route, health: "green", origin: route === "vsCodeChat" ? "http://127.0.0.1:47823" : "http://127.0.0.1:47821" }; },
+    async stop() {},
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: runtime,
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: publishes.shift() ?? false }; },
+      async restore() { return { changed: false }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+
+  await h.app.redeem("DEMO", "Student");
+
+  assert.deepEqual(h.app.view().modelRestart, ["vscode"]);
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.mode, "classroom");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "yellow");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.restart, "restart-required");
+});
+
 it("publishes the first allowlist model to Claude Code on switch and again when Reload changes it", async () => {
   const running = new Set<string>();
   const origin = (route: string) => `http://127.0.0.1:${route === "claudeCode" ? 47822 : 47821}`;
