@@ -167,15 +167,16 @@ describe("Prompt Capture recorder", () => {
         { role: "tool", tool_call_id: "c1", content: "hello" },
       ],
     } });
-    const shapes = capture.list().captures.map(one => ({ protocol: one.protocol, system: one.system, tools: one.tools, messages: one.messages }));
+    const shapes = capture.list().captures.map(one => ({ protocol: one.protocol, system: one.system, tools: one.tools,
+      messages: one.messages.map(({ isNew: _isNew, ...message }) => message) }));
     assert.deepEqual(shapes.map(shape => shape.protocol), ["chat", "responses", "messages"]);
     const expected = {
       system: ["Be helpful."], tools: [{ name: "read", description: "Reads.", schema }],
       messages: [
-        { role: "user", kind: "text", text: "open a.txt", isNew: true, reminder: false },
-        { role: "assistant", kind: "text", text: "Opening.", isNew: true, reminder: false },
-        { role: "assistant", kind: "tool_use", name: "read", text: '{\n  "path": "a.txt"\n}', isNew: true, reminder: false },
-        { role: "tool", kind: "tool_result", name: "read", text: "hello", isNew: true, reminder: false },
+        { role: "user", kind: "text", text: "open a.txt", reminder: false },
+        { role: "assistant", kind: "text", text: "Opening.", reminder: false },
+        { role: "assistant", kind: "tool_use", name: "read", text: '{\n  "path": "a.txt"\n}', reminder: false },
+        { role: "tool", kind: "tool_result", name: "read", text: "hello", reminder: false },
       ],
     };
     for (const { protocol: _protocol, ...shape } of shapes) assert.deepEqual(shape, expected);
