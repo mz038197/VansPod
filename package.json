@@ -18,7 +18,8 @@
     "dist": "node scripts/dist.mjs",
     "test:windows-exe": "npm run dist && node scripts/test-windows-exe.mjs",
     "test:lifecycle": "tsc -p . && node --test dist/test/launcher.test.js",
-    "test:distribution": "npm run dist && node scripts/test-distribution.mjs"
+    "test:distribution": "npm run dist && node scripts/test-distribution.mjs",
+    "prototype:inspector": "tsc -p . && node scripts/prototype-prompt-inspector.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
