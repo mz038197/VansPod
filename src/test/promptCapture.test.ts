@@ -271,6 +271,27 @@ describe("Prompt Capture fresh vs history", () => {
     assert.equal(compacted.sizes.history, 0);
   });
 
+  it("keeps each request's fresh marks after the request it matched is dropped", () => {
+    const capture = createPromptCapture(); capture.start();
+    const turns: Turn[] = [{ role: "user", content: "ask 0" }];
+    send(capture, turns);
+    for (let index = 1; index <= 20; index++) { turns.push({ role: "user", content: `ask ${index}` }); send(capture, [...turns]); }
+    const oldest = capture.list().captures.at(-1)!;
+    assert.equal(oldest.id, 2);
+    assert.equal(oldest.newConversation, false);
+    assert.deepEqual(marks(oldest), [["ask 0", false], ["ask 1", true]]);
+  });
+
+  it("matches a request only to earlier ones from the same client", () => {
+    const capture = createPromptCapture(); capture.start();
+    const first: Turn[] = [{ role: "user", content: "hello" }];
+    send(capture, first);
+    capture.record({ client: "copilot", adapter: "chat", path: "/v1/chat/completions", raw: {}, sent: { model: "m", messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "hi" }] } });
+    const [other] = capture.list().captures;
+    assert.equal(other.newConversation, true);
+    assert.deepEqual(marks(other), [["hello", true], ["hi", true]]);
+  });
+
   it("keeps system reminders in their own share, neither history nor fresh", () => {
     const capture = createPromptCapture(); capture.start();
     const reminder = "<system-reminder>skills</system-reminder>";

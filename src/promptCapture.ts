@@ -49,7 +49,8 @@ export type PromptCapture = {
   list(): CaptureList;
 };
 
-type Entry = CaptureRequest & { id: number; time: string; protocol: Protocol; failedStatus?: number };
+/** `freshFrom` is where this turn's additions begin, or null for a new conversation; it is fixed when recorded. */
+type Entry = CaptureRequest & { id: number; time: string; protocol: Protocol; failedStatus?: number; parsed: Parsed; freshFrom: number | null };
 
 type Parsed = Pick<CaptureView, "system" | "tools"> & { messages: Omit<CaptureMessage, "isNew">[] };
 type JsonObject = Record<string, unknown>;
@@ -85,12 +86,15 @@ export function createPromptCapture(): PromptCapture {
       const match = protocolFor(request.path);
       if (!recording || !match) return noop;
       // withoutBase64 also copies both bodies, so later changes by the caller never reach the capture.
-      const entry: Entry = { ...request, sent: withoutBase64(request.sent), raw: withoutBase64(request.raw), id: nextId++, time: clock(new Date()), protocol: match.protocol };
+      const sent = withoutBase64(request.sent);
+      const parsed = match.parse(isObject(sent) ? sent : {});
+      const entry: Entry = { ...request, sent, raw: withoutBase64(request.raw), id: nextId++, time: clock(new Date()),
+        protocol: match.protocol, parsed, freshFrom: freshFrom(entries, request.client, parsed) };
       entries.push(entry);
       if (entries.length > CAPTURE_LIMIT) { dropped += entries.length - CAPTURE_LIMIT; entries = entries.slice(-CAPTURE_LIMIT); }
       return status => { entry.failedStatus = status; };
     },
-    list() { return { captures: views(entries).reverse(), dropped }; },
+    list() { return { captures: entries.map(view).reverse(), dropped }; },
   };
 }
 
@@ -118,19 +122,12 @@ function clock(date: Date): string {
   return [date.getHours(), date.getMinutes(), date.getSeconds()].map(part => String(part).padStart(2, "0")).join(":");
 }
 
-type ParsedEntry = { entry: Entry; body: JsonObject; parsed: Parsed };
-
-// 比對規則：往前找第一筆訊息序列剛好是本筆開頭的紀錄，超出的部分是本輪新增；
+// 比對規則：往前找同一個客戶端、訊息序列剛好是本筆開頭的第一筆紀錄，超出的部分是本輪新增；
 // 這樣能跨過交錯出現的子 agent 或背景請求。找不到就是新對話，全部都算新增。
-function views(entries: Entry[]): CaptureView[] {
-  const all = entries.map(entry => {
-    const body = isObject(entry.sent) ? entry.sent : {};
-    return { entry, body, parsed: protocolFor(entry.path)!.parse(body) };
-  });
-  return all.map((current, index) => {
-    const earlier = all.slice(0, index).reverse().find(other => startsWith(current.parsed.messages, other.parsed.messages));
-    return view(current, earlier ? earlier.parsed.messages.length : null);
-  });
+// 錄下時就決定，之後較早的紀錄被捨去也不會改變。
+function freshFrom(earlier: Entry[], client: string, parsed: Parsed): number | null {
+  const match = [...earlier].reverse().find(other => other.client === client && startsWith(parsed.messages, other.parsed.messages));
+  return match ? match.parsed.messages.length : null;
 }
 
 function startsWith(messages: Parsed["messages"], prefix: Parsed["messages"]): boolean {
@@ -142,8 +139,8 @@ function sameMessage(a: Parsed["messages"][number], b: Parsed["messages"][number
   return a.role === b.role && a.kind === b.kind && a.name === b.name && a.text === b.text;
 }
 
-/** `freshFrom` is where this turn's additions begin, or null for a new conversation. */
-function view({ entry, body, parsed }: ParsedEntry, freshFrom: number | null): CaptureView {
+function view(entry: Entry): CaptureView {
+  const { parsed, freshFrom, sent } = entry;
   const messages = parsed.messages.map((message, index) => ({ ...message, isNew: index >= (freshFrom ?? 0) }));
   const sizes = { system: 0, tools: 0, reminder: 0, history: 0, fresh: 0 };
   for (const text of parsed.system) sizes.system += estimateTokens(text);
@@ -153,7 +150,7 @@ function view({ entry, body, parsed }: ParsedEntry, freshFrom: number | null): C
     if (message.reminder) sizes.reminder += size; else if (message.isNew) sizes.fresh += size; else sizes.history += size;
   }
   return {
-    id: entry.id, time: entry.time, client: entry.client, model: typeof body.model === "string" ? body.model : "",
+    id: entry.id, time: entry.time, client: entry.client, model: isObject(sent) && typeof sent.model === "string" ? sent.model : "",
     protocol: entry.protocol, adapter: entry.adapter,
     ...(entry.failedStatus !== undefined ? { failedStatus: entry.failedStatus } : {}),
     webSearchFollowUp: entry.webSearchFollowUp === true, newConversation: freshFrom === null,
