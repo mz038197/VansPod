@@ -6,6 +6,7 @@ import { claudeWebSearch, declaresWebSearch } from "./claudeWebSearch";
 import { codexWebSearch } from "./codexWebSearch";
 import type http from "node:http";
 import { once } from "node:events";
+import type { PromptCapture } from "./promptCapture";
 
 export function proxyError(client: "codex" | "claude", message: string, status: number): Response {
   const error = { type: status < 500 ? "invalid_request_error" : "api_error", message };
@@ -18,7 +19,7 @@ export function isCodexSearch(client: string, path: string | undefined): boolean
   return client === "codex" && (path ?? "").split("?")[0].endsWith("/alpha/search");
 }
 
-export async function sendRouter(upstream: UpstreamSend, baseUrl: string): Promise<Response> {
+export async function sendRouter(upstream: UpstreamSend, baseUrl: string, capture?: PromptCapture): Promise<Response> {
   const client = upstream.client === "claude" ? "claude" : "codex";
   try {
     const path = upstream.path ?? "";
@@ -32,6 +33,8 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string): Promi
     const request: AdapterRequest = { client, model: upstream.model, body: parsed,
       apiKey: upstream.apiKey ?? "", routerBaseUrl: baseUrl.replace(/\/+$/, ""), headers: upstream.headers,
       signal: upstream.signal ?? new AbortController().signal };
+    // Prompt Capture sees the body each adapter sends to Router, never its headers.
+    if (capture) request.record = (path, sent) => capture.record({ client, adapter: adapter.id, path, sent, raw: parsed });
     // Claude Code searches inside a model request: Router runs the searches, not the model upstream.
     const response = declaresWebSearch(request) ? await claudeWebSearch(adapter, request) : await adapter.send(request);
     if (response.ok) return response;

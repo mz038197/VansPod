@@ -7,6 +7,7 @@ import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
 import { settingsActionsScript } from "../settingsActions";
 import { connectionMascotScript } from "../connectionMascot";
+import { createPromptCapture } from "../promptCapture";
 
 const KEY = "vcr_sk_nick";
 
@@ -615,5 +616,66 @@ describe("Prompt 觀察室 page", () => {
     const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
     assert.match(html, /只記在這台電腦的記憶體，最多 20 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。/);
     assert.match(html, /切到「課堂」並開始錄製後，送出的 prompt 會出現在這裡/);
+  });
+
+  function recorded() {
+    const capture = createPromptCapture(); capture.start();
+    const sent = (messages: unknown[]) => ({
+      model: "claude-sonnet", system: [{ type: "text", text: "You are Claude Code." }],
+      tools: [{ name: "Read", description: "Reads a file. Paths are absolute.", input_schema: { type: "object" } }, { name: "Skill", description: "Invoke a skill.", input_schema: { type: "object" } }],
+      messages,
+    });
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: { client_marker: "older" }, sent: sent([{ role: "user", content: "older ask" }]) });
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: { client_marker: "raw-only" }, sent: sent([
+      { role: "user", content: [{ type: "text", text: "<system-reminder>skills: tdd</system-reminder>" }, { type: "text", text: "讀 <hello>.py" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "hello.py" } }] },
+    ]) });
+    return { recording: true, ...capture.list() };
+  }
+
+  it("lists captures newest first with number, client, time, summary and a size bar", () => {
+    const html = renderInspectorPage(recorded());
+    assert.doesNotMatch(html.match(/<main[\s\S]*<\/main>/)?.[0] ?? "", /送出的 prompt 會出現在這裡/);
+    const list = html.match(/<div class="pi-req-list">[\s\S]*?<\/div><\/section>/)?.[0] ?? "";
+    const items = [...list.matchAll(/<button[^>]*class="pi-req[^"]*"[\s\S]*?<\/button>/g)].map(match => match[0]);
+    assert.equal(items.length, 2);
+    assert.match(items[0], /#2 Claude Code/); assert.match(items[1], /#1 Claude Code/);
+    assert.match(items[0], /\d\d:\d\d:\d\d/);
+    assert.match(items[0], /呼叫 Read/); assert.match(items[1], /older ask/);
+    assert.match(items[0], /class="pi-stack"/);
+    assert.match(items[0], /class="pi-req on"/);
+  });
+
+  it("shows the newest capture's anatomy: meta row, size bar, legend and three sections", () => {
+    const html = renderInspectorPage(recorded());
+    const detail = html.match(/<section class="tile pi-detail">[\s\S]*<\/section><\/div>/)?.[0] ?? "";
+    assert.match(detail, /#2 解剖/);
+    assert.match(detail, /Claude Code · claude-sonnet · Messages · 約 \d+ tokens（估算）/);
+    assert.match(detail, /class="pi-stack"/);
+    assert.match(detail, /class="pi-legend"/);
+    assert.match(detail, /data-view="parts"[^>]*>結構</); assert.match(detail, /data-view="raw"[^>]*>原始 JSON</);
+    assert.match(detail, /<details class="pi-sec" data-sec="system"[^>]*>[\s\S]*You are Claude Code\./);
+    const tools = detail.match(/<details class="pi-sec" data-sec="tools"[\s\S]*?<\/details><\/details>/)?.[0] ?? "";
+    assert.match(tools, /<code>Read<\/code><span>Reads a file\.<\/span>/);
+    assert.match(tools, /class="pi-tool is-skill"/);
+    const talk = detail.match(/<details class="pi-sec" data-sec="messages"[\s\S]*/)?.[0] ?? "";
+    assert.match(talk, /class="pi-msg role-user is-reminder[^"]*"[\s\S]*?User（客戶端自動附加）[\s\S]*?<mark class="pi-skill">/);
+    assert.match(talk, /讀 &lt;hello&gt;\.py/);
+    assert.match(talk, /Assistant 呼叫工具 <code>Read<\/code>[\s\S]*?file_path/);
+  });
+
+  it("offers the raw JSON sent to Router, with its path, and the client's original request", () => {
+    const html = renderInspectorPage(recorded());
+    assert.match(html, /data-raw="sent"[^>]*>送給 Router</);
+    assert.match(html, /data-raw="raw"[^>]*>客戶端原始請求</);
+    assert.match(html, /POST \/v1\/messages\n\{/);
+    assert.match(html, /raw-only/);
+  });
+
+  it("refreshes every two seconds and stacks list and detail on narrow screens", () => {
+    const html = renderInspectorPage(recorded());
+    assert.match(html, /fetch\("\/prompt-capture"/);
+    assert.match(html, /setInterval\(async function[\s\S]*?\}, 2000\);/);
+    assert.match(html, /@media \(max-width: [^)]+\) \{[^}]*\.pi-a \{ grid-template-columns: 1fr; \}/);
   });
 });

@@ -10,7 +10,12 @@ export interface AdapterRequest {
   apiKey: string;
   headers?: Record<string, string>;
   signal: AbortSignal;
+  /** Called with each request body just before it goes to Router; see promptCapture.ts. */
+  record?: RecordUpstream;
 }
+
+/** Notes one request to Router and returns a callback for its failing HTTP status. */
+export type RecordUpstream = (path: string, body: JsonObject) => (status: number) => void;
 
 export interface ModelApiAdapter {
   readonly id: AdapterId;

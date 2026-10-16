@@ -9,6 +9,7 @@ import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
 import type { CaptureList } from "./promptCapture";
+import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import {
   actionKindLabel,
   type InstallAction,
@@ -1135,17 +1136,18 @@ function recorderBar(recording: boolean): string {
 
 /** Prompt 觀察室：與教室設定共用頁殼、側欄、主題與行動版抽屜。 */
 export function renderInspectorPage(view: InspectorView): string {
-  const empty = view.captures.length
-    ? ""
-    : `<section class="tile pi-empty"><p class="hint">切到「課堂」並開始錄製後，送出的 prompt 會出現在這裡。</p></section>`;
+  const list: CaptureList = { captures: view.captures, dropped: view.dropped };
+  // 頁面腳本拿同一份資料接手重繪；JSON 裡的 < 不能結束 script 元素。
+  const data = JSON.stringify(list).replace(/</g, "\\u003c");
   return `${documentHead()}
 <body>
   ${sideMenu("inspector")}
   <main class="inspector-main">
     <header class="page-head"><h2>Prompt 觀察室</h2><p>看看 Coding Agent 每次送給模型的完整內容。</p></header>
     ${recorderBar(view.recording)}
-    ${empty}
+    <div id="pi-app">${inspectorBody(list, { selected: null, view: "parts", raw: "sent" })}</div>
   </main>
+  <script type="application/json" id="pi-data">${data}</script>
   <style>
     ${SHELL_LAYOUT_STYLES}
     ${SHELL_CONTROL_STYLES}
@@ -1159,9 +1161,9 @@ export function renderInspectorPage(view: InspectorView): string {
     @keyframes pi-pulse { 50% { opacity: 0.35; } }
     @media (prefers-reduced-motion: reduce) { .pi-rec-dot { animation: none; } }
     .pi-rec-actions { display: flex; gap: 8px; }
-    .pi-empty { align-items: center; text-align: center; padding: 40px 18px; }
+    ${INSPECTOR_STYLES}
   </style>
-  <script>${drawerScript()}</script>
+  <script>${drawerScript()}${inspectorScript()}</script>
 </body>
 </html>`;
 }

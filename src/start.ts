@@ -395,7 +395,7 @@ async function sendUpstream(upstream: UpstreamSend): Promise<{ ok: boolean }> {
   const slot = responseSlot.getStore();
   if (!slot) return { ok: false };
   if (upstream.target === "router" && upstream.client !== "copilot") {
-    slot.response = await sendRouter(upstream, routerBaseUrl());
+    slot.response = await sendRouter(upstream, routerBaseUrl(), promptCapture);
     return { ok: slot.response.ok };
   }
   try {

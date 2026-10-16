@@ -1,6 +1,7 @@
 import { AdapterError, object, type AdapterRequest, type JsonObject } from "./types";
 
 export async function upstreamRequest(request: AdapterRequest, path: string, body: JsonObject, extraHeaders: Record<string, string> = {}): Promise<{ response: Response; abort: () => void }> {
+  request.record?.(path, body);
   const controller = new AbortController();
   const response = await fetch(`${request.routerBaseUrl.replace(/\/+$/, "")}${path}`, {
     method: "POST", signal: AbortSignal.any([request.signal, controller.signal]),
