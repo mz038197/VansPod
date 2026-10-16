@@ -67,8 +67,9 @@ export const connectionMascotStyles = `
   .connection-mascot { position: relative; flex: 1 0 144px; width: 100%; min-height: 144px; overflow: hidden; container-type: inline-size; }
   /* Compensate for the PNG's transparent space below the soles. */
   .mascot-traveler { position: absolute; bottom: -4px; left: 8px; width: 136px; max-width: calc(100% - 16px); animation: mascot-walk 36s linear 780ms infinite both; }
-  .mascot-facing { display: block; animation: mascot-turn 36s linear 780ms infinite; }
-  .mascot-logo { transform-origin: 440.5px 664.5px; animation: mascot-turn 36s linear 780ms infinite; }
+  /* 走到端點直接換邊，不播翻面過渡。 */
+  .mascot-facing { display: block; animation: mascot-turn 36s step-end 780ms infinite; }
+  .mascot-logo { transform-origin: 440.5px 664.5px; animation: mascot-turn 36s step-end 780ms infinite; }
   .mascot-left-foot { transform-origin: 322px 915px; animation: mascot-left-step 36s linear 780ms infinite; }
   .mascot-right-foot { transform-origin: 580px 927px; animation: mascot-right-step 36s linear 780ms infinite; }
   .mascot-waiting { flex-basis: 164px; min-height: 164px; padding: 12px 148px 32px 0; }
@@ -123,9 +124,9 @@ export const connectionMascotStyles = `
     66.666667%, 83.333333% { transform: translateX(max(0px, calc(100cqw - 152px))); }
   }
   @keyframes mascot-turn {
-    0%, 16.666667% { transform: scaleX(1); }
-    18%, 66.666667% { transform: scaleX(-1); }
-    68%, 100% { transform: scaleX(1); }
+    0% { transform: scaleX(1); }
+    16.666667% { transform: scaleX(-1); }
+    66.666667%, 100% { transform: scaleX(1); }
   }
   ${footstepKeyframes("mascot-left-step", 1)}
   ${footstepKeyframes("mascot-right-step", -1)}
