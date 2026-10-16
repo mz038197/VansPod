@@ -1,3 +1,5 @@
+import type { CaptureRequest, FailedStatus } from "../promptCapture";
+
 export type AdapterId = "chat" | "responses" | "messages";
 export type AdapterClient = "codex" | "claude";
 export type JsonObject = Record<string, unknown>;
@@ -15,7 +17,7 @@ export interface AdapterRequest {
 }
 
 /** Notes one request to Router and returns a callback for its failing HTTP status. */
-export type RecordUpstream = (path: string, body: JsonObject, options?: { webSearchFollowUp?: boolean }) => (status: number) => void;
+export type RecordUpstream = (path: string, body: JsonObject, options?: Pick<CaptureRequest, "webSearchFollowUp">) => FailedStatus;
 
 export interface ModelApiAdapter {
   readonly id: AdapterId;

@@ -381,6 +381,18 @@ describe("Prompt Capture through sendRouter", () => {
     });
   });
 
+  it("redacts the Classroom API Key when a body carries it", async () => {
+    await withFakeRouter([claudeReply], async (routerBaseUrl) => {
+      const capture = createPromptCapture(); capture.start();
+      const body = { ...clientBody, messages: [{ role: "user", content: `my key is ${API_KEY}` }] };
+      await sendRouter({ client: "claude", target: "router", model: "allowed", adapter: "messages", path: "/v1/messages", apiKey: API_KEY, body: JSON.stringify(body) }, routerBaseUrl, capture);
+      const [one] = capture.list().captures;
+      assert.ok(!JSON.stringify(capture.list()).includes(API_KEY));
+      assert.equal(one.messages[0].text, "my key is [redacted]");
+      assert.deepEqual((one.raw as typeof body).messages[0].content, "my key is [redacted]");
+    });
+  });
+
   it("keeps no headers and never the Classroom API Key", async () => {
     await withFakeRouter([claudeReply], async (routerBaseUrl, calls) => {
       const capture = createPromptCapture(); capture.start();

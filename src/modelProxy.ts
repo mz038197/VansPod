@@ -1,6 +1,6 @@
 import type { UpstreamSend } from "./classroomApp";
 import { modelApiAdapter } from "./adapters";
-import { AdapterError, object, type AdapterRequest } from "./adapters/types";
+import { AdapterError, object, type AdapterRequest, type RecordUpstream } from "./adapters/types";
 import { event } from "./adapters/stream";
 import { claudeWebSearch, declaresWebSearch } from "./claudeWebSearch";
 import { codexWebSearch } from "./codexWebSearch";
@@ -19,6 +19,20 @@ export function isCodexSearch(client: string, path: string | undefined): boolean
   return client === "codex" && (path ?? "").split("?")[0].endsWith("/alpha/search");
 }
 
+function redact(text: string, apiKey: string | undefined): string {
+  return apiKey ? text.split(apiKey).join("[redacted]") : text;
+}
+
+function redactBody(body: unknown, apiKey: string | undefined): unknown {
+  return apiKey ? JSON.parse(redact(JSON.stringify(body), apiKey)) : body;
+}
+
+// Prompt Capture sees the body each request sends to Router, never its headers or the Classroom API Key.
+function recordUpstream(capture: PromptCapture, upstream: UpstreamSend, adapter: string, raw: unknown): RecordUpstream {
+  return (path, sent, options) => capture.record({ client: upstream.client, adapter, path,
+    sent: redactBody(sent, upstream.apiKey), raw: redactBody(raw, upstream.apiKey), ...options });
+}
+
 export async function sendRouter(upstream: UpstreamSend, baseUrl: string, capture?: PromptCapture): Promise<Response> {
   const client = upstream.client === "claude" ? "claude" : "codex";
   try {
@@ -33,8 +47,7 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string, captur
     const request: AdapterRequest = { client, model: upstream.model, body: parsed,
       apiKey: upstream.apiKey ?? "", routerBaseUrl: baseUrl.replace(/\/+$/, ""), headers: upstream.headers,
       signal: upstream.signal ?? new AbortController().signal };
-    // Prompt Capture sees the body each adapter sends to Router, never its headers.
-    if (capture) request.record = (path, sent, options) => capture.record({ client: upstream.client, adapter: adapter.id, path, sent, raw: parsed, ...options });
+    if (capture) request.record = recordUpstream(capture, upstream, adapter.id, parsed);
     // Claude Code searches inside a model request: Router runs the searches, not the model upstream.
     const response = declaresWebSearch(request) ? await claudeWebSearch(adapter, request) : await adapter.send(request);
     if (response.ok) return response;
@@ -44,8 +57,7 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string, captur
       const error = typeof body.error === "object" && body.error !== null ? object(body.error, "error") : body;
       if (typeof error.message === "string") message += ` ${error.message}`;
     } catch { /* HTTP status remains useful without exposing an arbitrary upstream body. */ }
-    if (upstream.apiKey) message = message.split(upstream.apiKey).join("[redacted]");
-    return proxyError(client, message, response.status);
+    return proxyError(client, redact(message, upstream.apiKey), response.status);
   } catch (error) {
     if (upstream.signal?.aborted) throw error;
     return proxyError(client, error instanceof AdapterError ? error.message : "上游沒有回應或回應格式無效。", error instanceof AdapterError ? error.status : 502);
