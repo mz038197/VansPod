@@ -665,6 +665,19 @@ describe("Prompt 觀察室 page", () => {
     assert.match(talk, /Assistant 呼叫工具 <code>Read<\/code>[\s\S]*?file_path/);
   });
 
+  it("names the client and protocol in the meta row for Responses and Chat Completions captures", () => {
+    for (const [client, adapter, path, sent, label] of [
+      ["codex", "responses", "/v1/responses", { model: "gpt-5", input: "hi" }, "Codex · gpt-5 · Responses"],
+      ["copilot", "chat", "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }, "VS Code Chat · gpt-4o · Chat Completions"],
+    ] as const) {
+      const capture = createPromptCapture(); capture.start();
+      capture.record({ client, adapter, path, sent, raw: {} });
+      const html = renderInspectorPage({ recording: true, ...capture.list() });
+      assert.match(html, new RegExp(`<p class="pi-meta">${label} · 約 \\d+ tokens（估算）</p>`));
+      assert.match(html, new RegExp(`POST ${path}\\n\\{`));
+    }
+  });
+
   it("offers the raw JSON sent to Router, with its path, and the client's original request", () => {
     const html = renderInspectorPage(recorded());
     assert.match(html, /data-raw="sent"[^>]*>送給 Router</);

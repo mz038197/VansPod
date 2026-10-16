@@ -108,6 +108,114 @@ describe("Prompt Capture recorder", () => {
     assert.equal(raw.messages[0].content[0].image_url, "[圖片 3 KB]");
   });
 
+  it("parses a Responses body: instructions and system/developer input are System, function calls are tool use", () => {
+    const capture = createPromptCapture(); capture.start();
+    capture.record({ client: "codex", adapter: "responses", path: "/v1/responses", raw: {}, sent: {
+      model: "gpt-5", instructions: "You are Codex.",
+      tools: [{ type: "function", name: "shell", description: "Runs a command.", parameters: { type: "object", properties: { cmd: { type: "string" } } } }],
+      input: [
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "Sandbox: read-only." }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "<system-reminder>skills</system-reminder>" }, { type: "input_text", text: "list files" }] },
+        { type: "reasoning", summary: [] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Listing." }] },
+        { type: "function_call", call_id: "call_1", name: "shell", arguments: '{"cmd":"ls"}' },
+        { type: "function_call_output", call_id: "call_1", output: "a.txt" },
+        { role: "user", content: "thanks" },
+      ],
+    } });
+    const [one] = capture.list().captures;
+    assert.equal(one.protocol, "responses");
+    assert.equal(one.model, "gpt-5");
+    assert.deepEqual(one.system, ["You are Codex.", "Sandbox: read-only."]);
+    assert.deepEqual(one.tools, [{ name: "shell", description: "Runs a command.", schema: { type: "object", properties: { cmd: { type: "string" } } } }]);
+    assert.deepEqual(one.messages, [
+      { role: "user", kind: "text", text: "<system-reminder>skills</system-reminder>", isNew: true, reminder: true },
+      { role: "user", kind: "text", text: "list files", isNew: true, reminder: false },
+      { role: "assistant", kind: "text", text: "Listing.", isNew: true, reminder: false },
+      { role: "assistant", kind: "tool_use", name: "shell", text: '{\n  "cmd": "ls"\n}', isNew: true, reminder: false },
+      { role: "tool", kind: "tool_result", name: "shell", text: "a.txt", isNew: true, reminder: false },
+      { role: "user", kind: "text", text: "thanks", isNew: true, reminder: false },
+    ]);
+  });
+
+  it("reads a Responses input given as a plain string", () => {
+    const capture = createPromptCapture(); capture.start();
+    capture.record({ client: "codex", adapter: "responses", path: "/v1/responses", raw: {}, sent: { model: "m", input: "hello" } });
+    assert.deepEqual(capture.list().captures[0].messages, [{ role: "user", kind: "text", text: "hello", isNew: true, reminder: false }]);
+  });
+
+  it("parses a Chat Completions body: system/developer messages are System, tool_calls are tool use", () => {
+    const capture = createPromptCapture(); capture.start();
+    capture.record({ client: "copilot", adapter: "chat", path: "/v1/chat/completions", raw: {}, sent: {
+      model: "gpt-4o",
+      tools: [{ type: "function", function: { name: "read_file", description: "Reads a file.", parameters: { type: "object" } } }],
+      messages: [
+        { role: "system", content: "You are VS Code Chat." },
+        { role: "developer", content: [{ type: "text", text: "Prefer short answers." }] },
+        { role: "user", content: [{ type: "text", text: "open a.txt" }] },
+        { role: "assistant", content: "Opening.", tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"a.txt"}' } }] },
+        { role: "tool", tool_call_id: "call_1", content: "hello" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+      ],
+    } });
+    const [one] = capture.list().captures;
+    assert.equal(one.protocol, "chat");
+    assert.equal(one.model, "gpt-4o");
+    assert.deepEqual(one.system, ["You are VS Code Chat.", "Prefer short answers."]);
+    assert.deepEqual(one.tools, [{ name: "read_file", description: "Reads a file.", schema: { type: "object" } }]);
+    assert.deepEqual(one.messages, [
+      { role: "user", kind: "text", text: "open a.txt", isNew: true, reminder: false },
+      { role: "assistant", kind: "text", text: "Opening.", isNew: true, reminder: false },
+      { role: "assistant", kind: "tool_use", name: "read_file", text: '{\n  "path": "a.txt"\n}', isNew: true, reminder: false },
+      { role: "tool", kind: "tool_result", name: "read_file", text: "hello", isNew: true, reminder: false },
+      { role: "assistant", kind: "tool_use", name: "read_file", text: "{}", isNew: true, reminder: false },
+    ]);
+  });
+
+  it("parses the same conversation alike whichever of the three protocols carries it", () => {
+    const capture = createPromptCapture(); capture.start();
+    const schema = { type: "object", properties: { path: { type: "string" } } };
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: {
+      model: "m", system: "Be helpful.", tools: [{ name: "read", description: "Reads.", input_schema: schema }],
+      messages: [
+        { role: "user", content: "open a.txt" },
+        { role: "assistant", content: [{ type: "text", text: "Opening." }, { type: "tool_use", id: "c1", name: "read", input: { path: "a.txt" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "hello" }] },
+      ],
+    } });
+    capture.record({ client: "codex", adapter: "responses", path: "/v1/responses", raw: {}, sent: {
+      model: "m", instructions: "Be helpful.", tools: [{ type: "function", name: "read", description: "Reads.", parameters: schema }],
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "open a.txt" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Opening." }] },
+        { type: "function_call", call_id: "c1", name: "read", arguments: '{"path":"a.txt"}' },
+        { type: "function_call_output", call_id: "c1", output: "hello" },
+      ],
+    } });
+    capture.record({ client: "copilot", adapter: "chat", path: "/v1/chat/completions", raw: {}, sent: {
+      model: "m", tools: [{ type: "function", function: { name: "read", description: "Reads.", parameters: schema } }],
+      messages: [
+        { role: "system", content: "Be helpful." },
+        { role: "user", content: "open a.txt" },
+        { role: "assistant", content: "Opening.", tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: '{"path":"a.txt"}' } }] },
+        { role: "tool", tool_call_id: "c1", content: "hello" },
+      ],
+    } });
+    const shapes = capture.list().captures.map(one => ({ protocol: one.protocol, system: one.system, tools: one.tools,
+      messages: one.messages.map(({ isNew: _isNew, ...message }) => message) }));
+    assert.deepEqual(shapes.map(shape => shape.protocol), ["chat", "responses", "messages"]);
+    const expected = {
+      system: ["Be helpful."], tools: [{ name: "read", description: "Reads.", schema }],
+      messages: [
+        { role: "user", kind: "text", text: "open a.txt", reminder: false },
+        { role: "assistant", kind: "text", text: "Opening.", reminder: false },
+        { role: "assistant", kind: "tool_use", name: "read", text: '{\n  "path": "a.txt"\n}', reminder: false },
+        { role: "tool", kind: "tool_result", name: "read", text: "hello", reminder: false },
+      ],
+    };
+    for (const { protocol: _protocol, ...shape } of shapes) assert.deepEqual(shape, expected);
+  });
+
   it("estimates tokens: one per CJK character, one per four other characters", () => {
     const capture = createPromptCapture(); capture.start();
     capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: {
@@ -218,6 +326,28 @@ describe("Prompt Capture through sendRouter", () => {
       assert.equal(response.status, 200, await response.clone().text());
       assert.ok(calls.length > 0);
       assert.deepEqual(capture.list(), { captures: [], dropped: 0 });
+    });
+  });
+
+  const responsesBody = { model: "gpt-5", stream: false, instructions: "You are Codex.", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }] };
+  const responsesReply = { id: "resp_1", object: "response", status: "completed", model: "allowed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }] };
+  const chatReply = { id: "chat_1", object: "chat.completion", model: "allowed", choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }] };
+  for (const [client, adapter, reply, protocol, path] of [
+    ["codex", "responses", responsesReply, "responses", "/v1/responses"],
+    ["codex", "chat", chatReply, "chat", "/v1/chat/completions"],
+    ["copilot", "chat", chatReply, "chat", "/v1/chat/completions"],
+  ] as const) it(`records what the ${adapter} adapter sends to Router for ${client}`, async () => {
+    await withFakeRouter([reply], async (routerBaseUrl, calls) => {
+      const capture = createPromptCapture(); capture.start();
+      const response = await sendRouter({ client, target: "router", model: "allowed", adapter, path: "/v1/responses", apiKey: API_KEY, body: JSON.stringify(responsesBody) }, routerBaseUrl, capture);
+      assert.equal(response.status, 200, await response.clone().text());
+      const [one] = capture.list().captures;
+      assert.deepEqual([one.client, one.adapter, one.protocol, one.path], [client, adapter, protocol, path]);
+      assert.equal(calls[0].path, path);
+      assert.deepEqual(one.sent, calls[0].body);
+      assert.deepEqual(one.raw, responsesBody);
+      assert.deepEqual(one.system, ["You are Codex."]);
+      assert.deepEqual(one.messages.map(message => [message.role, message.kind, message.text]), [["user", "text", "hello"]]);
     });
   });
 
