@@ -8,7 +8,7 @@ import { connectionMascot, connectionMascotStyles, connectionMascotScript } from
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
-import type { CaptureList } from "./promptCapture";
+import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import {
   actionKindLabel,
@@ -1131,7 +1131,7 @@ function recorderBar(recording: boolean): string {
   const toggle = recording
     ? `<form method="post" action="/prompt-capture/pause"><button type="submit" class="quiet">暫停</button></form>`
     : `<form method="post" action="/prompt-capture/start"><button type="submit">開始錄製</button></form>`;
-  return `<section class="tile pi-recorder"><div class="pi-rec-state">${state}<p class="hint">只記在這台電腦的記憶體，最多 20 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。</p></div></div><div class="pi-rec-actions">${toggle}<form method="post" action="/prompt-capture/clear"><button type="submit" class="quiet">清除</button></form></div></section>`;
+  return `<section class="tile pi-recorder"><div class="pi-rec-state">${state}<p class="hint">只記在這台電腦的記憶體，最多 ${CAPTURE_LIMIT} 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。</p></div></div><div class="pi-rec-actions">${toggle}<form method="post" action="/prompt-capture/clear"><button type="submit" class="quiet">清除</button></form></div></section>`;
 }
 
 /** Prompt 觀察室：與教室設定共用頁殼、側欄、主題與行動版抽屜。 */

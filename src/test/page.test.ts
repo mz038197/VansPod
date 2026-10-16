@@ -634,13 +634,15 @@ describe("Prompt 觀察室 page", () => {
     return { recording: true, ...capture.list() };
   }
 
-  it("lists captures newest first with number, client, time, summary and a size bar", () => {
+  it("lists captures newest first with number, client, model, time, summary and a size bar", () => {
     const html = renderInspectorPage(recorded());
     assert.doesNotMatch(html.match(/<main[\s\S]*<\/main>/)?.[0] ?? "", /送出的 prompt 會出現在這裡/);
     const list = html.match(/<div class="pi-req-list">[\s\S]*?<\/div><\/section>/)?.[0] ?? "";
     const items = [...list.matchAll(/<button[^>]*class="pi-req[^"]*"[\s\S]*?<\/button>/g)].map(match => match[0]);
     assert.equal(items.length, 2);
+    assert.match(html, /<section class="tile pi-list"><div class="tile-head"><h2>觀察紀錄<\/h2>/);
     assert.match(items[0], /#2 Claude Code/); assert.match(items[1], /#1 Claude Code/);
+    assert.match(items[0], /<span class="pi-req-model">claude-sonnet<\/span>/);
     assert.match(items[0], /\d\d:\d\d:\d\d/);
     assert.match(items[0], /呼叫 Read/); assert.match(items[1], /older ask/);
     assert.match(items[0], /class="pi-stack"/);
@@ -651,7 +653,7 @@ describe("Prompt 觀察室 page", () => {
     const html = renderInspectorPage(recorded());
     const detail = html.match(/<section class="tile pi-detail">[\s\S]*<\/section><\/div>/)?.[0] ?? "";
     assert.match(detail, /#2 解剖/);
-    assert.match(detail, /Claude Code · claude-sonnet · Messages · 約 \d+ tokens（估算）/);
+    assert.match(detail, /Claude Code · claude-sonnet · Messages · messages adapter · 約 \d+ tokens（估算）/);
     assert.match(detail, /class="pi-stack"/);
     assert.match(detail, /class="pi-legend"/);
     assert.match(detail, /data-view="parts"[^>]*>結構</); assert.match(detail, /data-view="raw"[^>]*>原始 JSON</);
@@ -665,10 +667,10 @@ describe("Prompt 觀察室 page", () => {
     assert.match(talk, /Assistant 呼叫工具 <code>Read<\/code>[\s\S]*?file_path/);
   });
 
-  it("names the client and protocol in the meta row for Responses and Chat Completions captures", () => {
+  it("names the client, protocol and adapter in the meta row for Responses and Chat Completions captures", () => {
     for (const [client, adapter, path, sent, label] of [
-      ["codex", "responses", "/v1/responses", { model: "gpt-5", input: "hi" }, "Codex · gpt-5 · Responses"],
-      ["copilot", "chat", "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }, "VS Code Chat · gpt-4o · Chat Completions"],
+      ["codex", "responses", "/v1/responses", { model: "gpt-5", input: "hi" }, "Codex · gpt-5 · Responses · responses adapter"],
+      ["copilot", "chat", "/v1/chat/completions", { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }, "VS Code Chat · gpt-4o · Chat Completions · chat adapter"],
     ] as const) {
       const capture = createPromptCapture(); capture.start();
       capture.record({ client, adapter, path, sent, raw: {} });

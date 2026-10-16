@@ -33,12 +33,13 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
 
   const items = list.captures.map(one => `<button type="button" class="pi-req${one === current ? " on" : ""}" data-pick="${one.id}">`
     + `<span class="pi-req-top"><strong>#${one.id} ${esc(clientName(one))}</strong>${one.newConversation ? `<em class="pi-newconv">新對話</em>` : ""}<span>${esc(one.time)}</span></span>`
+    + `<span class="pi-req-model">${esc(one.model || "（未指定模型）")}</span>`
     + (tags(one) ? `<span class="pi-tags">${tags(one)}</span>` : "")
     + `<span class="pi-req-sub">${esc(summary(one))}</span>${stack(one)}</button>`).join("");
   const dropped = list.dropped ? `<p class="hint pi-dropped">較早的 ${list.dropped} 筆已捨去</p>` : "";
 
   const legend = `<ul class="pi-legend">${segments.map(segment => `<li><span class="pi-dot" data-seg="${segment.key}"></span>${segment.label}<b>${current.total ? Math.round((current.sizes[segment.key] / current.total) * 100) : 0}%</b></li>`).join("")}</ul>`;
-  const meta = `<p class="pi-meta">${esc(clientName(current))} · ${esc(current.model || "（未指定模型）")} · ${esc(protocols[current.protocol] ?? current.protocol)} · 約 ${fmt(current.total)} tokens（估算）</p>`;
+  const meta = `<p class="pi-meta">${esc(clientName(current))} · ${esc(current.model || "（未指定模型）")} · ${esc(protocols[current.protocol] ?? current.protocol)} · ${esc(current.adapter)} adapter · 約 ${fmt(current.total)} tokens（估算）</p>`;
   const tool = (item: CaptureView["tools"][number]) => `<details class="pi-tool${item.name === "Skill" ? " is-skill" : ""}"><summary><code>${esc(item.name)}</code><span>${esc(item.description.split(/(?<=[.。])\s/)[0])}</span></summary>`
     + `<pre>${esc(item.description)}</pre><pre class="pi-schema">${esc(JSON.stringify(item.schema ?? {}, null, 2))}</pre></details>`;
   const message = (item: CaptureView["messages"][number]) => {
@@ -64,7 +65,7 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
   const tabs = `<div class="modes pi-view-tabs"><button type="button" class="${state.view === "parts" ? "on" : ""}" data-view="parts">結構</button>`
     + `<button type="button" class="${state.view === "raw" ? "on" : ""}" data-view="raw">原始 JSON</button></div>`;
 
-  return `<div class="pi-a"><section class="tile pi-list"><div class="tile-head"><h2>請求</h2><span class="badge">${list.captures.length} 筆</span></div>`
+  return `<div class="pi-a"><section class="tile pi-list"><div class="tile-head"><h2>觀察紀錄</h2><span class="badge">${list.captures.length} 筆</span></div>`
     + `<div class="pi-req-list">${items}</div>${dropped}</section>`
     + `<section class="tile pi-detail"><div class="tile-head"><h2>#${current.id} 解剖</h2>${current.newConversation ? `<span class="badge">新對話</span>` : ""}${tags(current) ? `<span class="pi-tags">${tags(current)}</span>` : ""}</div>${meta}${stack(current)}${legend}${tabs}`
     + `<div class="pi-parts"${state.view === "parts" ? "" : " hidden"}>${sections}</div>${raw}</section></div>`;
@@ -164,6 +165,7 @@ export const INSPECTOR_STYLES = `
     main button.pi-req.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
     .pi-req-top { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
     .pi-req-top span { color: var(--muted); font-size: 12px; }
+    .pi-req-model { font: 12px "Cascadia Mono", Consolas, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pi-req-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pi-req .pi-stack { height: 5px; }
     .pi-tags { display: flex; flex-wrap: wrap; gap: 4px; }
