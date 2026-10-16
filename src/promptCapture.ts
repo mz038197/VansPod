@@ -183,31 +183,40 @@ function plainText(content: unknown): string {
 
 const isReminder = (text: string) => text.includes("<system-reminder>");
 
-function parseMessages(body: JsonObject): Parsed {
-  const system = blocks(body.system).map(block => typeof block.text === "string" ? block.text : "").filter(Boolean);
-  const tools = (Array.isArray(body.tools) ? body.tools : []).filter(isObject).map(tool => ({
-    name: String(tool.name ?? tool.type ?? ""),
-    description: typeof tool.description === "string" ? tool.description : "",
-    schema: tool.input_schema ?? null,
-  }));
-  const toolNames = new Map<string, string>();
-  const messages: Parsed["messages"] = [];
-  for (const message of Array.isArray(body.messages) ? body.messages.filter(isObject) : []) {
-    const role = message.role === "assistant" ? "assistant" : "user";
-    for (const block of blocks(message.content)) {
-      if (block.type === "text" && typeof block.text === "string") {
-        messages.push({ role, kind: "text", text: block.text, reminder: role === "user" && isReminder(block.text) });
-      } else if (block.type === "tool_use") {
-        const name = String(block.name ?? "");
-        if (typeof block.id === "string") toolNames.set(block.id, name);
-        messages.push({ role: "assistant", kind: "tool_use", name, text: JSON.stringify(block.input ?? {}, null, 2), reminder: false });
-      } else if (block.type === "tool_result") {
-        const name = typeof block.tool_use_id === "string" ? toolNames.get(block.tool_use_id) : undefined;
-        messages.push({ role: "tool", kind: "tool_result", ...(name ? { name } : {}), text: plainText(block.content), reminder: false });
-      }
-    }
-  }
-  return { system, tools, messages };
+type ParsedMessage = Parsed["messages"][number];
+
+function textMessage(role: "user" | "assistant", text: string): ParsedMessage {
+  return { role, kind: "text", text, reminder: role === "user" && isReminder(text) };
+}
+
+const texts = (content: unknown) => blocks(content).map(block => typeof block.text === "string" ? block.text : "").filter(Boolean);
+
+/** Each protocol keeps a tool's name and description in `fields` (the tool itself, or its `function`). */
+function toolList(tools: unknown, definition: (tool: JsonObject) => { fields: JsonObject; schema: unknown }): Parsed["tools"] {
+  return (Array.isArray(tools) ? tools : []).filter(isObject).map(tool => {
+    const { fields, schema } = definition(tool);
+    return {
+      name: String(fields.name ?? tool.type ?? ""),
+      description: typeof fields.description === "string" ? fields.description : "",
+      schema: schema ?? null,
+    };
+  });
+}
+
+/** Names each tool result after the call it answers, matched by call id. */
+function toolCalls() {
+  const names = new Map<string, string>();
+  return {
+    use(id: unknown, name: unknown, text: string): ParsedMessage {
+      const tool = String(name ?? "");
+      if (typeof id === "string") names.set(id, tool);
+      return { role: "assistant", kind: "tool_use", name: tool, text, reminder: false };
+    },
+    result(id: unknown, output: unknown): ParsedMessage {
+      const name = typeof id === "string" ? names.get(id) : undefined;
+      return { role: "tool", kind: "tool_result", ...(name ? { name } : {}), text: plainText(output), reminder: false };
+    },
+  };
 }
 
 /** Tool-call arguments arrive as a JSON string; lay them out like a Messages tool_use input. */
@@ -216,34 +225,38 @@ function callArguments(value: unknown): string {
   try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
 }
 
-function textMessage(role: "user" | "assistant", text: string): Parsed["messages"][number] {
-  return { role, kind: "text", text, reminder: role === "user" && isReminder(text) };
+function parseMessages(body: JsonObject): Parsed {
+  const system = texts(body.system);
+  const tools = toolList(body.tools, tool => ({ fields: tool, schema: tool.input_schema }));
+  const calls = toolCalls();
+  const messages: ParsedMessage[] = [];
+  for (const message of Array.isArray(body.messages) ? body.messages.filter(isObject) : []) {
+    const role = message.role === "assistant" ? "assistant" : "user";
+    for (const block of blocks(message.content)) {
+      if (block.type === "text" && typeof block.text === "string") messages.push(textMessage(role, block.text));
+      else if (block.type === "tool_use") messages.push(calls.use(block.id, block.name, JSON.stringify(block.input ?? {}, null, 2)));
+      else if (block.type === "tool_result") messages.push(calls.result(block.tool_use_id, block.content));
+    }
+  }
+  return { system, tools, messages };
 }
 
 function parseResponses(body: JsonObject): Parsed {
   const system = typeof body.instructions === "string" && body.instructions ? [body.instructions] : [];
-  const tools = (Array.isArray(body.tools) ? body.tools : []).filter(isObject).map(tool => ({
-    name: String(tool.name ?? tool.type ?? ""),
-    description: typeof tool.description === "string" ? tool.description : "",
-    schema: tool.parameters ?? null,
-  }));
-  const toolNames = new Map<string, string>();
-  const messages: Parsed["messages"] = [];
+  const tools = toolList(body.tools, tool => ({ fields: tool, schema: tool.parameters }));
+  const calls = toolCalls();
+  const messages: ParsedMessage[] = [];
   const items = typeof body.input === "string" ? [{ role: "user", content: body.input }] : Array.isArray(body.input) ? body.input.filter(isObject) : [];
   for (const item of items) {
     if (item.type === "function_call" || item.type === "custom_tool_call") {
-      const name = String(item.name ?? "");
-      if (typeof item.call_id === "string") toolNames.set(item.call_id, name);
-      messages.push({ role: "assistant", kind: "tool_use", name, text: item.type === "function_call" ? callArguments(item.arguments) : plainText(item.input), reminder: false });
+      messages.push(calls.use(item.call_id, item.name, item.type === "function_call" ? callArguments(item.arguments) : plainText(item.input)));
     } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
-      const name = typeof item.call_id === "string" ? toolNames.get(item.call_id) : undefined;
-      messages.push({ role: "tool", kind: "tool_result", ...(name ? { name } : {}), text: plainText(item.output), reminder: false });
+      messages.push(calls.result(item.call_id, item.output));
     } else if (item.type === "input_text" && typeof item.text === "string") {
       messages.push(textMessage("user", item.text));
     } else if (typeof item.role === "string" && (item.type === undefined || item.type === "message")) {
-      const texts = blocks(item.content).map(block => typeof block.text === "string" ? block.text : "").filter(Boolean);
-      if (item.role === "system" || item.role === "developer") system.push(...texts);
-      else for (const text of texts) messages.push(textMessage(item.role === "assistant" ? "assistant" : "user", text));
+      if (item.role === "system" || item.role === "developer") system.push(...texts(item.content));
+      else for (const text of texts(item.content)) messages.push(textMessage(item.role === "assistant" ? "assistant" : "user", text));
     }
   }
   return { system, tools, messages };
@@ -251,31 +264,20 @@ function parseResponses(body: JsonObject): Parsed {
 
 function parseChat(body: JsonObject): Parsed {
   const system: string[] = [];
-  const tools = (Array.isArray(body.tools) ? body.tools : []).filter(isObject).map(tool => {
-    const fn = isObject(tool.function) ? tool.function : tool;
-    return {
-      name: String(fn.name ?? tool.type ?? ""),
-      description: typeof fn.description === "string" ? fn.description : "",
-      schema: fn.parameters ?? null,
-    };
+  const tools = toolList(body.tools, tool => {
+    const fields = isObject(tool.function) ? tool.function : tool;
+    return { fields, schema: fields.parameters };
   });
-  const toolNames = new Map<string, string>();
-  const messages: Parsed["messages"] = [];
+  const calls = toolCalls();
+  const messages: ParsedMessage[] = [];
   for (const message of Array.isArray(body.messages) ? body.messages.filter(isObject) : []) {
-    if (message.role === "tool") {
-      const name = typeof message.tool_call_id === "string" ? toolNames.get(message.tool_call_id) : undefined;
-      messages.push({ role: "tool", kind: "tool_result", ...(name ? { name } : {}), text: plainText(message.content), reminder: false });
-      continue;
-    }
-    const texts = blocks(message.content).map(block => typeof block.text === "string" ? block.text : "").filter(Boolean);
-    if (message.role === "system" || message.role === "developer") { system.push(...texts); continue; }
+    if (message.role === "tool") { messages.push(calls.result(message.tool_call_id, message.content)); continue; }
+    if (message.role === "system" || message.role === "developer") { system.push(...texts(message.content)); continue; }
     const role = message.role === "assistant" ? "assistant" : "user";
-    for (const text of texts) messages.push(textMessage(role, text));
+    for (const text of texts(message.content)) messages.push(textMessage(role, text));
     for (const call of Array.isArray(message.tool_calls) ? message.tool_calls.filter(isObject) : []) {
       const fn = isObject(call.function) ? call.function : {};
-      const name = String(fn.name ?? "");
-      if (typeof call.id === "string") toolNames.set(call.id, name);
-      messages.push({ role: "assistant", kind: "tool_use", name, text: callArguments(fn.arguments), reminder: false });
+      messages.push(calls.use(call.id, fn.name, callArguments(fn.arguments)));
     }
   }
   return { system, tools, messages };

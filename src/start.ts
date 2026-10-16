@@ -48,6 +48,11 @@ function abortRequests(): void { for (const controller of activeRequests) contro
 const traffic = createClientTraffic();
 // 只存在記憶體；每次啟動錄製都是關閉（ADR-0009）。
 const promptCapture = createPromptCapture();
+const promptCaptureActions = new Map<string, () => void>([
+  ["/prompt-capture/start", () => promptCapture.start()],
+  ["/prompt-capture/pause", () => promptCapture.pause()],
+  ["/prompt-capture/clear", () => promptCapture.clear()],
+]);
 
 function routerBaseUrl(): string {
   return (
@@ -547,22 +552,15 @@ export async function main(instance?: Instance): Promise<void> {
         res.end(JSON.stringify({ ...modelStatus(app.view()), traffic: traffic.flowing() }));
         return;
       }
-      if (req.method === "GET" && pathname === "/prompt-capture") {
+      const captureAction = req.method === "POST" ? promptCaptureActions.get(pathname) : undefined;
+      if (captureAction) {
+        await readBody(req);
+        captureAction();
+        if (!(req.headers.accept ?? "").includes("application/json")) { redirect(res, "/prompt-inspector"); return; }
+      }
+      if (captureAction || (req.method === "GET" && pathname === "/prompt-capture")) {
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         res.end(JSON.stringify({ recording: promptCapture.recording, ...promptCapture.list() }));
-        return;
-      }
-      if (req.method === "POST" && (pathname === "/prompt-capture/start" || pathname === "/prompt-capture/pause" || pathname === "/prompt-capture/clear")) {
-        await readBody(req);
-        if (pathname === "/prompt-capture/start") promptCapture.start();
-        else if (pathname === "/prompt-capture/pause") promptCapture.pause();
-        else promptCapture.clear();
-        if ((req.headers.accept ?? "").includes("application/json")) {
-          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-          res.end(JSON.stringify({ recording: promptCapture.recording, ...promptCapture.list() }));
-          return;
-        }
-        redirect(res, "/prompt-inspector");
         return;
       }
       if (req.method === "GET" && pathname === "/prompt-inspector") {
