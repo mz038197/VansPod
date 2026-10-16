@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createPromptCapture } from "../promptCapture";
-import { sendRouter } from "../modelProxy";
+import { forwardRouter, sendRouter } from "../modelProxy";
 import { Failure, fixture, withFakeRouter } from "./fakeRouter";
 
 const API_KEY = "sk-classroom-synthetic-4f9a";
@@ -369,6 +369,26 @@ describe("Prompt Capture through sendRouter", () => {
       assert.deepEqual(one.raw, responsesBody);
       assert.deepEqual(one.system, ["You are Codex."]);
       assert.deepEqual(one.messages.map(message => [message.role, message.kind, message.text]), [["user", "text", "hello"]]);
+    });
+  });
+
+  it("records VS Code Chat's request, which goes to Router as is with the Class Session model", async () => {
+    const chatBody = { model: "VCRouter/allowed", stream: false, messages: [{ role: "system", content: "You are VS Code Chat." }, { role: "user", content: "hello" }] };
+    await withFakeRouter([chatReply, new Failure(429, { error: { message: "busy" } })], async (routerBaseUrl, calls) => {
+      const capture = createPromptCapture(); capture.start();
+      const upstream = { client: "copilot", target: "router", model: "allowed", adapter: "chat", path: "/v1/chat/completions", apiKey: API_KEY, body: JSON.stringify(chatBody) } as const;
+      assert.equal((await forwardRouter(upstream, routerBaseUrl, capture)).status, 200);
+      assert.equal((await forwardRouter(upstream, routerBaseUrl, capture)).status, 429);
+      assert.equal(calls[0].path, "/v1/chat/completions");
+      assert.equal(calls[0].headers.authorization, `Bearer ${API_KEY}`);
+      assert.equal(calls[0].body.model, "allowed");
+      const [second, first] = capture.list().captures;
+      assert.deepEqual([first.client, first.adapter, first.protocol, first.path, first.model], ["copilot", "chat", "chat", "/v1/chat/completions", "allowed"]);
+      assert.deepEqual(first.sent, calls[0].body);
+      assert.deepEqual(first.raw, chatBody);
+      assert.deepEqual(first.system, ["You are VS Code Chat."]);
+      assert.equal(first.failedStatus, undefined);
+      assert.equal(second.failedStatus, 429);
     });
   });
 

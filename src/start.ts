@@ -29,7 +29,7 @@ import { createAdapterSettingsStorage } from "./adapterSettings";
 import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
-import { sendRouter, relayResponse } from "./modelProxy";
+import { forwardRouter, sendRouter, relayResponse } from "./modelProxy";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
 import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
@@ -366,22 +366,7 @@ function modelFromBody(body: string): string {
   return "";
 }
 
-function rewriteModel(body: string, model: string): string {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return JSON.stringify({ ...(parsed as Record<string, unknown>), model });
-    }
-  } catch {
-    return body;
-  }
-  return body;
-}
-
 function upstreamOrigin(target: UpstreamTarget): string {
-  if (target === "router") {
-    return routerBaseUrl();
-  }
   if (target === "chatgpt") {
     return "https://chatgpt.com";
   }
@@ -394,25 +379,18 @@ async function sendUpstream(upstream: UpstreamSend): Promise<{ ok: boolean }> {
   }
   const slot = responseSlot.getStore();
   if (!slot) return { ok: false };
-  if (upstream.target === "router" && upstream.client !== "copilot") {
-    slot.response = await sendRouter(upstream, routerBaseUrl(), promptCapture);
+  if (upstream.target === "router") {
+    // VS Code Chat already speaks Router's protocol; Codex and Claude Code go through a Model API Adapter.
+    slot.response = upstream.client === "copilot"
+      ? await forwardRouter(upstream, routerBaseUrl(), promptCapture)
+      : await sendRouter(upstream, routerBaseUrl(), promptCapture);
     return { ok: slot.response.ok };
   }
   try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (upstream.target === "router" && upstream.apiKey) {
-      headers.Authorization = `Bearer ${upstream.apiKey}`;
-    }
-    const body = upstream.target === "router"
-          ? rewriteModel(upstream.body ?? "", upstream.model)
-          : upstream.body;
-    const url = `${upstreamOrigin(upstream.target)}${upstream.path}`;
-    const response = await fetch(url, {
+    const response = await fetch(`${upstreamOrigin(upstream.target)}${upstream.path}`, {
       method: upstream.method ?? "POST",
-      headers,
-      body,
+      headers: { "Content-Type": "application/json" },
+      body: upstream.body,
       signal: upstream.signal,
     });
     slot.response = response;

@@ -64,6 +64,27 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string, captur
   }
 }
 
+// VS Code Chat already speaks the protocol Router expects: its body goes to Router as is,
+// with only the model swapped for the Class Session model.
+export async function forwardRouter(upstream: UpstreamSend, baseUrl: string, capture?: PromptCapture): Promise<Response> {
+  const path = upstream.path ?? "";
+  let raw: unknown; try { raw = JSON.parse(upstream.body ?? ""); } catch { raw = undefined; }
+  const sent = raw && typeof raw === "object" && !Array.isArray(raw) ? { ...raw, model: upstream.model } : undefined;
+  const markFailed = capture && sent ? recordUpstream(capture, upstream, upstream.adapter ?? "chat", raw)(path, sent) : undefined;
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
+      method: upstream.method ?? "POST",
+      headers: { "Content-Type": "application/json", ...(upstream.apiKey ? { Authorization: `Bearer ${upstream.apiKey}` } : {}) },
+      body: sent ? JSON.stringify(sent) : upstream.body,
+      signal: upstream.signal,
+    });
+    if (!response.ok) markFailed?.(response.status);
+    return response;
+  } catch {
+    return Response.json({ error: { message: "上游沒有回應。" } }, { status: 502 });
+  }
+}
+
 export async function relayResponse(response: Response, res: http.ServerResponse, client: "codex" | "claude", signal: AbortSignal): Promise<void> {
   const type = response.headers.get("content-type") ?? "application/json; charset=utf-8";
   res.writeHead(response.status, { "Content-Type": type, "Cache-Control": "no-store" });
