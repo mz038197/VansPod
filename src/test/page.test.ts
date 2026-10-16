@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
-import { modelStatus, renderPage } from "../page";
+import { modelStatus, renderInspectorPage, renderPage } from "../page";
 import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
@@ -563,5 +563,57 @@ describe("Abort Install on the page", () => {
     assert.ok(forms.length >= 2);
     for (const form of forms) assert.match(form.match(/<form[^>]*>/)?.[0] ?? "", /hidden/);
     assert.match(html, /停止後安裝可能不完整，確定停止？/);
+  });
+});
+
+describe("Prompt 觀察室 page", () => {
+  const sideNav = (html: string) => html.match(/<nav aria-label="選單">[\s\S]*?<\/nav>/)?.[0] ?? "";
+  const items = (nav: string) => [...nav.matchAll(/<a [^>]*class="side-item"[^>]*>[\s\S]*?<\/a>/g)].map(match => match[0]);
+
+  it("lists 教室設定 then Prompt 觀察室 in the side menu, marking the current page", () => {
+    const settings = items(sideNav(renderPage(view())));
+    assert.equal(settings.length, 2);
+    assert.match(settings[0], /教室設定/); assert.match(settings[1], /Prompt 觀察室/);
+    assert.match(settings[0], /aria-current="page"/); assert.doesNotMatch(settings[1], /aria-current/);
+    assert.match(settings[1], /href="\/prompt-inspector"/);
+
+    const inspector = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
+    const inspectorItems = items(sideNav(inspector));
+    assert.equal(inspectorItems.length, 2);
+    assert.doesNotMatch(inspectorItems[0], /aria-current/); assert.match(inspectorItems[1], /aria-current="page"/);
+    assert.match(inspectorItems[0], /href="\/"/);
+  });
+
+  it("shares the mobile drawer and appearance toggle with 教室設定", () => {
+    const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
+    assert.match(html, /class="menu-toggle"[^>]*aria-controls="side-menu"/);
+    assert.match(html, /<header class="bar" id="side-menu">/);
+    assert.match(html, /class="drawer-scrim"/);
+    assert.match(html, /data-appearance-toggle/);
+  });
+
+  it("offers 開始錄製 and 清除 while recording is off", () => {
+    const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
+    const bar = html.match(/<section[^>]*class="tile pi-recorder"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.match(bar, /<form method="post" action="\/prompt-capture\/start"><button[^>]*>開始錄製<\/button><\/form>/);
+    assert.match(bar, /action="\/prompt-capture\/clear"><button[^>]*>清除<\/button>/);
+    assert.doesNotMatch(bar, /暫停/);
+    assert.doesNotMatch(bar, /pi-rec-dot/);
+  });
+
+  it("offers 暫停 and 清除 while recording", () => {
+    const html = renderInspectorPage({ recording: true, captures: [], dropped: 0 });
+    const bar = html.match(/<section[^>]*class="tile pi-recorder"[\s\S]*?<\/section>/)?.[0] ?? "";
+    assert.match(bar, /錄製中/);
+    assert.match(bar, /pi-rec-dot/);
+    assert.match(bar, /action="\/prompt-capture\/pause"><button[^>]*>暫停<\/button>/);
+    assert.match(bar, /action="\/prompt-capture\/clear"><button[^>]*>清除<\/button>/);
+    assert.doesNotMatch(bar, /開始錄製/);
+  });
+
+  it("explains memory-only storage, the 20 limit and Classroom-only capture, with an empty-state hint", () => {
+    const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
+    assert.match(html, /只記在這台電腦的記憶體，最多 20 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。/);
+    assert.match(html, /切到「課堂」並開始錄製後，送出的 prompt 會出現在這裡/);
   });
 });

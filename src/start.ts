@@ -16,7 +16,8 @@ import {
   type UpstreamSend,
   type UpstreamTarget,
 } from "./classroomApp";
-import { modelStatus, renderPage } from "./page";
+import { modelStatus, renderInspectorPage, renderPage } from "./page";
+import { createPromptCapture } from "./promptCapture";
 import { writeClipboard } from "./clipboard";
 import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./commandRunner";
@@ -45,6 +46,8 @@ const responseSlot = new AsyncLocalStorage<{
 const activeRequests = new Set<AbortController>();
 function abortRequests(): void { for (const controller of activeRequests) controller.abort(); }
 const traffic = createClientTraffic();
+// 只存在記憶體；每次啟動錄製都是關閉（ADR-0009）。
+const promptCapture = createPromptCapture();
 
 function routerBaseUrl(): string {
   return (
@@ -564,6 +567,30 @@ export async function main(instance?: Instance): Promise<void> {
           "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ...modelStatus(app.view()), traffic: traffic.flowing() }));
+        return;
+      }
+      if (req.method === "GET" && pathname === "/prompt-capture") {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ recording: promptCapture.recording, ...promptCapture.list() }));
+        return;
+      }
+      if (req.method === "POST" && (pathname === "/prompt-capture/start" || pathname === "/prompt-capture/pause" || pathname === "/prompt-capture/clear")) {
+        await readBody(req);
+        if (pathname === "/prompt-capture/start") promptCapture.start();
+        else if (pathname === "/prompt-capture/pause") promptCapture.pause();
+        else promptCapture.clear();
+        if ((req.headers.accept ?? "").includes("application/json")) {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ recording: promptCapture.recording, ...promptCapture.list() }));
+          return;
+        }
+        redirect(res, "/prompt-inspector");
+        return;
+      }
+      if (req.method === "GET" && pathname === "/prompt-inspector") {
+        const html = renderInspectorPage({ recording: promptCapture.recording, ...promptCapture.list() });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end(instance ? lifecyclePage(html, instance.token) : html);
         return;
       }
       if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {

@@ -8,6 +8,7 @@ import { connectionMascot, connectionMascotStyles, connectionMascotScript } from
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
+import type { CaptureList } from "./promptCapture";
 import {
   actionKindLabel,
   type InstallAction,
@@ -583,7 +584,81 @@ export function classroomBlocks(view: ClassroomAppView) {
   };
 }
 
-function basePage(view: ClassroomAppView): string {
+type PageId = "settings" | "inspector";
+
+const SIDE_PAGES: { id: PageId; href: string; label: string; icon: string }[] = [
+  {
+    id: "settings",
+    href: "/",
+    label: "教室設定",
+    icon: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 3-.6 2.3-2 .9-2.1-.6-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.6 2 .9.6 2.3h5l.6-2.3 2-.9 2.1.6 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.6-2-.9L14.5 3z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  },
+  {
+    id: "inspector",
+    href: "/prompt-inspector",
+    label: "Prompt 觀察室",
+    icon: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.4-4.4M8 9.5h6M8 12.5h4"/></svg>`,
+  },
+];
+
+const BRAND = `<div class="brand"><div class="logo-badge"><img src="/brand-logo.png" alt=""></div><h1 class="brand-title">${PRODUCT}</h1><span class="ver">${VERSION}</span></div>`;
+
+/** 兩頁共用的側欄：行動版頂列、抽屜遮罩、選單與外觀切換。 */
+function sideMenu(current: PageId): string {
+  const items = SIDE_PAGES.map((page) =>
+    `<a class="side-item" href="${page.href}"${page.id === current ? ' aria-current="page"' : ""}>${page.icon}<span>${page.label}</span></a>`,
+  ).join("");
+  return `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${BRAND}</div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">${BRAND}<nav aria-label="選單">${items}</nav><button type="button" data-appearance-toggle aria-label="切換外觀"></button></header>`;
+}
+
+/** 兩頁共用的頁殼版面：側欄、行動版抽屜。 */
+const SHELL_LAYOUT_STYLES = `
+    .tile { border: 1px solid light-dark(#e6e6e6, #3d3d3d); }
+    body { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100dvh; }
+    .bar { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; padding: 18px 14px; border-bottom: 0; border-right: 1px solid var(--line); }
+    .bar .brand { padding: 6px 8px 14px; }
+    .bar .logo-badge { width: 28px; height: 28px; }
+    .bar .brand-title, .mobile-top .brand-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0; line-height: 26px; color: light-dark(#0d0d0d, #ececec); background: none; -webkit-text-fill-color: currentColor; white-space: nowrap; }
+    .brand .ver { align-self: center; flex: 0 0 auto; font-family: Consolas, "Cascadia Mono", monospace; font-size: 10px; line-height: 1.2; color: var(--muted); background: light-dark(#f4f4f4, #303030); border: 1px solid light-dark(#e6e6e6, #3d3d3d); padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
+    .bar nav { display: flex; flex-direction: column; gap: 2px; }
+    .side-item { display: flex; align-items: center; gap: 8px; align-self: stretch; justify-content: flex-start; min-height: 36px; padding: 8px 10px; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; font-weight: 500; text-align: left; text-decoration: none; }
+    .side-item:hover { background: light-dark(rgba(13, 13, 13, 0.04), rgba(255, 255, 255, 0.05)); }
+    .side-item[aria-current="page"] { background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); font-weight: 600; }
+    .side-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .side-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .bar [data-appearance-toggle] { margin-top: auto; align-self: flex-start; }
+    .mobile-top, .drawer-scrim, .menu-toggle { display: none; }
+    main { justify-self: center; width: min(52rem, 100%); }
+    @media (max-width: 760px) {
+      body { display: block; }
+      .mobile-top { display: flex; position: sticky; top: 0; z-index: 20; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(24px) saturate(160%); }
+      .mobile-top .brand { flex: 1; min-width: 0; padding: 4px; }
+      .mobile-top .logo-badge { width: 32px; height: 32px; }
+      .mobile-top .brand-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .menu-toggle { display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text); }
+      .menu-toggle svg { width: 20px; height: 20px; }
+      .bar { position: fixed; top: 0; left: 0; bottom: 0; z-index: 40; width: min(280px, 84vw); height: 100dvh; transform: translateX(-100%); visibility: hidden; border-right: 1px solid var(--line); background: light-dark(rgba(242, 242, 247, 0.97), rgba(12, 12, 14, 0.96)); }
+      .bar.open { transform: translateX(0); visibility: visible; }
+      .bar .brand { display: none; }
+      .drawer-scrim.show { display: block; position: fixed; inset: 0; z-index: 30; border: 0; padding: 0; background: light-dark(rgba(20, 20, 20, 0.32), rgba(0, 0, 0, 0.52)); }
+      main { width: min(52rem, 100%); margin: 0 auto; }
+    }
+    .tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    [data-appearance="dark"] { --bg: #212121; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-appearance="light"]) { --bg: #212121; }
+    }`;
+
+/** 兩頁共用的頁首與按鈕樣式。 */
+const SHELL_CONTROL_STYLES = `
+    .page-head { margin: 0.75rem 0 0.15rem; }
+    .page-head h2 { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: 0; }
+    .page-head p { margin-top: 4px; color: var(--muted); font-size: 14px; font-weight: 400; }
+    main button { min-height: 34px; padding: 8px 16px; border-radius: 999px; border: 1px solid transparent; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 500; }
+    main button.quiet { background: light-dark(#ffffff, #212121); color: light-dark(#0d0d0d, #ececec); border-color: light-dark(#e6e6e6, #3d3d3d); padding: 8px 16px; }`;
+
+function documentHead(): string {
   return `<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -593,7 +668,11 @@ function basePage(view: ClassroomAppView): string {
   <link rel="icon" href="/favicon.ico" sizes="any">
   <style>${CSS}</style>
   <script>${appearanceScript()}</script>
-</head>
+</head>`;
+}
+
+function basePage(view: ClassroomAppView): string {
+  return `${documentHead()}
 <body>
   <header class="bar">
     <div class="brand">
@@ -835,14 +914,7 @@ export function renderPage(view: ClassroomAppView): string {
     `<section class="tile"><h2>連線</h2>`,
     `<section class="tile"><div class="tile-head"><h2>連線</h2>${tag}</div>`,
   );
-  html = html.replace(
-    `<header class="bar">`,
-    `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><div class="brand"><div class="logo-badge"><img src="/brand-logo.png" alt=""></div><h1 class="gradient-text">VansPod</h1></div></div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">`,
-  );
-  html = html.replace(
-    `<button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
-    `<nav aria-label="選單"><button type="button" class="side-item" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 3-.6 2.3-2 .9-2.1-.6-2.5 4.3 1.5 1.7v2.3l-1.5 1.7 2.5 4.3 2.1-.6 2 .9.6 2.3h5l.6-2.3 2-.9 2.1.6 2.5-4.3-1.5-1.7v-2.3l1.5-1.7-2.5-4.3-2.1.6-2-.9L14.5 3z"/><circle cx="12" cy="12" r="3"/></svg><span>教室設定</span></button></nav><button type="button" data-appearance-toggle aria-label="切換外觀"></button>`,
-  );
+  html = html.replace(/<header class="bar">[\s\S]*?<\/header>/, sideMenu("settings"));
   html = html.replace(
     /<section class="tile"><h2>資料夾<\/h2>[\s\S]*?<\/section>/,
     "",
@@ -900,10 +972,6 @@ export function renderPage(view: ClassroomAppView): string {
       "",
     );
   }
-  html = html.replaceAll(
-    `<h1 class="gradient-text">${PRODUCT}</h1>`,
-    `<h1 class="brand-title">VansPod</h1><span class="ver">${VERSION}</span>`,
-  );
   html = html.replace(
     `<div class="modules">`,
     `<header class="page-head"><h2>教室設定</h2><p>連線、模型與開發環境。</p></header><div class="modules">`,
@@ -914,35 +982,8 @@ export function renderPage(view: ClassroomAppView): string {
   html = organizeSettings(html, view);
   html = splitCourseCards(html, view);
   const extra = `<style>
-    .tile { border: 1px solid light-dark(#e6e6e6, #3d3d3d); }
     .display { display: none; }
-    body { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100dvh; }
-    .bar { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 4px; padding: 18px 14px; border-bottom: 0; border-right: 1px solid var(--line); }
-    .bar .brand { padding: 6px 8px 14px; }
-    .bar .logo-badge { width: 28px; height: 28px; }
-    .bar .brand-title, .mobile-top .brand-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0; line-height: 26px; color: light-dark(#0d0d0d, #ececec); background: none; -webkit-text-fill-color: currentColor; white-space: nowrap; }
-    .brand .ver { align-self: center; flex: 0 0 auto; font-family: Consolas, "Cascadia Mono", monospace; font-size: 10px; line-height: 1.2; color: var(--muted); background: light-dark(#f4f4f4, #303030); border: 1px solid light-dark(#e6e6e6, #3d3d3d); padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
-    .bar nav { display: flex; flex-direction: column; }
-    .side-item { display: flex; align-items: center; gap: 8px; align-self: stretch; justify-content: flex-start; min-height: 36px; padding: 8px 10px; border-radius: 8px; background: light-dark(rgba(13, 13, 13, 0.06), rgba(255, 255, 255, 0.09)); color: var(--text); font-size: 13px; font-weight: 600; text-align: left; }
-    .side-item svg { width: 18px; height: 18px; flex-shrink: 0; }
-    .bar [data-appearance-toggle] { margin-top: auto; align-self: flex-start; }
-    .mobile-top, .drawer-scrim, .menu-toggle { display: none; }
-    main { justify-self: center; width: min(52rem, 100%); }
-    @media (max-width: 760px) {
-      body { display: block; }
-      .mobile-top { display: flex; position: sticky; top: 0; z-index: 20; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(24px) saturate(160%); }
-      .mobile-top .brand { flex: 1; min-width: 0; padding: 4px; }
-      .mobile-top .logo-badge { width: 32px; height: 32px; }
-      .mobile-top .brand-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-      .menu-toggle { display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text); }
-      .menu-toggle svg { width: 20px; height: 20px; }
-      .bar { position: fixed; top: 0; left: 0; bottom: 0; z-index: 40; width: min(280px, 84vw); height: 100dvh; transform: translateX(-100%); visibility: hidden; border-right: 1px solid var(--line); background: light-dark(rgba(242, 242, 247, 0.97), rgba(12, 12, 14, 0.96)); }
-      .bar.open { transform: translateX(0); visibility: visible; }
-      .bar .brand { display: none; }
-      .drawer-scrim.show { display: block; position: fixed; inset: 0; z-index: 30; border: 0; padding: 0; background: light-dark(rgba(20, 20, 20, 0.32), rgba(0, 0, 0, 0.52)); }
-      main { width: min(52rem, 100%); margin: 0 auto; }
-    }
-    .tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    ${SHELL_LAYOUT_STYLES}
     .course-section > summary { cursor: pointer; list-style: none; border-radius: 6px; }
     .course-section > summary::-webkit-details-marker { display: none; }
     .course-section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
@@ -990,7 +1031,6 @@ export function renderPage(view: ClassroomAppView): string {
     main .snippet-card > button { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
     .snippet-card > button svg { width: 14px; height: 14px; }
     .snippet-card.copied > button svg { display: none; }
-    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .confirm-dialog { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 24px; background: light-dark(rgba(20, 20, 20, 0.32), rgba(0, 0, 0, 0.52)); }
     .confirm-panel { width: min(36rem, 100%); max-height: min(70dvh, 32rem); overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; background: var(--tile); border: 1px solid var(--line); }
     .confirm-panel > :not(pre) { flex-shrink: 0; }
@@ -1003,10 +1043,6 @@ export function renderPage(view: ClassroomAppView): string {
     .confirm-panel button { min-height: 34px; padding: 8px 16px; border-radius: 999px; border: 1px solid transparent; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 500; }
     .confirm-panel button.quiet { background: light-dark(#ffffff, #212121); color: light-dark(#0d0d0d, #ececec); border-color: light-dark(#e6e6e6, #3d3d3d); }
     .restart { color: light-dark(#9a4a08, #fbbf24); }
-    [data-appearance="dark"] { --bg: #212121; }
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-appearance="light"]) { --bg: #212121; }
-    }
     .settings-grid { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .settings-card { gap: 16px; padding: 18px; }
     .settings-card .tile-head { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
@@ -1068,11 +1104,7 @@ export function renderPage(view: ClassroomAppView): string {
     .key-row p { color: var(--muted); font-size: 13px; }
     .key-row form { flex-shrink: 0; }
     ${connectionMascotStyles}
-    .page-head { margin: 0.75rem 0 0.15rem; }
-    .page-head h2 { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: 0; }
-    .page-head p { margin-top: 4px; color: var(--muted); font-size: 14px; font-weight: 400; }
-    main button { min-height: 34px; padding: 8px 16px; border-radius: 999px; border: 1px solid transparent; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 500; }
-    main button.quiet { background: light-dark(#ffffff, #212121); color: light-dark(#0d0d0d, #ececec); border-color: light-dark(#e6e6e6, #3d3d3d); padding: 8px 16px; }
+    ${SHELL_CONTROL_STYLES}
     main button.stop { background: transparent; color: light-dark(#b91c1c, #f87171); border-color: light-dark(rgba(185, 28, 28, 0.35), rgba(248, 113, 113, 0.35)); }
     main .modes { border-radius: 999px; padding: 2px; background: light-dark(#f4f4f4, #303030); border: 1px solid light-dark(#e6e6e6, #3d3d3d); }
     main .modes button { background: transparent; color: var(--text); border-color: transparent; }
@@ -1087,4 +1119,49 @@ export function renderPage(view: ClassroomAppView): string {
   <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
+}
+
+export type InspectorView = CaptureList & { recording: boolean };
+
+function recorderBar(recording: boolean): string {
+  const state = recording
+    ? `<span class="pi-rec-dot" aria-hidden="true"></span><div><strong>錄製中</strong>`
+    : `<div><strong>未錄製</strong>`;
+  const toggle = recording
+    ? `<form method="post" action="/prompt-capture/pause"><button type="submit" class="quiet">暫停</button></form>`
+    : `<form method="post" action="/prompt-capture/start"><button type="submit">開始錄製</button></form>`;
+  return `<section class="tile pi-recorder"><div class="pi-rec-state">${state}<p class="hint">只記在這台電腦的記憶體，最多 20 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。</p></div></div><div class="pi-rec-actions">${toggle}<form method="post" action="/prompt-capture/clear"><button type="submit" class="quiet">清除</button></form></div></section>`;
+}
+
+/** Prompt 觀察室：與教室設定共用頁殼、側欄、主題與行動版抽屜。 */
+export function renderInspectorPage(view: InspectorView): string {
+  const empty = view.captures.length
+    ? ""
+    : `<section class="tile pi-empty"><p class="hint">切到「課堂」並開始錄製後，送出的 prompt 會出現在這裡。</p></section>`;
+  return `${documentHead()}
+<body>
+  ${sideMenu("inspector")}
+  <main class="inspector-main">
+    <header class="page-head"><h2>Prompt 觀察室</h2><p>看看 Coding Agent 每次送給模型的完整內容。</p></header>
+    ${recorderBar(view.recording)}
+    ${empty}
+  </main>
+  <style>
+    ${SHELL_LAYOUT_STYLES}
+    ${SHELL_CONTROL_STYLES}
+    main.inspector-main { width: min(72rem, 100%); }
+    .inspector-main .tile { gap: 12px; padding: 18px; min-width: 0; }
+    .inspector-main .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .pi-recorder { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .pi-rec-state { display: flex; align-items: flex-start; gap: 10px; min-width: 0; flex: 1 1 22rem; }
+    .pi-rec-state strong { font-size: 14px; }
+    .pi-rec-dot { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 0 4px rgba(229, 72, 77, 0.15); flex-shrink: 0; animation: pi-pulse 1.6s ease-in-out infinite; }
+    @keyframes pi-pulse { 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .pi-rec-dot { animation: none; } }
+    .pi-rec-actions { display: flex; gap: 8px; }
+    .pi-empty { align-items: center; text-align: center; padding: 40px 18px; }
+  </style>
+  <script>${drawerScript()}</script>
+</body>
+</html>`;
 }
