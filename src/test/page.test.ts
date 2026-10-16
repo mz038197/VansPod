@@ -8,6 +8,7 @@ import vm from "node:vm";
 import { settingsActionsScript } from "../settingsActions";
 import { connectionMascotScript } from "../connectionMascot";
 import { createPromptCapture } from "../promptCapture";
+import { inspectorBody } from "../inspectorView";
 
 const KEY = "vcr_sk_nick";
 
@@ -683,6 +684,26 @@ describe("Prompt 觀察室 page", () => {
     assert.match(html, /data-raw="raw"[^>]*>客戶端原始請求</);
     assert.match(html, /POST \/v1\/messages\n\{/);
     assert.match(html, /raw-only/);
+  });
+
+  it("fades what was sent before, tags this turn's additions and marks new conversations", () => {
+    const capture = createPromptCapture(); capture.start();
+    const first = [{ role: "user", content: "older ask" }];
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: { model: "m", messages: first } });
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: { model: "m", messages: [...first, { role: "assistant", content: "done" }, { role: "user", content: "next ask" }] } });
+    const html = renderInspectorPage({ recording: true, ...capture.list() });
+    const list = html.match(/<div class="pi-req-list">[\s\S]*?<\/div><\/section>/)?.[0] ?? "";
+    const items = [...list.matchAll(/<button[^>]*class="pi-req[^"]*"[\s\S]*?<\/button>/g)].map(match => match[0]);
+    assert.doesNotMatch(items[0], /新對話/); assert.match(items[1], /新對話/);
+    assert.match(items[0], /next ask/);
+    const detail = html.match(/<section class="tile pi-detail">[\s\S]*<\/section><\/div>/)?.[0] ?? "";
+    assert.doesNotMatch(detail.match(/<div class="tile-head">[\s\S]*?<\/div>/)?.[0] ?? "", /新對話/);
+    const talk = detail.match(/<details class="pi-sec" data-sec="messages"[\s\S]*/)?.[0] ?? "";
+    assert.match(talk, /<div class="pi-msg role-user"><div class="pi-msg-head"><span>User<\/span><\/div><pre>older ask/);
+    assert.match(talk, /class="pi-msg role-user is-new"><div class="pi-msg-head"><span>User<\/span><span class="pi-new">本輪新增<\/span><\/div><pre>next ask/);
+    assert.match(html, /\.pi-msg:not\(\.is-new\) \{ opacity:/);
+    const firstDetail = inspectorBody(capture.list(), { selected: 1, view: "parts", raw: "sent" }).match(/<section class="tile pi-detail">[\s\S]*/)?.[0] ?? "";
+    assert.match(firstDetail, /<div class="tile-head"><h2>#1 解剖<\/h2><span class="badge">新對話<\/span><\/div>/);
   });
 
   it("refreshes every two seconds and stacks list and detail on narrow screens", () => {

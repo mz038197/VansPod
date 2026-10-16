@@ -85,7 +85,7 @@ export function createPromptCapture(): PromptCapture {
       entries.push(entry);
       return status => { entry.failedStatus = status; };
     },
-    list() { return { captures: entries.map(view).reverse(), dropped }; },
+    list() { return { captures: views(entries).reverse(), dropped }; },
   };
 }
 
@@ -93,10 +93,33 @@ function clock(date: Date): string {
   return [date.getHours(), date.getMinutes(), date.getSeconds()].map(part => String(part).padStart(2, "0")).join(":");
 }
 
-function view(entry: Entry): CaptureView {
-  const body = isObject(entry.sent) ? entry.sent : {};
-  const parsed = protocolFor(entry.path)!.parse(body);
-  const messages = parsed.messages.map(message => ({ ...message, isNew: true }));
+type ParsedEntry = { entry: Entry; body: JsonObject; parsed: Parsed };
+
+// 比對規則：往前找第一筆訊息序列剛好是本筆開頭的紀錄，超出的部分是本輪新增；
+// 這樣能跨過交錯出現的子 agent 或背景請求。找不到就是新對話，全部都算新增。
+function views(entries: Entry[]): CaptureView[] {
+  const all = entries.map(entry => {
+    const body = isObject(entry.sent) ? entry.sent : {};
+    return { entry, body, parsed: protocolFor(entry.path)!.parse(body) };
+  });
+  return all.map((current, index) => {
+    const earlier = all.slice(0, index).reverse().find(other => startsWith(current.parsed.messages, other.parsed.messages));
+    return view(current, earlier ? earlier.parsed.messages.length : null);
+  });
+}
+
+function startsWith(messages: Parsed["messages"], prefix: Parsed["messages"]): boolean {
+  if (!prefix.length || prefix.length > messages.length) return false;
+  return prefix.every((message, index) => sameMessage(message, messages[index]));
+}
+
+function sameMessage(a: Parsed["messages"][number], b: Parsed["messages"][number]): boolean {
+  return a.role === b.role && a.kind === b.kind && a.name === b.name && a.text === b.text;
+}
+
+/** `freshFrom` is where this turn's additions begin, or null for a new conversation. */
+function view({ entry, body, parsed }: ParsedEntry, freshFrom: number | null): CaptureView {
+  const messages = parsed.messages.map((message, index) => ({ ...message, isNew: index >= (freshFrom ?? 0) }));
   const sizes = { system: 0, tools: 0, reminder: 0, history: 0, fresh: 0 };
   for (const text of parsed.system) sizes.system += estimateTokens(text);
   for (const tool of parsed.tools) sizes.tools += estimateTokens(tool.name + tool.description + JSON.stringify(tool.schema ?? {}));
@@ -108,7 +131,7 @@ function view(entry: Entry): CaptureView {
     id: entry.id, time: entry.time, client: entry.client, model: typeof body.model === "string" ? body.model : "",
     protocol: entry.protocol, adapter: entry.adapter,
     ...(entry.failedStatus !== undefined ? { failedStatus: entry.failedStatus } : {}),
-    webSearchFollowUp: entry.webSearchFollowUp === true, newConversation: false,
+    webSearchFollowUp: entry.webSearchFollowUp === true, newConversation: freshFrom === null,
     system: parsed.system, tools: parsed.tools, messages, sizes,
     total: sizes.system + sizes.tools + sizes.reminder + sizes.history + sizes.fresh,
     sent: entry.sent, raw: entry.raw, path: entry.path,
