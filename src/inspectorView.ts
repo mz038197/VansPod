@@ -32,7 +32,7 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
   const current = list.captures.find(one => one.id === state.selected) ?? list.captures[0];
 
   const items = list.captures.map(one => `<button type="button" class="pi-req${one === current ? " on" : ""}" data-pick="${one.id}">`
-    + `<span class="pi-req-top"><strong>#${one.id} ${esc(clientName(one))}</strong><span>${esc(one.time)}</span></span>`
+    + `<span class="pi-req-top"><strong>#${one.id} ${esc(clientName(one))}</strong>${one.newConversation ? `<em class="pi-newconv">新對話</em>` : ""}<span>${esc(one.time)}</span></span>`
     + (tags(one) ? `<span class="pi-tags">${tags(one)}</span>` : "")
     + `<span class="pi-req-sub">${esc(summary(one))}</span>${stack(one)}</button>`).join("");
   const dropped = list.dropped ? `<p class="hint pi-dropped">較早的 ${list.dropped} 筆已捨去</p>` : "";
@@ -46,7 +46,8 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
       : item.kind === "tool_result" ? `Tool 結果${item.name ? ` <code>${esc(item.name)}</code>` : ""}`
       : item.reminder ? "User（客戶端自動附加）" : item.role === "assistant" ? "Assistant" : "User";
     const classes = `pi-msg role-${item.role}${item.reminder ? " is-reminder" : ""}${item.kind === "tool_use" ? " kind-call" : ""}${item.isNew ? " is-new" : ""}`;
-    return `<div class="${classes}"><div class="pi-msg-head"><span>${head}</span></div><pre>${highlight(item.text)}</pre></div>`;
+    const tag = item.isNew && !item.reminder ? `<span class="pi-new">本輪新增</span>` : "";
+    return `<div class="${classes}"><div class="pi-msg-head"><span>${head}</span>${tag}</div><pre>${highlight(item.text)}</pre></div>`;
   };
   const talkSize = current.sizes.reminder + current.sizes.history + current.sizes.fresh;
   const sections = `<details class="pi-sec" data-sec="system" open><summary><span class="pi-dot" data-seg="system"></span>System<span class="pi-count">約 ${fmt(current.sizes.system)} tokens</span></summary>`
@@ -65,7 +66,7 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
 
   return `<div class="pi-a"><section class="tile pi-list"><div class="tile-head"><h2>請求</h2><span class="badge">${list.captures.length} 筆</span></div>`
     + `<div class="pi-req-list">${items}</div>${dropped}</section>`
-    + `<section class="tile pi-detail"><div class="tile-head"><h2>#${current.id} 解剖</h2>${tags(current) ? `<span class="pi-tags">${tags(current)}</span>` : ""}</div>${meta}${stack(current)}${legend}${tabs}`
+    + `<section class="tile pi-detail"><div class="tile-head"><h2>#${current.id} 解剖</h2>${current.newConversation ? `<span class="badge">新對話</span>` : ""}${tags(current) ? `<span class="pi-tags">${tags(current)}</span>` : ""}</div>${meta}${stack(current)}${legend}${tabs}`
     + `<div class="pi-parts"${state.view === "parts" ? "" : " hidden"}>${sections}</div>${raw}</section></div>`;
 }
 
@@ -139,6 +140,9 @@ export const INSPECTOR_STYLES = `
     .pi-msg.role-tool { border-left-color: light-dark(#64748b, #94a3b8); }
     .pi-msg.kind-call pre { background: #0d1117; color: #e6edf3; border-color: #30363d; }
     .pi-msg.is-reminder { border-left-color: light-dark(#db2777, #f472b6); }
+    .pi-msg:not(.is-new) { opacity: 0.62; }
+    .pi-new, .pi-newconv { display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px; border-radius: 999px; background: light-dark(rgba(16, 163, 127, 0.10), rgba(78, 203, 157, 0.13)); color: light-dark(#0a7d5c, #4ecb9d); font: 600 11px system-ui, sans-serif; }
+    .pi-req-top .pi-newconv { margin-right: auto; }
     mark.pi-skill { background: light-dark(#fce7f3, #4a1d36); color: light-dark(#9d174d, #fbcfe8); border-radius: 4px; padding: 0 2px; }
     .pi-tool { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
     .pi-tool + .pi-tool { margin-top: 6px; }
