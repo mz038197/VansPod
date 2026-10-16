@@ -34,7 +34,7 @@ export async function sendRouter(upstream: UpstreamSend, baseUrl: string, captur
       apiKey: upstream.apiKey ?? "", routerBaseUrl: baseUrl.replace(/\/+$/, ""), headers: upstream.headers,
       signal: upstream.signal ?? new AbortController().signal };
     // Prompt Capture sees the body each adapter sends to Router, never its headers.
-    if (capture) request.record = (path, sent) => capture.record({ client, adapter: adapter.id, path, sent, raw: parsed });
+    if (capture) request.record = (path, sent) => capture.record({ client: upstream.client, adapter: adapter.id, path, sent, raw: parsed });
     // Claude Code searches inside a model request: Router runs the searches, not the model upstream.
     const response = declaresWebSearch(request) ? await claudeWebSearch(adapter, request) : await adapter.send(request);
     if (response.ok) return response;
