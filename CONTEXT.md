@@ -88,6 +88,16 @@ _Avoid_: Course Install Action、課程資源安裝
 學生明確確認後，終止仍在執行的安裝及其衍生程序；結果為「已中止」，既不是成功也不是一般失敗。結束 VansPod 時遇到安裝中，須經學生確認中止才繼續結束，不得默默中斷。
 _Avoid_: 結束 VansPod 時自動中斷安裝、把已中止視為安裝成功、只停止畫面卻留下背景程序
 
+### Prompt 觀察室
+
+**Prompt 觀察室**:
+學生在 VansPod 中查看 Prompt Capture 的學習畫面，用來認識 system prompt、user／assistant 訊息、tool 與 skill 描述如何組成一次模型請求。它只在學生本機，老師與 Router 無法開關或查看。
+_Avoid_: 老師監看學生對話、Router 端紀錄、除錯日誌
+
+**Prompt Capture**:
+VansPod 送往 Router 的一次模型請求的本機紀錄，畫面稱為「觀察紀錄」，並附上引發它的客戶端原始請求。一次客戶端請求可能產生多筆 Prompt Capture（例如 Web Search 追加）。只記請求、不記回應；只存在當次 VansPod 行程，不含 Classroom API Key 或其他標頭，圖片等二進位內容只留大小。只有在學生開啟錄製期間、Classroom 模式的 Client Route 會產生 Prompt Capture，且每一次請求都會記錄，不論 Prompt 觀察室畫面是否開著；每次啟動 VansPod 時錄製為關閉。
+_Avoid_: 模型回應、Native 模式的流量、對話紀錄檔、把一次客戶端請求等同一筆 Prompt Capture
+
 ### Discord 與 ACP
 
 **Discord Agent**:
