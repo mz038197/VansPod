@@ -1134,6 +1134,27 @@ function recorderBar(recording: boolean): string {
   return `<section class="tile pi-recorder"><div class="pi-rec-state">${state}<p class="hint">只記在這台電腦的記憶體，最多 ${CAPTURE_LIMIT} 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。</p></div></div><div class="pi-rec-actions">${toggle}<form method="post" action="/prompt-capture/clear"><button type="submit" class="quiet">清除</button></form></div></section>`;
 }
 
+// 錄製列的按鈕改用 fetch 換掉錄製列，整頁不重載，法鬥才不會每按一次就重新進場。
+const recorderActionsScript = `
+  document.addEventListener("submit", async function (event) {
+    var form = event.target;
+    if (!form?.matches?.('form[action^="/prompt-capture/"]')) return;
+    event.preventDefault();
+    var bar = form.closest(".pi-recorder");
+    bar.querySelectorAll("button").forEach(function (button) { button.disabled = true; });
+    try {
+      var response = await fetch(form.action, { method: "POST" });
+      if (!response.ok) throw new Error("recorder action failed");
+      var next = new DOMParser().parseFromString(await response.text(), "text/html").querySelector(".pi-recorder");
+      if (!next) throw new Error("recorder bar unavailable");
+      bar.replaceWith(next);
+      document.dispatchEvent(new Event("pi-refresh"));
+    } catch (error) {
+      bar.querySelectorAll("button").forEach(function (button) { button.disabled = false; });
+    }
+  });
+`;
+
 /** Prompt 觀察室：與教室設定共用頁殼、側欄、主題與行動版抽屜。 */
 export function renderInspectorPage(view: InspectorView): string {
   const list: CaptureList = { captures: view.captures, dropped: view.dropped };
@@ -1143,7 +1164,7 @@ export function renderInspectorPage(view: InspectorView): string {
 <body>
   ${sideMenu("inspector")}
   <main class="inspector-main">
-    <header class="page-head"><h2>Prompt 觀察室</h2><p>看看 Coding Agent 每次送給模型的完整內容。</p></header>
+    <header class="page-head pi-head"><div class="pi-head-text"><h2>Prompt 觀察室</h2><p>看看 Coding Agent 每次送給模型的完整內容。</p></div>${connectionMascot}</header>
     ${recorderBar(view.recording)}
     <div id="pi-app">${inspectorBody(list, { selected: null, view: "parts", raw: "sent" })}</div>
   </main>
@@ -1152,6 +1173,7 @@ export function renderInspectorPage(view: InspectorView): string {
     ${SHELL_LAYOUT_STYLES}
     ${SHELL_CONTROL_STYLES}
     main.inspector-main { width: min(72rem, 100%); }
+    #pi-app { margin-top: 12px; }
     .inspector-main .tile { gap: 12px; padding: 18px; min-width: 0; }
     .inspector-main .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
     .pi-recorder { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
@@ -1161,9 +1183,14 @@ export function renderInspectorPage(view: InspectorView): string {
     @keyframes pi-pulse { 50% { opacity: 0.35; } }
     @media (prefers-reduced-motion: reduce) { .pi-rec-dot { animation: none; } }
     .pi-rec-actions { display: flex; gap: 8px; }
+    .pi-head { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0 16px; }
+    .pi-head-text { flex: 0 1 auto; padding-bottom: 12px; }
+    /* 巡邏範圍與教室設定的連線卡片同寬，一圈同樣 36 秒，步速才一致。 */
+    .pi-head .connection-mascot { flex: 0 1 356px; margin-left: auto; height: 144px; }
+    ${connectionMascotStyles}
     ${INSPECTOR_STYLES}
   </style>
-  <script>${drawerScript()}${inspectorScript()}</script>
+  <script>${drawerScript()}${connectionMascotScript}${recorderActionsScript}${inspectorScript()}</script>
 </body>
 </html>`;
 }

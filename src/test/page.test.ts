@@ -586,6 +586,24 @@ describe("Prompt 觀察室 page", () => {
     assert.match(inspectorItems[0], /href="\/"/);
   });
 
+  it("keeps 法鬥超人 patrolling in the page head, outside the redrawn list", () => {
+    for (const recording of [false, true]) {
+      const html = renderInspectorPage({ recording, captures: [], dropped: 0 });
+      const head = html.match(/<header class="page-head pi-head">[\s\S]*?<\/header>/)?.[0] ?? "";
+      assert.match(head, /class="connection-mascot"/);
+      assert.doesNotMatch(head, /mascot-waiting/);
+      assert.match(html, /\.mascot-traveler \{/);
+      assert.match(html, /\.mascot-pause/);
+    }
+  });
+
+  it("turns 法鬥超人 around instantly at each end of the patrol, on both pages", () => {
+    for (const html of [renderPage(view()), renderInspectorPage({ recording: false, captures: [], dropped: 0 })]) {
+      assert.match(html, /\.mascot-facing \{[^}]*animation: mascot-turn 36s step-end/);
+      assert.match(html, /\.mascot-logo \{[^}]*animation: mascot-turn 36s step-end/);
+    }
+  });
+
   it("shares the mobile drawer and appearance toggle with 教室設定", () => {
     const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
     assert.match(html, /class="menu-toggle"[^>]*aria-controls="side-menu"/);
@@ -728,7 +746,7 @@ describe("Prompt 觀察室 page", () => {
   it("refreshes every two seconds and stacks list and detail on narrow screens", () => {
     const html = renderInspectorPage(recorded());
     assert.match(html, /fetch\("\/prompt-capture"/);
-    assert.match(html, /setInterval\(async function[\s\S]*?\}, 2000\);/);
+    assert.match(html, /setInterval\(refresh, 2000\);/);
     assert.match(html, /@media \(max-width: [^)]+\) \{[^}]*\.pi-a \{ grid-template-columns: 1fr; \}/);
   });
 });

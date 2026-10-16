@@ -96,7 +96,7 @@ export function inspectorScript(): string {
       draw();
     });
     var last = "";
-    setInterval(async function () {
+    async function refresh() {
       try {
         var response = await fetch("/prompt-capture", { cache: "no-store" });
         if (!response.ok) return;
@@ -107,7 +107,10 @@ export function inspectorScript(): string {
         if (state.selected !== null && !data.captures.some(function (one) { return one.id === state.selected; })) state.selected = null;
         draw();
       } catch (error) { /* VansPod 關閉時保持最後的畫面 */ }
-    }, 2000);
+    }
+    setInterval(refresh, 2000);
+    // 錄製列按下清除等動作後立刻更新，不等下一次輪詢。
+    document.addEventListener("pi-refresh", refresh);
   })();`;
 }
 
