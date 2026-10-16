@@ -25,11 +25,15 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
     return last ? (last.kind === "tool_use" ? `呼叫 ${last.name ?? ""}` : last.text.replace(/\s+/g, " ").slice(0, 120)) : "";
   };
 
+  const tags = (one: CaptureView) => (one.failedStatus !== undefined ? `<span class="pi-tag pi-failed">失敗 HTTP ${one.failedStatus}</span>` : "")
+    + (one.webSearchFollowUp ? `<span class="pi-tag">Web Search 追加</span>` : "");
+
   if (!list.captures.length) return `<section class="tile pi-empty"><p class="hint">切到「課堂」並開始錄製後，送出的 prompt 會出現在這裡。</p></section>`;
   const current = list.captures.find(one => one.id === state.selected) ?? list.captures[0];
 
   const items = list.captures.map(one => `<button type="button" class="pi-req${one === current ? " on" : ""}" data-pick="${one.id}">`
     + `<span class="pi-req-top"><strong>#${one.id} ${esc(clientName(one))}</strong><span>${esc(one.time)}</span></span>`
+    + (tags(one) ? `<span class="pi-tags">${tags(one)}</span>` : "")
     + `<span class="pi-req-sub">${esc(summary(one))}</span>${stack(one)}</button>`).join("");
   const dropped = list.dropped ? `<p class="hint pi-dropped">較早的 ${list.dropped} 筆已捨去</p>` : "";
 
@@ -61,7 +65,7 @@ export function inspectorBody(list: CaptureList, state: InspectorState): string 
 
   return `<div class="pi-a"><section class="tile pi-list"><div class="tile-head"><h2>請求</h2><span class="badge">${list.captures.length} 筆</span></div>`
     + `<div class="pi-req-list">${items}</div>${dropped}</section>`
-    + `<section class="tile pi-detail"><div class="tile-head"><h2>#${current.id} 解剖</h2></div>${meta}${stack(current)}${legend}${tabs}`
+    + `<section class="tile pi-detail"><div class="tile-head"><h2>#${current.id} 解剖</h2>${tags(current) ? `<span class="pi-tags">${tags(current)}</span>` : ""}</div>${meta}${stack(current)}${legend}${tabs}`
     + `<div class="pi-parts"${state.view === "parts" ? "" : " hidden"}>${sections}</div>${raw}</section></div>`;
 }
 
@@ -158,6 +162,9 @@ export const INSPECTOR_STYLES = `
     .pi-req-top span { color: var(--muted); font-size: 12px; }
     .pi-req-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pi-req .pi-stack { height: 5px; }
+    .pi-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .pi-tag { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: light-dark(#e0e7ff, #2a3350); color: light-dark(#3730a3, #c7d2fe); }
+    .pi-tag.pi-failed { background: light-dark(#fee2e2, #4a1d1d); color: light-dark(#b91c1c, #fca5a5); }
     .pi-sec { border-top: 1px solid var(--line); padding-top: 12px; }
     .pi-sec > summary { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; margin-bottom: 10px; }
     .pi-sec pre + pre { margin-top: 8px; }

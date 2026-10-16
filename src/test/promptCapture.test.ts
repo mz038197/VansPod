@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createPromptCapture } from "../promptCapture";
 import { sendRouter } from "../modelProxy";
-import { withFakeRouter } from "./fakeRouter";
+import { Failure, fixture, withFakeRouter } from "./fakeRouter";
 
 const API_KEY = "sk-classroom-synthetic-4f9a";
 const claudeReply = { id: "msg_1", type: "message", role: "assistant", model: "allowed", content: [{ type: "text", text: "hi" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -74,6 +74,40 @@ describe("Prompt Capture recorder", () => {
     assert.equal(one.failedStatus, undefined);
   });
 
+  it("keeps the newest 20 captures, counts the dropped ones, and clear resets the count", () => {
+    const capture = createPromptCapture(); capture.start();
+    for (let index = 1; index <= 21; index++) capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", sent: { model: "m", messages: [{ role: "user", content: `ask ${index}` }] }, raw: {} });
+    const { captures, dropped } = capture.list();
+    assert.equal(captures.length, 20);
+    assert.equal(dropped, 1);
+    assert.deepEqual([captures[0].id, captures.at(-1)!.id], [21, 2]);
+    capture.clear();
+    assert.deepEqual(capture.list(), { captures: [], dropped: 0 });
+  });
+
+  it("stores base64 images and files as placeholders with their size, in both bodies", () => {
+    const capture = createPromptCapture(); capture.start();
+    const png = Buffer.alloc(3 * 1024).toString("base64");
+    const pdf = Buffer.alloc(10 * 1024).toString("base64");
+    const content = [
+      { type: "text", text: "看圖" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf } },
+    ];
+    capture.record({ client: "claude", adapter: "messages", path: "/v1/messages",
+      sent: { model: "m", messages: [{ role: "user", content }] },
+      raw: { model: "m", messages: [{ role: "user", content: [{ type: "input_image", image_url: `data:image/jpeg;base64,${png}` }] }] } });
+    const [one] = capture.list().captures;
+    const stored = JSON.stringify(one);
+    assert.ok(!stored.includes(png.slice(0, 64)) && !stored.includes(pdf.slice(0, 64)));
+    const sent = one.sent as { messages: [{ content: Array<{ source: { data: string; media_type: string } }> }] };
+    assert.equal(sent.messages[0].content[1].source.data, "[圖片 3 KB]");
+    assert.equal(sent.messages[0].content[1].source.media_type, "image/png");
+    assert.equal(sent.messages[0].content[2].source.data, "[檔案 10 KB]");
+    const raw = one.raw as { messages: [{ content: [{ image_url: string }] }] };
+    assert.equal(raw.messages[0].content[0].image_url, "[圖片 3 KB]");
+  });
+
   it("estimates tokens: one per CJK character, one per four other characters", () => {
     const capture = createPromptCapture(); capture.start();
     capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: {
@@ -108,6 +142,28 @@ describe("Prompt Capture through sendRouter", () => {
       assert.equal(one.model, "allowed");
       assert.deepEqual(one.sent, calls[0].body);
       assert.deepEqual(one.raw, clientBody);
+    });
+  });
+
+  for (const status of [429, 503]) it(`marks a request Router rejects with HTTP ${status}, without its error body`, async () => {
+    await withFakeRouter([new Failure(status, { error: { message: "synthetic-router-complaint" } })], async (routerBaseUrl) => {
+      const capture = createPromptCapture(); capture.start();
+      const response = await send(routerBaseUrl, capture);
+      assert.equal(response.status, status);
+      const [one] = capture.list().captures;
+      assert.equal(one.failedStatus, status);
+      assert.ok(!JSON.stringify(capture.list()).includes("synthetic-router-complaint"));
+    });
+  });
+
+  it("records nothing for Codex's /alpha/search, which is not a model request", async () => {
+    const sample = fixture<{ path: string; body: unknown }>("codex-search/search-query.json");
+    await withFakeRouter([{ results: [{ query: "台中 近期活動", title: "t", url: "https://example.com", text: "x" }] }], async (routerBaseUrl, calls) => {
+      const capture = createPromptCapture(); capture.start();
+      const response = await sendRouter({ client: "codex", target: "router", model: "allowed", adapter: "responses", path: sample.path, apiKey: API_KEY, body: JSON.stringify(sample.body) }, routerBaseUrl, capture);
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.ok(calls.length > 0);
+      assert.deepEqual(capture.list(), { captures: [], dropped: 0 });
     });
   });
 

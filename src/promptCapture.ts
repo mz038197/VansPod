@@ -66,6 +66,9 @@ function protocolFor(path: string) {
 
 const noop: FailedStatus = () => {};
 
+/** Captures kept in memory; older ones are dropped and only counted. */
+export const CAPTURE_LIMIT = 20;
+
 export function createPromptCapture(): PromptCapture {
   let recording = false;
   let entries: Entry[] = [];
@@ -79,12 +82,34 @@ export function createPromptCapture(): PromptCapture {
     record(request) {
       const match = protocolFor(request.path);
       if (!recording || !match) return noop;
-      const entry: Entry = { ...structuredClone(request), id: nextId++, time: clock(new Date()), protocol: match.protocol };
+      // withoutBase64 also copies both bodies, so later changes by the caller never reach the capture.
+      const entry: Entry = { ...request, sent: withoutBase64(request.sent), raw: withoutBase64(request.raw), id: nextId++, time: clock(new Date()), protocol: match.protocol };
       entries.push(entry);
+      if (entries.length > CAPTURE_LIMIT) { dropped += entries.length - CAPTURE_LIMIT; entries = entries.slice(-CAPTURE_LIMIT); }
       return status => { entry.failedStatus = status; };
     },
     list() { return { captures: entries.map(view).reverse(), dropped }; },
   };
+}
+
+// 圖片和檔案的 base64 內容換成「[圖片 N KB]」這類佔位文字，存下的是副本。
+const DATA_URL = /^data:([\w.+-]+\/[\w.+-]+)?(?:;[^,;]*)*;base64,/i;
+
+function placeholder(mediaType: string, base64: string): string {
+  const bytes = Math.floor(base64.replace(/=+$/, "").length * 3 / 4);
+  return `[${mediaType.startsWith("image/") ? "圖片" : "檔案"} ${Math.max(1, Math.round(bytes / 1024))} KB]`;
+}
+
+function withoutBase64(value: unknown): unknown {
+  if (typeof value === "string") {
+    const match = DATA_URL.exec(value);
+    return match ? placeholder(match[1] ?? "", value.slice(match[0].length)) : value;
+  }
+  if (Array.isArray(value)) return value.map(withoutBase64);
+  if (!isObject(value)) return value;
+  const copy = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withoutBase64(item)]));
+  if (value.type === "base64" && typeof value.data === "string") copy.data = placeholder(String(value.media_type ?? ""), value.data);
+  return copy;
 }
 
 function clock(date: Date): string {

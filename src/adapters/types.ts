@@ -15,7 +15,7 @@ export interface AdapterRequest {
 }
 
 /** Notes one request to Router and returns a callback for its failing HTTP status. */
-export type RecordUpstream = (path: string, body: JsonObject) => (status: number) => void;
+export type RecordUpstream = (path: string, body: JsonObject, options?: { webSearchFollowUp?: boolean }) => (status: number) => void;
 
 export interface ModelApiAdapter {
   readonly id: AdapterId;

@@ -101,6 +101,7 @@ class SearchLoop {
   private asked = 0;
   private searches = 0;
   private turnsWithoutTools = 0;
+  private askedModel = false;
 
   constructor(private readonly adapter: ModelApiAdapter, private readonly request: AdapterRequest) {
     ({ body: this.body, searchToolNames: this.searchToolNames } = modelRequest(request.body));
@@ -113,9 +114,13 @@ class SearchLoop {
   // With its searches used up the model is asked with tool calls switched off, so it
   // has to answer. One that asks again is refused without a search; twice ends the reply.
   askModel(): Promise<Response> {
-    if (this.asked < this.limit) return this.adapter.send({ ...this.request, body: { ...this.body, messages: this.messages } });
+    // Prompt Capture marks every request after the first as a Web Search follow-up.
+    const record = this.request.record, first = !this.askedModel;
+    const request = { ...this.request, record: record && !first ? (path: string, body: JsonObject) => record(path, body, { webSearchFollowUp: true }) : record };
+    this.askedModel = true;
+    if (this.asked < this.limit) return this.adapter.send({ ...request, body: { ...this.body, messages: this.messages } });
     this.turnsWithoutTools++;
-    return this.adapter.send({ ...this.request, body: { ...this.body, messages: this.messages, tool_choice: { type: "none" } } });
+    return this.adapter.send({ ...request, body: { ...this.body, messages: this.messages, tool_choice: { type: "none" } } });
   }
 
   async answerSearch(call: JsonObject): Promise<SearchBlocks> {

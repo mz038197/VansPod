@@ -672,6 +672,23 @@ describe("Prompt 觀察室 page", () => {
     assert.match(html, /raw-only/);
   });
 
+  it("marks failed requests and Web Search follow-ups, and says how many older captures were dropped", () => {
+    const capture = createPromptCapture(); capture.start();
+    const ask = (text: string, webSearchFollowUp = false) => capture.record({ client: "claude", adapter: "messages", path: "/v1/messages", raw: {}, sent: { model: "m", messages: [{ role: "user", content: text }] }, webSearchFollowUp });
+    for (let index = 0; index < 21; index++) ask(`ask ${index}`);
+    ask("search again", true)(503);
+    const html = renderInspectorPage({ recording: true, ...capture.list() });
+    const list = html.match(/<section class="tile pi-list">[\s\S]*?<\/section>/)?.[0] ?? "";
+    const items = [...list.matchAll(/<button[^>]*class="pi-req[^"]*"[\s\S]*?<\/button>/g)].map(match => match[0]);
+    assert.match(items[0], /class="[^"]*pi-failed[^"]*"[^>]*>失敗 HTTP 503</);
+    assert.match(items[0], />Web Search 追加</);
+    assert.doesNotMatch(items[1], /失敗 HTTP|Web Search 追加/);
+    assert.match(list, /較早的 2 筆已捨去/);
+    const detail = html.match(/<section class="tile pi-detail">[\s\S]*<\/section><\/div>/)?.[0] ?? "";
+    assert.match(detail, /失敗 HTTP 503/);
+    assert.match(detail, /Web Search 追加/);
+  });
+
   it("refreshes every two seconds and stacks list and detail on narrow screens", () => {
     const html = renderInspectorPage(recorded());
     assert.match(html, /fetch\("\/prompt-capture"/);

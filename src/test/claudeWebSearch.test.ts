@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendRouter } from "../modelProxy";
+import { createPromptCapture, type PromptCapture } from "../promptCapture";
 import { Failure, fixture, withFakeRouter, type RouterCall } from "./fakeRouter";
 
 type Block = Record<string, unknown>;
@@ -85,8 +86,8 @@ const fedBack = (adapter: Adapter, call: RouterCall) => lastToolResult(adapter, 
 // Whether the model may call tools on this request.
 const toolChoice = (adapter: Adapter, call: RouterCall) => adapter === "messages" ? (call.body.tool_choice as { type: string }).type : call.body.tool_choice;
 
-function send(adapter: Adapter, body: Record<string, unknown>, routerBaseUrl: string): Promise<Response> {
-  return sendRouter({ client: "claude", target: "router", model: "allowed", adapter, path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl);
+function send(adapter: Adapter, body: Record<string, unknown>, routerBaseUrl: string, capture?: PromptCapture): Promise<Response> {
+  return sendRouter({ client: "claude", target: "router", model: "allowed", adapter, path: sample.path, apiKey: "synthetic-key", body: JSON.stringify(body) }, routerBaseUrl, capture);
 }
 
 // The message a client assembles from either a JSON reply or a Messages stream.
@@ -137,6 +138,17 @@ for (const adapter of ADAPTERS) for (const stream of [false, true]) test(`Claude
     assert.equal(content[2].text, answer);
     assert.equal(stop_reason, "end_turn");
     assert.deepEqual(usage, { input_tokens: 40, output_tokens: 12, server_tool_use: { web_search_requests: 1 } });
+  });
+});
+
+for (const stream of [false, true]) test(`Prompt Capture records every model request of a WebSearch loop, marking the later ones (stream ${stream})`, async () => {
+  await withFakeRouter([modelAsks("messages", stream), found, modelAsks("messages", stream, "web_search", JSON.stringify({ query }), "call_s2"), found, modelAnswers("messages", stream)], async (routerBaseUrl, calls) => {
+    const capture = createPromptCapture(); capture.start();
+    await message(await send("messages", { ...sample.body, stream }, routerBaseUrl, capture), stream);
+    assert.deepEqual(calls.map(call => call.path), ["/v1/messages", "/v1/search", "/v1/messages", "/v1/search", "/v1/messages"]);
+    const captures = capture.list().captures.reverse();
+    assert.deepEqual(captures.map(one => one.sent), calls.filter(call => call.path === "/v1/messages").map(call => call.body));
+    assert.deepEqual(captures.map(one => one.webSearchFollowUp), [false, true, true]);
   });
 });
 
