@@ -4,7 +4,7 @@ import { installProgressScript } from "./installProgress";
 import { settingsActionsScript } from "./settingsActions";
 import { modelStatusScript } from "./modelStatus";
 import { classroomUpdateControl, classroomUpdateStyles, classroomUpdateScript } from "./classroomUpdate";
-import { connectionMascot, connectionMascotStyles, connectionMascotScript } from "./connectionMascot";
+import { connectionMascot, connectionMascotStyles, connectionMascotScript, fittedPatrol } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
@@ -1134,6 +1134,9 @@ function recorderBar(recording: boolean): string {
   return `<section class="tile pi-recorder"><div class="pi-rec-state">${state}<p class="hint">只記在這台電腦的記憶體，最多 ${CAPTURE_LIMIT} 筆，關掉 VansPod 就清除。只有切到「課堂」的客戶端會被記錄。</p></div></div><div class="pi-rec-actions">${toggle}<form method="post" action="/prompt-capture/clear"><button type="submit" class="quiet">清除</button></form></div></section>`;
 }
 
+// 法鬥超人在頁首標題右邊巡邏，一圈的時間依寬度重算。
+const headPatrol = fittedPatrol(".pi-head");
+
 // 錄製列的按鈕改用 fetch 換掉錄製列，整頁不重載，法鬥才不會每按一次就重新進場。
 const recorderActionsScript = `
   document.addEventListener("submit", async function (event) {
@@ -1185,12 +1188,14 @@ export function renderInspectorPage(view: InspectorView): string {
     .pi-rec-actions { display: flex; gap: 8px; }
     .pi-head { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0 16px; }
     .pi-head-text { flex: 0 1 auto; padding-bottom: 12px; }
-    /* 巡邏範圍與教室設定的連線卡片同寬，一圈同樣 36 秒，步速才一致。 */
-    .pi-head .connection-mascot { flex: 0 1 356px; margin-left: auto; height: 144px; }
+    /* 巡邏範圍撐滿標題右邊；一圈的時間依寬度重算，步速與教室設定一致。 */
+    .pi-head .connection-mascot { flex: 1 1 260px; height: 144px; }
     ${connectionMascotStyles}
+    ${headPatrol.styles}
     ${INSPECTOR_STYLES}
   </style>
-  <script>${drawerScript()}${connectionMascotScript}${recorderActionsScript}${inspectorScript()}</script>
+  ${headPatrol.sheet}
+  <script>${drawerScript()}${connectionMascotScript}${headPatrol.script}${recorderActionsScript}${inspectorScript()}</script>
 </body>
 </html>`;
 }

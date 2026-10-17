@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
 import { modelStatus, renderInspectorPage, renderPage } from "../page";
+import { patrolKeyframes } from "../connectionMascot";
 import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
@@ -595,6 +596,41 @@ describe("Prompt 觀察室 page", () => {
       assert.match(html, /\.mascot-traveler \{/);
       assert.match(html, /\.mascot-pause/);
     }
+  });
+
+  it("stretches 法鬥超人's walks for a wider lane and shortens them for a narrower one, keeping the 6-second rests", () => {
+    const wide = patrolKeyframes("-fit", 2);
+    assert.equal(wide.lap, 60);
+    assert.deepEqual(wide.marks, [0, 12, 18, 42, 48, 60]);
+    // Arrives left at 12s, rests until 18s, arrives right at 42s, rests until 48s.
+    assert.match(wide.css, /@keyframes mascot-walk-fit \{[\s\S]*?20%, 30% \{ transform: translateX\(0\)/);
+    assert.match(wide.css, /70%, 80% \{ transform: translateX\(max/);
+    assert.deepEqual(patrolKeyframes("-fit", 0.5).marks, [0, 3, 9, 15, 21, 24]);
+  });
+
+  it("keeps 教室設定 on the 36-second lap with its original keyframe stops", () => {
+    const base = patrolKeyframes("", 1);
+    assert.equal(base.lap, 36);
+    assert.match(base.css, /16\.666667%, 33\.333333% \{ transform: translateX\(0\)/);
+    assert.match(base.css, /66\.666667%, 83\.333333% \{ transform: translateX\(max/);
+    assert.doesNotMatch(renderPage(view()), /mascot-walk-fit/);
+  });
+
+  it("alternates 法鬥超人's footsteps at any lane width", () => {
+    for (const scale of [1, 1.37, 2.71, 0.6]) {
+      const left = patrolKeyframes("-fit", scale).css.match(/@keyframes mascot-left-step-fit \{[\s\S]*?\}\s*\}/)?.[0] ?? "";
+      const angles = [...left.matchAll(/rotate\((-?\d+)deg\)/g)].map(match => Number(match[1]));
+      assert.ok(angles.includes(5) && angles.includes(-5), `scale ${scale} steps both ways`);
+      angles.forEach((angle, index) => {
+        if (angle !== 0 && index > 0) assert.notEqual(angle, angles[index - 1], `scale ${scale} frame ${index}`);
+      });
+    }
+  });
+
+  it("fits 法鬥超人's lap to the Prompt 觀察室 lane", () => {
+    const inspector = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
+    assert.match(inspector, /\.pi-head \.mascot-traveler \{ animation-name: mascot-walk-fit; animation-duration: var\(--patrol-lap, 36s\); \}/);
+    assert.match(inspector, /<style id="mascot-patrol-fit">@keyframes mascot-walk-fit/);
   });
 
   it("turns 法鬥超人 around instantly at each end of the patrol, on both pages", () => {

@@ -46,19 +46,53 @@ export const connectionMascot = `<div class="connection-mascot">
   <button type="button" class="mascot-pause" aria-label="暫停法鬥超人動畫" aria-pressed="false" title="暫停動畫"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
 </div>`;
 
-// One lap: centre → left (6s), rest (6s), right (12s), rest (6s), centre (6s).
-// Both feet settle at each edge; no stepping in place during the rests.
-function footstepKeyframes(name: string, direction: number): string {
-  const frames: string[] = [];
-  for (const [start, end] of [[0, 6], [12, 24], [30, 36]]) {
-    for (let time = start; time <= end; time += 0.5) {
-      const phase = (time - start) % 1;
-      const angle = time === start || time === end ? 0 : (phase === 0.5 ? -5 : 5) * direction;
-      frames.push(`${time / 36 * 100}% { transform: translateY(${angle < 0 ? -6 : 0}px) rotate(${angle}deg); }`);
+/**
+ * One lap: centre → left, rest (6s), right, rest (6s), centre. At scale 1 the
+ * walks take 6s, 12s and 6s (a 36s lap) across the 教室設定 card; a wider lane
+ * passes a larger scale so the walks stretch while the pace, the step cadence
+ * and the rests stay the same. Both feet settle at each edge; no stepping in
+ * place during the rests. Self-contained: the inspector page injects its
+ * source to refit the lap to the lane's width.
+ */
+export function patrolKeyframes(suffix: string, scale: number): { lap: number; marks: number[]; css: string } {
+  const reachLeft = 6 * scale, leaveLeft = reachLeft + 6;
+  const reachRight = leaveLeft + 12 * scale, leaveRight = reachRight + 6;
+  const lap = leaveRight + 6 * scale;
+  // 152px = the traveler's 136px width plus its 8px inset on each side.
+  const at = (time: number) => `${Number((time / lap * 100).toFixed(6))}%`;
+  const feet = (name: string, direction: number) => {
+    const frames: string[] = [];
+    for (const [start, end] of [[0, reachLeft], [leaveLeft, reachRight], [leaveRight, lap]]) {
+      const steps = Math.floor((end - start) / 0.5 + 0.001);
+      for (let step = 0; step <= steps; step++) {
+        const time = start + step * 0.5;
+        const edge = step === 0 || end - time < 0.001;
+        const angle = edge ? 0 : (step % 2 === 1 ? -5 : 5) * direction;
+        frames.push(`${at(time)} { transform: translateY(${angle < 0 ? -6 : 0}px) rotate(${angle}deg); }`);
+      }
+      if (end - (start + steps * 0.5) >= 0.001) frames.push(`${at(end)} { transform: translateY(0px) rotate(0deg); }`);
     }
+    return `@keyframes ${name}${suffix} { ${frames.join("\n")} }`;
+  };
+  const css = `@keyframes mascot-walk${suffix} {
+    0%, 100% { transform: translateX(max(0px, calc((100cqw - 152px) / 2))); }
+    ${at(reachLeft)}, ${at(leaveLeft)} { transform: translateX(0); }
+    ${at(reachRight)}, ${at(leaveRight)} { transform: translateX(max(0px, calc(100cqw - 152px))); }
   }
-  return `@keyframes ${name} { ${frames.join("\n")} }`;
+  @keyframes mascot-turn${suffix} {
+    0% { transform: scaleX(1); }
+    ${at(reachLeft)} { transform: scaleX(-1); }
+    ${at(reachRight)}, 100% { transform: scaleX(1); }
+  }
+  ${feet("mascot-left-step", 1)}
+  ${feet("mascot-right-step", -1)}`;
+  return { lap, marks: [0, reachLeft, leaveLeft, reachRight, leaveRight, lap], css };
 }
+
+const BASE_PATROL = patrolKeyframes("", 1);
+/** The 教室設定 card's lane is 356px wide: the base lap walks 204px each way. */
+const BASE_LANE = 356;
+const TRAVELER_SPAN = 152;
 
 export const connectionMascotStyles = `
   .settings-card[data-setting="連線"]:has(.connection-mascot) { row-gap: 0; }
@@ -66,12 +100,12 @@ export const connectionMascotStyles = `
   .settings-card[data-setting="連線"]:has(.connection-mascot) .connection-feedback { order: -1; }
   .connection-mascot { position: relative; flex: 1 0 144px; width: 100%; min-height: 144px; overflow: hidden; container-type: inline-size; }
   /* Compensate for the PNG's transparent space below the soles. */
-  .mascot-traveler { position: absolute; bottom: -4px; left: 8px; width: 136px; max-width: calc(100% - 16px); animation: mascot-walk 36s linear 780ms infinite both; }
+  .mascot-traveler { position: absolute; bottom: -4px; left: 8px; width: 136px; max-width: calc(100% - 16px); animation: mascot-walk ${BASE_PATROL.lap}s linear 780ms infinite both; }
   /* 走到端點直接換邊，不播翻面過渡。 */
-  .mascot-facing { display: block; animation: mascot-turn 36s step-end 780ms infinite; }
-  .mascot-logo { transform-origin: 440.5px 664.5px; animation: mascot-turn 36s step-end 780ms infinite; }
-  .mascot-left-foot { transform-origin: 322px 915px; animation: mascot-left-step 36s linear 780ms infinite; }
-  .mascot-right-foot { transform-origin: 580px 927px; animation: mascot-right-step 36s linear 780ms infinite; }
+  .mascot-facing { display: block; animation: mascot-turn ${BASE_PATROL.lap}s step-end 780ms infinite; }
+  .mascot-logo { transform-origin: 440.5px 664.5px; animation: mascot-turn ${BASE_PATROL.lap}s step-end 780ms infinite; }
+  .mascot-left-foot { transform-origin: 322px 915px; animation: mascot-left-step ${BASE_PATROL.lap}s linear 780ms infinite; }
+  .mascot-right-foot { transform-origin: 580px 927px; animation: mascot-right-step ${BASE_PATROL.lap}s linear 780ms infinite; }
   .mascot-waiting { flex-basis: 164px; min-height: 164px; padding: 12px 148px 32px 0; }
   .mascot-waiting .mascot-traveler { left: auto; right: 8px; transform: none; }
   .mascot-waiting .mascot-traveler, .mascot-waiting .mascot-facing, .mascot-waiting .mascot-logo, .mascot-waiting .mascot-foot, .mascot-waiting .mascot-arrival { animation: none; }
@@ -118,18 +152,7 @@ export const connectionMascotStyles = `
     0%, 42%, 85%, 90%, 100% { opacity: 0; }
     40%, 83%, 88% { opacity: 1; }
   }
-  @keyframes mascot-walk {
-    0%, 100% { transform: translateX(max(0px, calc((100cqw - 152px) / 2))); }
-    16.666667%, 33.333333% { transform: translateX(0); }
-    66.666667%, 83.333333% { transform: translateX(max(0px, calc(100cqw - 152px))); }
-  }
-  @keyframes mascot-turn {
-    0% { transform: scaleX(1); }
-    16.666667% { transform: scaleX(-1); }
-    66.666667%, 100% { transform: scaleX(1); }
-  }
-  ${footstepKeyframes("mascot-left-step", 1)}
-  ${footstepKeyframes("mascot-right-step", -1)}
+  ${BASE_PATROL.css}
   @media (prefers-reduced-motion: reduce) {
     .mascot-arrival, .mascot-idle, .mascot-cape, .mascot-blink, .mascot-traveler, .mascot-facing, .mascot-logo, .mascot-foot { animation: none; }
     .mascot-traveler { left: 50%; transform: translateX(-50%); }
@@ -234,3 +257,53 @@ export const connectionMascotScript = `
     ], { duration: reduced ? 180 : 600, easing: 'ease-out' });
   });
 `;
+
+/**
+ * A lane of any width: the page script rewrites the "-fit" keyframes for the
+ * lane's measured width, so 法鬥超人 walks at the 教室設定 card's pace instead of
+ * covering a longer (or shorter) lane in the same lap. Use all three parts.
+ */
+export function fittedPatrol(scope: string): { styles: string; sheet: string; script: string } {
+  const lap = `var(--patrol-lap, ${BASE_PATROL.lap}s)`;
+  const styles = `
+  @media (prefers-reduced-motion: no-preference) {
+    ${scope} .mascot-traveler { animation-name: mascot-walk-fit; animation-duration: ${lap}; }
+    ${scope} .mascot-facing, ${scope} .mascot-logo { animation-name: mascot-turn-fit; animation-duration: ${lap}; }
+    ${scope} .mascot-left-foot { animation-name: mascot-left-step-fit; animation-duration: ${lap}; }
+    ${scope} .mascot-right-foot { animation-name: mascot-right-step-fit; animation-duration: ${lap}; }
+  }`;
+  const sheet = `<style id="mascot-patrol-fit">${patrolKeyframes("-fit", 1).css}</style>`;
+  const script = `(function () {
+    ${patrolKeyframes.toString()}
+    var stage = document.querySelector(${JSON.stringify(`${scope} .connection-mascot`)});
+    var sheet = document.getElementById("mascot-patrol-fit");
+    if (!stage || !sheet || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    var DELAY = 780;
+    var applied = Object.assign({ scale: 1 }, patrolKeyframes("-fit", 1));
+    // Same leg, same share of it: a refit keeps 法鬥超人 where he was instead of jumping.
+    function remap(time, from, to) {
+      var leg = 0;
+      while (leg < from.length - 2 && time >= from[leg + 1]) leg++;
+      var share = (time - from[leg]) / (from[leg + 1] - from[leg]);
+      return to[leg] + share * (to[leg + 1] - to[leg]);
+    }
+    function fit() {
+      var scale = Math.max(0.25, (stage.clientWidth - ${TRAVELER_SPAN}) / ${BASE_LANE - TRAVELER_SPAN});
+      if (Math.abs(scale - applied.scale) < 0.01) return;
+      var patrol = patrolKeyframes("-fit", scale);
+      var walking = stage.getAnimations({ subtree: true }).filter(function (animation) {
+        return /-fit$/.test(animation.animationName) && animation.currentTime >= DELAY;
+      }).map(function (animation) {
+        return { animation: animation, time: ((animation.currentTime - DELAY) / 1000) % applied.lap };
+      });
+      sheet.textContent = patrol.css;
+      stage.style.setProperty("--patrol-lap", patrol.lap + "s");
+      walking.forEach(function (entry) { entry.animation.currentTime = DELAY + remap(entry.time, applied.marks, patrol.marks) * 1000; });
+      applied = Object.assign({ scale: scale }, patrol);
+    }
+    fit();
+    var settle;
+    new ResizeObserver(function () { clearTimeout(settle); settle = setTimeout(fit, 150); }).observe(stage);
+  })();`;
+  return { styles, sheet, script };
+}
