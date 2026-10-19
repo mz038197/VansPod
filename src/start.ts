@@ -513,7 +513,8 @@ export async function main(instance?: Instance): Promise<void> {
     const goHome = (params?: URLSearchParams) => {
       if (req.headers["x-classroom-settings"] === "1") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end(instance ? lifecyclePage(renderPage(app.view()), instance.token) : renderPage(app.view()));
+        const html = renderPage(app.pageView());
+        res.end(instance ? lifecyclePage(html, instance.token) : html);
         return;
       }
       const variant = params?.get("prototype_variant") ?? "";
@@ -598,8 +599,8 @@ export async function main(instance?: Instance): Promise<void> {
         const variant = parsed.searchParams.get("variant") ?? "";
         const html =
           process.env.NODE_ENV !== "production" && isPrototypeVariant(variant)
-            ? renderPrototypePage(app.view(), variant)
-            : renderPage(app.view());
+            ? renderPrototypePage(app.pageView(), variant)
+            : renderPage(app.pageView());
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",

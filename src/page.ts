@@ -7,7 +7,7 @@ import { classroomUpdateControl, classroomUpdateStyles, classroomUpdateScript } 
 import { connectionMascot, connectionMascotStyles, connectionMascotScript, fittedPatrol } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
-import type { ClassroomAppView } from "./classroomApp";
+import { COPIED_KEY_NOTICE, type ClassroomAppView } from "./classroomApp";
 import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import { UPDATE_BUTTON, VERSION_UPDATE_STYLES } from "./versionUpdateView";
@@ -75,11 +75,9 @@ function notices(view: ClassroomAppView): string {
   return `${klass}${notice}${running}`;
 }
 
-const COPY_KEY_NOTICE = "已複製 Classroom API Key。請勿分享給不信任的人。";
-
 function connectionFeedback(view: ClassroomAppView): string {
   const original = view.connectionError || view.connectionNotice || (view.detail !== "Classroom API Key 已設定。" ? view.detail : "");
-  const message = original === COPY_KEY_NOTICE
+  const message = original === COPIED_KEY_NOTICE
     ? "複製好了！API Key 不是群組伴手禮，別發給不信任的人喔。" : original;
   const feedback = `<div class="connection-feedback">${message ? `<div class="${view.connectionError ? "connection-error" : "connection-message"}" role="${view.connectionError ? "alert" : "status"}"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 15v2"/></svg><p>${escapeHtml(message)}</p></div>` : ""}</div>`;
   return feedback;
@@ -857,7 +855,7 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
       };
       if (title === "連線") {
         moveForm("clear");
-        if (actions && !view.connectionError && view.connectionNotice === COPY_KEY_NOTICE) {
+        if (actions && !view.connectionError && view.connectionNotice === COPIED_KEY_NOTICE) {
           const feedback = connectionFeedback(view);
           body = body.replace(feedback, "");
           const speech = `<div class="mascot-speech">${feedback}<button type="button" class="mascot-speech-close" aria-label="收起法鬥台詞">知道啦</button></div>`;

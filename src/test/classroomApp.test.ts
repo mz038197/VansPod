@@ -1982,6 +1982,22 @@ describe("Copy Classroom API Key", () => {
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
+  it("shows the copy notice on the next page only, so a refresh does not repeat it", async () => {
+    const { app } = harness();
+    await app.redeem("ABC12345", "Ada");
+    await app.copyKey();
+    assert.equal(app.view().notice, "已複製 Classroom API Key。請勿分享給不信任的人。");
+    const first = app.pageView();
+    assert.equal(first.notice, "已複製 Classroom API Key。請勿分享給不信任的人。");
+    assert.equal(first.connectionNotice, "已複製 Classroom API Key。請勿分享給不信任的人。");
+    const refreshed = app.pageView();
+    assert.equal(refreshed.notice, undefined);
+    assert.equal(refreshed.connectionNotice, undefined);
+    assert.equal(refreshed.canCopyKey, true);
+    await app.copyKey();
+    assert.equal(app.pageView().connectionNotice, "已複製 Classroom API Key。請勿分享給不信任的人。");
+  });
+
   it("reports copy failure without echoing the key", async () => {
     const { app, clipboard, failClipboard } = harness();
     await app.redeem("ABC12345", "Ada");

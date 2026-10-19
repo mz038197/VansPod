@@ -200,6 +200,7 @@ export type ClassroomAppView = {
 };
 
 const LOCAL_LIST_NOTE = "這是本機清單。";
+export const COPIED_KEY_NOTICE = "已複製 Classroom API Key。請勿分享給不信任的人。";
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
 const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
@@ -268,6 +269,13 @@ export class ClassroomApp {
     const next = this.connectionOperations.then(operation, operation);
     this.connectionOperations = next.catch(() => {});
     return next;
+  }
+
+  // 整頁畫面用這個：複製成功的提示只出現一次，重新整理就不會再讓法鬥說一遍。
+  pageView(): ClassroomAppView {
+    const view = this.view();
+    if (this.notice === COPIED_KEY_NOTICE) this.notice = this.connectionNotice = undefined;
+    return view;
   }
 
   view(): ClassroomAppView {
@@ -1512,7 +1520,7 @@ export class ClassroomApp {
       this.notice = this.connectionNotice = "無法複製 Classroom API Key。請重新連線後再試。";
       return;
     }
-    this.notice = this.connectionNotice = "已複製 Classroom API Key。請勿分享給不信任的人。";
+    this.notice = this.connectionNotice = COPIED_KEY_NOTICE;
   }
 
   async copySnippet(snippetId: string): Promise<boolean> {
