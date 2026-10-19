@@ -5,7 +5,7 @@ import path from "node:path";
 import { VERSION } from "./version";
 
 export type Instance = { pid: number; id: string; token: string; version: string; origin?: string };
-export type ControlResult = { id: string; ok?: boolean; running?: boolean; ready?: boolean; startupError?: string; pid?: number; version?: string; origin?: string; message?: string; confirmation?: boolean; launchVersion?: string; activeRequests?: number; installing?: boolean };
+export type ControlResult = { id: string; ok?: boolean; running?: boolean; ready?: boolean; startupError?: string; pid?: number; version?: string; origin?: string; message?: string; confirmation?: boolean; launchVersion?: string; trayError?: string; activeRequests?: number; installing?: boolean };
 export const dataDirectory = () => path.join(os.homedir(), ".vanspod");
 export const managementDirectory = () => path.join(process.env.LOCALAPPDATA || os.homedir(), "VansPod");
 const lockDirectory = () => path.join(managementDirectory(), "runtime");

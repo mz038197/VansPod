@@ -32,6 +32,7 @@ export function lifecyclePage(html: string, token: string): string {
       });
       request('status').then(function (status) {
         if (status.startupError) { document.querySelector('[data-lifecycle-message]').textContent = status.startupError; return; }
+        if (status.trayError) { document.querySelector('[data-lifecycle-message]').textContent = '右下角的系統匣圖示無法顯示，VansPod 仍在背景執行。要結束時請用這裡的「結束 VansPod」。'; return; }
         if (status.launchVersion && status.launchVersion !== status.version) document.querySelector('[data-lifecycle-message]').textContent = '目前執行版本 ' + status.version + '，本次開啟版本 ' + status.launchVersion + '。換版請先結束 VansPod。';
       }).catch(function () {});
     })();

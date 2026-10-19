@@ -33,7 +33,7 @@ import { forwardRouter, sendRouter, relayResponse } from "./modelProxy";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
 import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
-import { asset, openBrowser } from "./desktop";
+import { asset, materializeAsset, openBrowser } from "./desktop";
 import { lifecyclePage } from "./lifecyclePage";
 import { removalPreview, prepareRemoval } from "./removal";
 import { detectInstallation } from "./installations";
@@ -316,10 +316,8 @@ function redirect(res: http.ServerResponse, location = "/"): void {
 async function openTray(url: string): Promise<ChildProcess> {
   const directory = path.join(managementDirectory(), "desktop-assets");
   await fs.mkdir(directory, { recursive: true });
-  const script = path.join(directory, "tray.ps1");
-  const icon = path.join(directory, "brand-icon.ico");
-  await fs.writeFile(script, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), await asset("tray.ps1")]));
-  await fs.writeFile(icon, await asset("brand-icon.ico"));
+  const script = await materializeAsset(directory, "tray.ps1");
+  const icon = await materializeAsset(directory, "brand-icon.ico");
   return spawn(
     "powershell.exe",
     [
@@ -451,6 +449,7 @@ export async function main(instance?: Instance): Promise<void> {
   let ready = false;
   let startupError: string | undefined;
   let tray: ChildProcess | undefined;
+  let trayError: string | undefined;
   const exit = async () => {
     tray?.kill();
     await clientRouteRuntime.stop();
@@ -530,7 +529,7 @@ export async function main(instance?: Instance): Promise<void> {
           res.writeHead(403); res.end(JSON.stringify({ id: instance.id, ok: false })); return;
         }
         const reply = (value: object) => { res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify({ id: instance.id, ...value })); };
-        if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, ready, startupError, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
+        if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, ready, startupError, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, trayError, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
         if (req.method === "POST" && pathname === "/_vanspod/open") {
           const body = JSON.parse(await readBody(req)) as { version?: string };
           if (typeof body.version === "string" && VERSION_PATTERN.test(body.version)) launchVersion = body.version;
@@ -833,7 +832,14 @@ export async function main(instance?: Instance): Promise<void> {
     startupError += " 設定恢復未完成，服務已保留；修復後請重試 vanspod stop。";
   }
   versionUpdate.start();
-  tray = runtimeOptions.desktop && process.platform === "win32" && instance ? await openTray(home) : undefined;
+  // 系統匣起不來時 VansPod 仍要繼續；頁面會提示改用頁面上的「結束 VansPod」。
+  if (runtimeOptions.desktop && process.platform === "win32" && instance) {
+    tray = await openTray(home).catch((error: unknown) => {
+      trayError = error instanceof Error ? error.message : "系統匣無法啟動";
+      process.stderr.write(`系統匣圖示無法顯示：${trayError}\n`);
+      return undefined;
+    });
+  }
   if (runtimeOptions.desktop && !process.env.VANSPOD_WORKER_TOKEN) openBrowser(home);
   const shutdown = () => {
     if (app.view().commandRunning && !exitRequested) process.stderr.write("安裝仍在執行，請在 VansPod 畫面停止安裝後再結束。\n");

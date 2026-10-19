@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { isSea, getAsset } from "node:sea";
 import fs from "node:fs/promises";
@@ -18,9 +19,35 @@ export function asset(name: string): Promise<Buffer> {
     : fs.readFile(path.join(__dirname, "..", name.startsWith("brand-") || name.startsWith("fadou-superhero") ? "media" : "scripts", name));
 }
 
-/** 把內嵌的 PowerShell 工具寫到磁碟；Windows PowerShell 5.1 需要 BOM 才會以 UTF-8 讀中文。 */
+/** 內嵌資產寫到磁碟時的內容；Windows PowerShell 5.1 需要 BOM 才會以 UTF-8 讀中文。 */
+async function assetBytes(name: string): Promise<Buffer> {
+  const bytes = await asset(name);
+  return name.endsWith(".ps1") ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]) : bytes;
+}
+
+/** 把內嵌的 PowerShell 工具寫到指定位置。 */
 export async function writeTool(file: string, name: string): Promise<void> {
-  await fs.writeFile(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), await asset(name)]));
+  await fs.writeFile(file, await assetBytes(name));
+}
+
+/**
+ * 把內嵌資產寫到 directory，檔名帶內容雜湊；同名檔已存在就直接沿用。
+ * 檔案總管的縮圖程序（COM Surrogate）會把 .ico 對應進記憶體，之後這個檔案就無法覆寫。
+ */
+export async function materializeAsset(directory: string, name: string): Promise<string> {
+  const bytes = await assetBytes(name);
+  const extension = path.extname(name);
+  const file = path.join(directory, `${path.basename(name, extension)}-${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}${extension}`);
+  if (await fs.stat(file).catch(() => undefined)) return file;
+  const temporary = `${file}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, bytes);
+  try { await fs.rename(temporary, file); }
+  catch (error) {
+    await fs.rm(temporary, { force: true });
+    // 另一個 VansPod 剛好同時寫好了同一份內容。
+    if (!await fs.stat(file).catch(() => undefined)) throw error;
+  }
+  return file;
 }
 
 /** 啟動一個在 VansPod 結束後仍會繼續執行的 PowerShell 工具，等它寫出 ready 檔才返回。 */
