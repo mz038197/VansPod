@@ -653,7 +653,7 @@ describe("Prompt 觀察室 page", () => {
       const menu = html.match(/<header class="bar" id="side-menu">[\s\S]*?<\/header>/)?.[0] ?? "";
       const foot = menu.match(/<div class="side-foot">[\s\S]*?<\/div>/)?.[0] ?? "";
       assert.match(foot, /data-appearance-toggle/);
-      assert.match(foot, /<button type="button" class="update-orb" data-version-update hidden aria-label="檢查更新"[^>]*><svg/);
+      assert.match(foot, /<button type="button" class="update-button" data-version-update hidden aria-label="檢查更新"[^>]*><svg/);
     }
   });
 

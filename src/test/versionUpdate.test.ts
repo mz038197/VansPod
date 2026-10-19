@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -70,10 +70,11 @@ test("pressing the update button checks npm for a newer version; a source checko
 
 /**
  * 在假的 %LOCALAPPDATA% 裡跑更新工具。「exe」只是文字檔，啟動指令是一個 node 腳本：
- * 讀 exe 內容決定扮演哪個版本，寫出 instance.json 後以 0 結束；內容是 broken 時以 1 結束（啟動失敗）。
+ * 讀 exe 內容決定扮演哪個版本，寫出 instance.json 後以 0 結束；內容是 broken 時以 1 結束（啟動失敗）；
+ * 內容是 unready 時留下一個沒有就緒的背景服務並以 1 結束（啟動逾時）。
  * 工具由 VansPod 的背景 worker 啟動，所以環境裡帶著那個 worker 的 VANSPOD_WORKER_TOKEN。
  */
-async function runUpdateTool(t: { after(fn: () => Promise<void>): void }, setup: { exe?: { old: string; downloaded: string }; npm?: { installExit: number } }) {
+async function runUpdateTool(t: { after(fn: () => Promise<void>): void }, setup: { exe?: { old: string; downloaded?: string }; npm?: { installExit: number; installs?: string } }) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-update-tool-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const local = path.join(home, "local");
@@ -92,20 +93,27 @@ async function runUpdateTool(t: { after(fn: () => Promise<void>): void }, setup:
     // 跟真的 launcher 一樣：帶著舊 worker 的 token 啟動會被拒絕。
     if (content === "broken" || process.env.VANSPOD_WORKER_TOKEN) process.exit(1);
     const version = content.split(" ")[1];
+    if (content.startsWith("unready")) {
+      const stray = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: "ignore", windowsHide: true });
+      stray.unref();
+      fs.appendFileSync(path.join(path.dirname(log), "stray.pid"), stray.pid + "\\n");
+      fs.writeFileSync(path.join(root, "runtime", "instance.json"), JSON.stringify({ pid: stray.pid, version }));
+      process.exit(1);
+    }
     fs.writeFileSync(path.join(root, "runtime", "instance.json"), JSON.stringify({ pid: process.pid, version }));
   `);
-  const worker = (await import("node:child_process")).spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], { stdio: "ignore", windowsHide: true });
+  const worker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], { stdio: "ignore", windowsHide: true });
   await new Promise<void>((resolve, reject) => { worker.once("spawn", resolve); worker.once("error", reject); });
   let plan: object;
   if (setup.exe) {
     await fs.writeFile(file, setup.exe.old);
-    await fs.writeFile(`${file}.new`, setup.exe.downloaded);
+    if (setup.exe.downloaded !== undefined) await fs.writeFile(`${file}.new`, setup.exe.downloaded);
     plan = { installation: { kind: "exe", file, sha256: "0".repeat(64) }, download: `${file}.new`, start: { file: process.execPath, args: [starter, file, root, started] } };
   } else {
     // 假的 npm-cli：記下參數；成功時把「套件」換成新版。
     const npmCli = path.join(home, "npm-cli.js");
     await fs.writeFile(file, "vanspod 0.2.0");
-    await fs.writeFile(npmCli, `require("node:fs").appendFileSync(${JSON.stringify(path.join(home, "npm.log"))}, process.argv.slice(2).join(" ") + "\\n"); if (${setup.npm!.installExit} === 0) require("node:fs").writeFileSync(${JSON.stringify(file)}, "vanspod 0.3.0"); process.exit(${setup.npm!.installExit});`);
+    await fs.writeFile(npmCli, `require("node:fs").appendFileSync(${JSON.stringify(path.join(home, "npm.log"))}, process.argv.slice(2).join(" ") + "\\n"); if (${setup.npm!.installExit} === 0) require("node:fs").writeFileSync(${JSON.stringify(file)}, ${JSON.stringify(setup.npm!.installs ?? "vanspod 0.3.0")}); process.exit(${setup.npm!.installExit});`);
     plan = { installation: { kind: "npm", root: folder, prefix: home, node: process.execPath, npmCli }, start: { file: process.execPath, args: [starter, file, root, started] } };
   }
   await fs.writeFile(path.join(root, "update-plan.json"), JSON.stringify({ version: 1, root, pid: worker.pid, from: "0.2.0", target: "0.3.0", headless: true, ...plan }));
@@ -113,7 +121,11 @@ async function runUpdateTool(t: { after(fn: () => Promise<void>): void }, setup:
   await fs.writeFile(tool, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), await fs.readFile(path.join(__dirname, "..", "..", "scripts", "update.ps1"))]));
   const helper = await execute("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tool], { env: { ...process.env, USERPROFILE: home, LOCALAPPDATA: local, VANSPOD_WORKER_TOKEN: "a".repeat(64) }, timeout: 60000 }).then(() => 0, (error: { code?: number }) => error.code ?? -1);
   const read = (name: string) => fs.readFile(name, "utf8").catch(() => undefined);
+  const strays = ((await read(path.join(home, "stray.pid")))?.trim().split("\n") ?? []).map(Number);
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  t.after(async () => { for (const pid of strays) { try { process.kill(pid); } catch {} } });
   return {
+    straysAlive: strays.filter(alive),
     helper, workerGone: worker.exitCode !== null,
     exe: await read(file), old: await read(`${file}.old`), downloaded: await read(`${file}.new`),
     starts: (await read(started))?.trim().split("\n") ?? [],
@@ -193,9 +205,43 @@ test("after the restart the page can read how the last update ended, once", asyn
   // 更新工具要等 VansPod 回報就緒後才寫出結果，所以結果檔一定比 VansPod 晚出現。
   assert.equal((await vanspod.call<UpdateStatus>("update")).lastResult, undefined);
   await fs.writeFile(path.join(vanspod.management(), "update-result.json"), "﻿" + JSON.stringify({ ok: false, from: "0.2.0", target: "0.3.0", message: "v0.3.0 無法啟動，已換回 v0.2.0。" }));
-  const first = await vanspod.call<UpdateStatus>("update");
+  // 背景輪詢或別的分頁不會讀走結果；只有剛重新載入、要顯示結果的頁面會。
+  assert.equal((await vanspod.call<UpdateStatus>("update")).lastResult, undefined);
+  const first = await vanspod.call<UpdateStatus>("update?result=1");
   assert.deepEqual(first.lastResult, { ok: false, from: "0.2.0", target: "0.3.0", message: "v0.3.0 無法啟動，已換回 v0.2.0。" });
   await assert.rejects(fs.stat(path.join(vanspod.management(), "update-result.json")), "the result file is consumed");
-  const second = await vanspod.call<UpdateStatus>("update");
+  const second = await vanspod.call<UpdateStatus>("update?result=1");
   assert.equal(second.lastResult, undefined);
+});
+
+test("if the new exe cannot be moved into place, the old exe is put back and restarted", async t => {
+  const run = await runUpdateTool(t, { exe: { old: "vanspod 0.2.0" } });
+  assert.equal(run.helper, 1);
+  assert.equal(run.exe, "vanspod 0.2.0", "the student never loses VansPod.exe");
+  assert.equal(run.old, undefined);
+  assert.deepEqual(run.starts, ["vanspod 0.2.0|1"]);
+  assert.equal(run.result?.ok, false);
+});
+
+test("a new version that never gets ready is stopped before the old exe goes back", async t => {
+  const run = await runUpdateTool(t, { exe: { old: "vanspod 0.2.0", downloaded: "unready 0.3.0" } });
+  assert.equal(run.helper, 1);
+  assert.equal(run.exe, "vanspod 0.2.0");
+  assert.deepEqual(run.straysAlive, [], "the unready new service does not keep running");
+});
+
+test("npm: a new version that never gets ready is stopped and the manual command is shown", async t => {
+  const run = await runUpdateTool(t, { npm: { installExit: 0, installs: "unready 0.3.0" } });
+  assert.equal(run.helper, 1);
+  assert.deepEqual(run.straysAlive, []);
+  assert.match(run.result?.message ?? "", /npm install -g vanspod@0\.2\.0/);
+});
+
+test("versions compare by number, and a prerelease is older than its release", async () => {
+  const { compareVersions } = await import("../versionUpdate");
+  assert.equal(compareVersions("0.10.0", "0.9.9"), 1, "numeric, not alphabetical");
+  assert.equal(compareVersions("0.2.0", "0.2.0"), 0);
+  assert.equal(compareVersions("0.2.0", "0.3.0"), -1);
+  assert.equal(compareVersions("1.0.0-beta.2", "1.0.0"), -1);
+  assert.equal(compareVersions("1.0.0-beta.10", "1.0.0-beta.2"), 1);
 });

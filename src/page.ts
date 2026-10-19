@@ -10,7 +10,7 @@ import { environmentIcons } from "./environmentIcons";
 import type { ClassroomAppView } from "./classroomApp";
 import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
-import { UPDATE_ORB, VERSION_UPDATE_STYLES } from "./versionUpdateView";
+import { UPDATE_BUTTON, VERSION_UPDATE_STYLES } from "./versionUpdateView";
 import {
   actionKindLabel,
   type InstallAction,
@@ -610,7 +610,7 @@ function sideMenu(current: PageId): string {
   const items = SIDE_PAGES.map((page) =>
     `<a class="side-item" href="${page.href}"${page.id === current ? ' aria-current="page"' : ""}>${page.icon}<span>${page.label}</span></a>`,
   ).join("");
-  return `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${BRAND}</div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">${BRAND}<nav aria-label="選單">${items}</nav><div class="side-foot"><button type="button" data-appearance-toggle aria-label="切換外觀"></button>${UPDATE_ORB}</div></header>`;
+  return `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${BRAND}</div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">${BRAND}<nav aria-label="選單">${items}</nav><div class="side-foot"><button type="button" data-appearance-toggle aria-label="切換外觀"></button>${UPDATE_BUTTON}</div></header>`;
 }
 
 /** 兩頁共用的頁殼版面：側欄、行動版抽屜。 */

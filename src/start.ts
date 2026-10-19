@@ -37,7 +37,7 @@ import { asset, openBrowser } from "./desktop";
 import { lifecyclePage } from "./lifecyclePage";
 import { removalPreview, prepareRemoval } from "./removal";
 import { detectInstallation } from "./installations";
-import { createVersionUpdate } from "./versionUpdate";
+import { createVersionUpdate, VERSION_PATTERN } from "./versionUpdate";
 import { VERSION } from "./version";
 
 const runtimeOptions = readRuntimeOptions(process.env);
@@ -420,21 +420,30 @@ export async function main(instance?: Instance): Promise<void> {
   let exitRequested = false;
   const exitWork = () => ({ installing: app.view().commandRunning, activeRequests: activeRequests.size });
   let launchVersion: string | undefined;
+  /**
+   * 結束、移除與版本更新共同的交接：中止安裝與模型回答、恢復客戶端設定，再啟動接手的工具。
+   * 失敗時不結束；`restored` 表示客戶端設定是否已恢復。
+   */
+  const handOff = async (launchTool?: () => Promise<void>): Promise<{ ok: true } | { ok: false; restored: boolean; error: unknown }> => {
+    exitRequested = true;
+    await app.abortInstall();
+    abortRequests();
+    let restored = false;
+    try { await app.stop(); restored = true; await launchTool?.(); return { ok: true }; }
+    catch (error) { exitRequested = false; return { ok: false, restored, error }; }
+  };
   const versionUpdate = createVersionUpdate({
     current: VERSION,
     source: (await detectInstallation()) ?? { kind: "source" },
     work: exitWork,
-    // 跟「結束 VansPod」一樣先恢復客戶端設定；更新工具接手後才結束。
     async exit(launchTool) {
       if (exitRequested) throw new Error("正在結束 VansPod。");
-      exitRequested = true;
-      abortRequests();
-      let restored = false;
-      try { await app.stop(); restored = true; await launchTool(); }
-      catch (error) {
-        if (restored) await app.start().catch(() => undefined);
-        exitRequested = false;
-        throw error;
+      // 下載期間學生可能開始了安裝；更新不中止安裝。
+      if (exitWork().installing) throw new Error("安裝進行中，更新已取消。");
+      const handed = await handOff(launchTool);
+      if (!handed.ok) {
+        if (handed.restored) await app.start().catch(() => undefined);
+        throw handed.error;
       }
       void exit();
     },
@@ -524,10 +533,10 @@ export async function main(instance?: Instance): Promise<void> {
         if (req.method === "GET" && pathname === "/_vanspod/status") { reply({ running: true, ready, startupError, pid: process.pid, version: instance.version, origin: instance.origin, launchVersion, activeRequests: activeRequests.size, installing: app.view().commandRunning }); return; }
         if (req.method === "POST" && pathname === "/_vanspod/open") {
           const body = JSON.parse(await readBody(req)) as { version?: string };
-          if (typeof body.version === "string" && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(body.version)) launchVersion = body.version;
+          if (typeof body.version === "string" && VERSION_PATTERN.test(body.version)) launchVersion = body.version;
           reply({ ok: true }); return;
         }
-        if (req.method === "GET" && pathname === "/_vanspod/update") { reply(await versionUpdate.status(parsed.searchParams.get("refresh") === "1")); return; }
+        if (req.method === "GET" && pathname === "/_vanspod/update") { reply(await versionUpdate.status({ refresh: parsed.searchParams.get("refresh") === "1", takeResult: parsed.searchParams.get("result") === "1" })); return; }
         if (req.method === "POST" && pathname === "/_vanspod/update") { reply(await versionUpdate.run(JSON.parse(await readBody(req) || "{}") as { interruptConfirmed?: boolean })); return; }
         if (req.method === "GET" && pathname === "/_vanspod/uninstall-preview") {
           reply({ ok: true, message: `${await removalPreview()}${removalInterruptions(exitWork())}` }); return;
@@ -539,21 +548,14 @@ export async function main(instance?: Instance): Promise<void> {
           const decision = exitDecision(uninstall ? "uninstall" : "stop", exitWork(), uninstall ? body.interruptConfirmed === true : body.confirmed === true);
           if (!decision.proceed) { reply({ ok: false, confirmation: true, message: decision.message }); return; }
           if (exitRequested) { reply({ ok: false, message: "正在結束 VansPod。" }); return; }
-          exitRequested = true;
-          await app.abortInstall();
-          abortRequests();
-          let restored = false;
-          try {
-            await app.stop();
-            restored = true;
-            if (uninstall) {
-              const launchRemoval = await prepareRemoval(Number.isSafeInteger(body.waitForPid) && body.waitForPid! > 0 ? body.waitForPid : undefined, instance.id);
-              await launchRemoval();
-            }
+          const handed = await handOff(uninstall
+            ? async () => (await prepareRemoval(Number.isSafeInteger(body.waitForPid) && body.waitForPid! > 0 ? body.waitForPid : undefined, instance.id))()
+            : undefined);
+          if (handed.ok) {
             reply({ ok: true, message: uninstall ? "完整移除已開始；結果會以 Windows 訊息顯示。未完成時會保留移除工具供重試。" : "VansPod 已結束，可關閉此分頁。" });
             res.once("finish", () => { void exit(); });
           }
-          catch (error) { exitRequested = false; reply({ ok: false, message: restored ? `移除未完成：${error instanceof Error ? error.message : "移除工具啟動失敗"}。請重試移除。` : `客戶端設定恢復失敗（${Object.entries(app.view().clientRoutes ?? {}).filter(([, route]) => route.health === "red").map(([id]) => id).join("、")}），備份已保留，請重試結束。` }); }
+          else reply({ ok: false, message: handed.restored ? `移除未完成：${handed.error instanceof Error ? handed.error.message : "移除工具啟動失敗"}。請重試移除。` : `客戶端設定恢復失敗（${Object.entries(app.view().clientRoutes ?? {}).filter(([, route]) => route.health === "red").map(([id]) => id).join("、")}），備份已保留，請重試結束。` });
           return;
         }
         reply({ ok: false, message: "管理操作無效。" }); return;

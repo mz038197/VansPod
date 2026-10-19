@@ -40,22 +40,37 @@ function Start-VansPod([string]$Expected) {
 function Stop-Target {
   $instance = Read-Instance
   if ($instance -and $instance.version -eq $planData.target) { Stop-Process -Id $instance.pid -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }
+  if ($installation.kind -eq 'exe') { Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $file } | Stop-Process -Force -ErrorAction SilentlyContinue }
+}
+
+# 把 .old 換回原位；檔案可能還被剛結束的新版佔著，所以重試一陣子。學生不能因此失去 VansPod.exe。
+function Restore-Exe {
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+      Move-Item -LiteralPath "$file.old" -Destination $file
+      return
+    } catch { Start-Sleep -Milliseconds 250 }
+  }
+  throw "無法換回 v$($planData.from)，舊版保留在 $file.old。"
 }
 
 $restarted = $true
+$stopped = $false
 try {
   for ($attempt = 0; $attempt -lt 600 -and (Get-Process -Id $planData.pid -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 100 }
   if (Get-Process -Id $planData.pid -ErrorAction SilentlyContinue) { throw '舊版 VansPod 沒有結束，更新已取消。' }
+  $stopped = $true
   if ($installation.kind -eq 'exe') {
     $old = "$file.old"
     if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force }
     Move-Item -LiteralPath $file -Destination $old
-    Move-Item -LiteralPath "$file.new" -Destination $file
+    try { Move-Item -LiteralPath "$file.new" -Destination $file }
+    catch { Restore-Exe; throw "新版 VansPod.exe 無法放到原位置（$($_.Exception.Message)）" }
     if (Start-VansPod $planData.target) { Remove-Item -LiteralPath $old -Force; Write-Result $true }
     else {
       Stop-Target
-      Remove-Item -LiteralPath $file -Force
-      Move-Item -LiteralPath $old -Destination $file
+      Restore-Exe
       $restarted = Start-VansPod $planData.from
       Write-Result $false "v$($planData.target) 無法啟動，已換回 v$($planData.from)。"
     }
@@ -70,13 +85,16 @@ try {
       Write-Result $false "npm 安裝失敗（$reason）。已保留 v$($planData.from)。可改用：npm install -g vanspod@$($planData.target)"
     } elseif (Start-VansPod $planData.target) { Write-Result $true }
     else {
+      Stop-Target
       $restarted = $false
       Write-Result $false "已安裝 v$($planData.target)，但無法啟動。請執行 vanspod start 查看錯誤，或用 npm install -g vanspod@$($planData.from) 換回舊版。"
     }
   }
 } catch {
-  $restarted = $false
   Write-Result $false "更新未完成：$($_.Exception.Message)"
+  # 舊版已經結束時，盡量讓學生回到原本的版本。
+  $restarted = $stopped -and (Start-VansPod $planData.from)
+  if ($installation.kind -eq 'exe') { Remove-Item -LiteralPath "$file.new" -Force -ErrorAction SilentlyContinue }
 } finally {
   foreach ($name in @('update-plan.json', 'update-ready')) { Remove-Item -LiteralPath (Join-Path $root $name) -Force -ErrorAction SilentlyContinue }
   Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue

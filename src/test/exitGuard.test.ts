@@ -31,3 +31,8 @@ it("lists interruptions in the removal preview", () => {
   assert.equal(removalInterruptions({ installing: true, activeRequests: 0 }), "\n安裝仍在執行，移除前將中止安裝。");
   assert.equal(removalInterruptions({ installing: true, activeRequests: 3 }), "\n安裝仍在執行，移除前將中止安裝。\n仍有模型回答，移除將中斷目前回答。");
 });
+
+it("asks before a 版本更新 interrupts a model answer", () => {
+  const update = exitDecision("update", { installing: false, activeRequests: 1 }, false);
+  assert.equal(update.proceed ? "" : update.message, "仍有模型回答，確認中止並更新 VansPod？");
+});
