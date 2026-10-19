@@ -6,11 +6,12 @@ export const UPDATE_BUTTON = `<button type="button" class="update-button" data-v
 
 export const VERSION_UPDATE_STYLES = `
     .bar .side-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; }
-    .update-button { position: relative; display: grid; place-items: center; width: 34px; height: 34px; min-height: 34px; padding: 0; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+    .bar .side-foot > button { align-self: center; }
+    .update-button { position: relative; display: grid; place-items: center; width: 2.75rem; height: 2.75rem; min-height: 2.75rem; flex: 0 0 auto; padding: 0; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
     .update-button[hidden] { display: none; }
     .update-button:hover { color: var(--text); background: light-dark(rgba(13, 13, 13, 0.04), rgba(255, 255, 255, 0.06)); }
     .update-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .update-button svg { width: 18px; height: 18px; }
+    .update-button svg { width: 1.25rem; height: 1.25rem; }
     .update-button .update-dot { display: none; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 999px; background: #2563eb; box-shadow: 0 0 0 2px var(--bg); }
     .update-button.available { color: #2563eb; border-color: rgba(37, 99, 235, 0.45); background: rgba(37, 99, 235, 0.08); }
     .update-button.available .update-dot { display: block; }
