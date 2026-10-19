@@ -4,7 +4,7 @@
   "bin": { "vanspod": "bin/vanspod.cjs" },
   "engines": { "node": ">=24" },
   "os": ["win32"],
-  "files": ["bin/", "dist/**/*.js", "!dist/test/**", "!dist/sea-*.js", "media/brand-logo.png", "media/brand-icon.ico", "media/fadou-superhero.png", "media/fadou-superhero-blink.png", "scripts/tray.ps1", "scripts/uninstall.ps1", "README.md"],
+  "files": ["bin/", "dist/**/*.js", "!dist/test/**", "!dist/sea-*.js", "media/brand-logo.png", "media/brand-icon.ico", "media/fadou-superhero.png", "media/fadou-superhero-blink.png", "scripts/tray.ps1", "scripts/uninstall.ps1", "scripts/update.ps1", "README.md"],
   "publishConfig": { "access": "public" },
   "description": "本機 VansPod。學生用系統瀏覽器兌換課堂連線。",
   "repository": { "type": "git", "url": "git+https://github.com/mz038197/VansPod.git" },

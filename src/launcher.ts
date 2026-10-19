@@ -99,7 +99,8 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   if (!ready) throw new Error("VansPod 啟動逾時，請稍後用 vanspod status 檢查。");
   const live = (await readInstance())!;
   await control(live, "open", { version: VERSION });
-  openBrowser(`${ready.origin}/`);
+  // 版本更新的工具重新啟動時，原本的分頁會自己重新連線。
+  if (process.env.VANSPOD_RESTART !== "1") openBrowser(`${ready.origin}/`);
   process.stdout.write(`VansPod ${ready.version}: ${ready.origin}/\n`);
   if (ready.version !== VERSION) process.stdout.write(`本次開啟版本 ${VERSION}，目前執行版本 ${ready.version}；換版請先結束 VansPod。\n`);
 }

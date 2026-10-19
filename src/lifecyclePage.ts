@@ -1,3 +1,5 @@
+import { versionUpdateScript } from "./versionUpdateView";
+
 export function lifecyclePage(html: string, token: string): string {
   const controls = `<div style="margin-top:16px"><button type="button" data-lifecycle="stop">結束 VansPod</button> <button type="button" data-lifecycle="uninstall">移除 VansPod</button><p role="status" data-lifecycle-message></p></div>`;
   const script = `<script>
@@ -34,5 +36,5 @@ export function lifecyclePage(html: string, token: string): string {
       }).catch(function () {});
     })();
   </script>`;
-  return html.replace(/<form method="post" action="\/stop">[\s\S]*?<\/form>/, controls).replace('</body>', `${script}</body>`);
+  return html.replace(/<form method="post" action="\/stop">[\s\S]*?<\/form>/, controls).replace('</body>', `${script}${versionUpdateScript(token)}</body>`);
 }

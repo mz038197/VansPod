@@ -36,6 +36,9 @@ import { type Instance, saveInstance, releaseInstance, managementDirectory } fro
 import { asset, openBrowser } from "./desktop";
 import { lifecyclePage } from "./lifecyclePage";
 import { removalPreview, prepareRemoval } from "./removal";
+import { detectInstallation } from "./installations";
+import { createVersionUpdate } from "./versionUpdate";
+import { VERSION } from "./version";
 
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
@@ -417,6 +420,25 @@ export async function main(instance?: Instance): Promise<void> {
   let exitRequested = false;
   const exitWork = () => ({ installing: app.view().commandRunning, activeRequests: activeRequests.size });
   let launchVersion: string | undefined;
+  const versionUpdate = createVersionUpdate({
+    current: VERSION,
+    source: (await detectInstallation()) ?? { kind: "source" },
+    work: exitWork,
+    // 跟「結束 VansPod」一樣先恢復客戶端設定；更新工具接手後才結束。
+    async exit(launchTool) {
+      if (exitRequested) throw new Error("正在結束 VansPod。");
+      exitRequested = true;
+      abortRequests();
+      let restored = false;
+      try { await app.stop(); restored = true; await launchTool(); }
+      catch (error) {
+        if (restored) await app.start().catch(() => undefined);
+        exitRequested = false;
+        throw error;
+      }
+      void exit();
+    },
+  });
   let ready = false;
   let startupError: string | undefined;
   let tray: ChildProcess | undefined;
@@ -505,6 +527,8 @@ export async function main(instance?: Instance): Promise<void> {
           if (typeof body.version === "string" && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(body.version)) launchVersion = body.version;
           reply({ ok: true }); return;
         }
+        if (req.method === "GET" && pathname === "/_vanspod/update") { reply(await versionUpdate.status(parsed.searchParams.get("refresh") === "1")); return; }
+        if (req.method === "POST" && pathname === "/_vanspod/update") { reply(await versionUpdate.run(JSON.parse(await readBody(req) || "{}") as { interruptConfirmed?: boolean })); return; }
         if (req.method === "GET" && pathname === "/_vanspod/uninstall-preview") {
           reply({ ok: true, message: `${await removalPreview()}${removalInterruptions(exitWork())}` }); return;
         }
@@ -806,6 +830,7 @@ export async function main(instance?: Instance): Promise<void> {
     }
     startupError += " 設定恢復未完成，服務已保留；修復後請重試 vanspod stop。";
   }
+  versionUpdate.start();
   tray = runtimeOptions.desktop && process.platform === "win32" && instance ? await openTray(home) : undefined;
   if (runtimeOptions.desktop && !process.env.VANSPOD_WORKER_TOKEN) openBrowser(home);
   const shutdown = () => {

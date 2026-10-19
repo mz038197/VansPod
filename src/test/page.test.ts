@@ -648,6 +648,15 @@ describe("Prompt 觀察室 page", () => {
     assert.match(html, /data-appearance-toggle/);
   });
 
+  it("puts the 版本更新 button next to the appearance toggle at the foot of the side menu, on both pages", () => {
+    for (const html of [renderPage(view()), renderInspectorPage({ recording: false, captures: [], dropped: 0 })]) {
+      const menu = html.match(/<header class="bar" id="side-menu">[\s\S]*?<\/header>/)?.[0] ?? "";
+      const foot = menu.match(/<div class="side-foot">[\s\S]*?<\/div>/)?.[0] ?? "";
+      assert.match(foot, /data-appearance-toggle/);
+      assert.match(foot, /<button type="button" class="update-orb" data-version-update hidden aria-label="檢查更新"[^>]*><svg/);
+    }
+  });
+
   it("offers 開始錄製 and 清除 while recording is off", () => {
     const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
     const bar = html.match(/<section[^>]*class="tile pi-recorder"[\s\S]*?<\/section>/)?.[0] ?? "";

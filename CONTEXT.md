@@ -88,6 +88,16 @@ _Avoid_: Course Install Action、課程資源安裝
 學生明確確認後，終止仍在執行的安裝及其衍生程序；結果為「已中止」，既不是成功也不是一般失敗。結束 VansPod 時遇到安裝中，須經學生確認中止才繼續結束，不得默默中斷。
 _Avoid_: 結束 VansPod 時自動中斷安裝、把已中止視為安裝成功、只停止畫面卻留下背景程序
 
+**課堂重新載入**:
+重新向 Router 取得目前 Class Session 的課堂內容（模型、Course Install Action、Lesson Snippet）。VansPod 本身的版本不變。
+_Avoid_: 版本更新、把它稱為「更新 VansPod」
+
+### 版本
+
+**版本更新**:
+學生按下後，把本機的 VansPod 換成最新發佈版本並重新啟動。只在學生明確按下時發生，從不在背景自動換版；安裝進行中時不可執行。
+_Avoid_: 課堂重新載入、自動更新、背景換版、更新到老師指定版本
+
 ### Prompt 觀察室
 
 **Prompt 觀察室**:
