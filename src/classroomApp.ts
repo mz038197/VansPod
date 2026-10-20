@@ -35,7 +35,8 @@ export type ModelSwitchMode = "native" | "classroom";
 export type ClientModes = Record<AdapterClient, ModelSwitchMode>;
 type ClientControl = AdapterClient | "vscode";
 
-export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
+// 新工具加在最後，不改既有 id。
+export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh", "vscode"] as const;
 
 export type EnvironmentToolId = (typeof ENVIRONMENT_TOOLS)[number];
 
@@ -44,6 +45,7 @@ export const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   git: "git",
   node: "Node.js",
   pwsh: "PowerShell 7",
+  vscode: "VS Code",
 };
 
 /** Environment Tool Readiness：已就緒／需要修復（找得到但驗證不通過或逾時）／未安裝（找不到）。 */
@@ -54,8 +56,9 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
 /**
  * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
  * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
+ * failure：安裝程式沒有執行的原因（例如下載失敗、簽章不符），驗證未通過時顯示給學生。
  */
-export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
+export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean; failure?: string };
 
 /** Environment Install 中一個工具的階段：等待中、下載中、安裝中、驗證中、完成、失敗。 */
 export type EnvironmentInstallStage = "waiting" | "downloading" | "installing" | "verifying" | "done" | "failed";
@@ -1955,9 +1958,11 @@ function environmentInstallFailure(
   result: EnvironmentInstallResult | undefined,
   verified: ToolReadiness,
 ): string {
-  const rejected = result?.exitAccepted === false && result.exitCode !== undefined
-    ? `安裝失敗（結束碼 ${result.exitCode}），`
-    : "";
+  const rejected = result?.failure
+    ? `${result.failure}，`
+    : result?.exitAccepted === false && result.exitCode !== undefined
+      ? `安裝失敗（結束碼 ${result.exitCode}），`
+      : "";
   const state = verified.readiness === "missing" ? "安裝後仍偵測不到" : "安裝後仍需要修復";
   const reason = verified.reason ? `：${verified.reason}` : "";
   const next = result?.rebootRequired ? "請重新開機後按「重新檢查」。" : "請稍後按「重新檢查」。";

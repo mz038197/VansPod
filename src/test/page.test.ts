@@ -44,6 +44,14 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
 });
 
 describe("VansPod page", () => {
+  it("lists VS Code with its icon after the existing tools", () => {
+    const tools = [...view().tools, { id: "vscode" as const, label: "VS Code", readiness: "missing" as const, selected: true }];
+    const html = renderPage(view({ tools }));
+    const row = html.match(/<label class="tool"><input type="checkbox" name="tool" value="vscode"[^]*?<\/label>/)?.[0] ?? "";
+    assert.match(row, /<svg[^]*?<\/svg><span[^>]*>VS Code<\/span>/);
+    assert.ok(html.indexOf('name="tool" value="pwsh"') < html.indexOf('name="tool" value="vscode"'));
+  });
+
   it("lets the mascot announce a copied Classroom API Key without exposing the key", () => {
     const notice = "已複製 Classroom API Key。請勿分享給不信任的人。";
     const html = renderPage(view({ connectionNotice: notice, notice }));

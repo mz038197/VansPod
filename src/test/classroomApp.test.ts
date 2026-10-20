@@ -3292,8 +3292,9 @@ describe("environment tools", () => {
       { id: "git", label: "git", readiness: "missing", reason: "找不到 git", selected: true },
       { id: "node", label: "Node.js", readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: true },
       { id: "pwsh", label: "PowerShell 7", readiness: "missing", reason: "找不到 pwsh", selected: true },
+      { id: "vscode", label: "VS Code", readiness: "missing", reason: "找不到 vscode", selected: true },
     ]);
-    assert.deepEqual(asked, ["uv", "git", "node", "pwsh"]);
+    assert.deepEqual(asked, ["uv", "git", "node", "pwsh", "vscode"]);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
@@ -3320,15 +3321,15 @@ describe("environment tools", () => {
     });
     assert.ok(app.view().tools.every((tool) => tool.readiness === "checking"));
     await app.start();
-    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh", "vscode"]);
     assert.ok(app.view().tools.every((tool) => tool.readiness === "checking"));
     release();
     await app.checkEnvironment();
-    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
-    assert.deepEqual(app.view().tools.map((tool) => tool.readiness), ["ready", "missing", "missing", "missing"]);
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh", "vscode"]);
+    assert.deepEqual(app.view().tools.map((tool) => tool.readiness), ["ready", "missing", "missing", "missing", "missing"]);
     await app.stop();
     await app.start();
-    assert.equal(probeCalls.length, 4);
+    assert.equal(probeCalls.length, 5);
     await app.stop();
   });
 
@@ -3342,12 +3343,12 @@ describe("environment tools", () => {
     });
     await app.checkEnvironment();
     const selected = () => app.view().tools.filter((tool) => tool.selected).map((tool) => tool.id);
-    assert.deepEqual(selected(), ["git", "node", "pwsh"]);
+    assert.deepEqual(selected(), ["git", "node", "pwsh", "vscode"]);
     app.selectEnvironment(["node"]);
     assert.deepEqual(selected(), ["node"]);
     assert.deepEqual(selected(), ["node"]);
     await app.checkEnvironment();
-    assert.deepEqual(selected(), ["git", "node", "pwsh"]);
+    assert.deepEqual(selected(), ["git", "node", "pwsh", "vscode"]);
   });
 
   it("keeps a selection the student changed while the check was still running", async () => {
@@ -3374,7 +3375,7 @@ describe("environment tools", () => {
     const installing = app.confirmEnvironment();
     release();
     await Promise.all([checking, installing]);
-    assert.deepEqual(events.slice(0, 5), ["probe uv", "probe git", "probe node", "probe pwsh", "install uv"]);
+    assert.deepEqual(events.slice(0, 6), ["probe uv", "probe git", "probe node", "probe pwsh", "probe vscode", "install uv"]);
   });
 
   it("keeps installing after a tool fails and lists every failed tool with its reason", async () => {
@@ -3394,11 +3395,21 @@ describe("environment tools", () => {
     await app.confirmEnvironment();
     assert.deepEqual(installCalls, ["uv", "git", "node", "pwsh"]);
     const view = app.view();
-    assert.deepEqual(view.tools.map((tool) => tool.readiness), ["ready", "missing", "needsRepair", "ready"]);
+    assert.deepEqual(view.tools.slice(0, 4).map((tool) => tool.readiness), ["ready", "missing", "needsRepair", "ready"]);
     assert.equal(
       view.environmentNotice,
       "git 安裝後仍偵測不到：找不到 git。請稍後按「重新檢查」。Node.js 安裝後仍需要修復：需要 Node.js LTS，且 npm 必須可正常執行。請稍後按「重新檢查」。",
     );
+  });
+
+  it("shows why an installer never ran, such as a failed download", async () => {
+    const { app } = harness(undefined, {
+      probe: async () => ({ readiness: "missing", reason: "找不到 code" }),
+      install: async () => ({ exitCode: undefined, output: "", exitAccepted: false, failure: "下載失敗：連線逾時" }),
+    });
+    app.selectEnvironment(["vscode"]);
+    await app.confirmEnvironment();
+    assert.equal(app.view().environmentNotice, "VS Code 下載失敗：連線逾時，安裝後仍偵測不到：找不到 code。請稍後按「重新檢查」。");
   });
 
   it("selects only the tools still not ready after an install, so confirming again retries just those", async () => {
@@ -4308,7 +4319,7 @@ describe("Abort Install", () => {
     assert.deepEqual(installCalls, ["uv"]);
     const view = app.view();
     assert.equal(view.commandRunning, false);
-    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh", "vscode"]);
     assert.equal(view.tools.find((tool) => tool.id === "uv")?.readiness, "ready");
     assert.match(view.environmentNotice ?? "", /已中止.*可能仍在執行/);
   });
