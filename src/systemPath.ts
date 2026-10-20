@@ -14,9 +14,18 @@ export function readSystemPath(): Promise<string[]> {
   });
 }
 
-/** 子程序要用的環境：Windows 上補進登錄檔裡最新的 PATH（每次呼叫都會啟動一次 PowerShell）。 */
+/** 同時發出的呼叫共用同一次執行；執行結束後的下一次呼叫會重新執行，剛裝好的工具仍找得到。 */
+export function sharedWhileRunning<T>(run: () => Promise<T>): () => Promise<T> {
+  let running: Promise<T> | undefined;
+  return () => running ??= run().finally(() => { running = undefined; });
+}
+
+// 啟動時客戶端偵測與開發工具檢查會同時要 PATH；共用一個 PowerShell，避免一次開很多個拖慢啟動。
+const readSharedSystemPath = sharedWhileRunning(readSystemPath);
+
+/** 子程序要用的環境：Windows 上補進登錄檔裡最新的 PATH（同時的呼叫共用一次 PowerShell）。 */
 export async function envWithRegistryPath(): Promise<NodeJS.ProcessEnv> {
-  return process.platform === "win32" ? withSystemPath(process.env, await readSystemPath()) : process.env;
+  return process.platform === "win32" ? withSystemPath(process.env, await readSharedSystemPath()) : process.env;
 }
 
 /**

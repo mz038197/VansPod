@@ -1796,8 +1796,6 @@ export class ClassroomApp {
 
   private async startNow(): Promise<void> {
     this.stopping = false;
-    // 啟動後在背景檢查一次開發工具；不擋住連線與路由的恢復。
-    if (!this.initialEnvironmentCheckStarted) void this.checkEnvironment();
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
@@ -1824,7 +1822,12 @@ export class ClassroomApp {
       await this.startClaudeCodeRoute();
       await this.startVsCodeRoute();
     })();
-    await this.initialization;
+    try {
+      await this.initialization;
+    } finally {
+      // 連線與路由恢復後才在背景檢查一次開發工具，不和啟動時的客戶端偵測搶資源，也不擋住啟動。
+      if (!this.initialEnvironmentCheckStarted) void this.checkEnvironment();
+    }
     this.deps.proxy.start();
     this.proxyRunning = true;
     if (!this.routeRestartNoted) {

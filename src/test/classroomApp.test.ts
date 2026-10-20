@@ -3338,6 +3338,19 @@ describe("environment tools", () => {
     await app.stop();
   });
 
+  it("starts the background Environment Tool Readiness check only after client detection, so startup does not compete with it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { app, probeCalls } = harness(undefined, { async detectClient() { await gate; return false; } });
+    const starting = app.start();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(probeCalls, []);
+    release();
+    await starting;
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh", "vscode"]);
+    await app.stop();
+  });
+
   it("selects the tools that are not ready after a check and keeps the student's changes until the next check", async () => {
     const { app } = harness(undefined, {
       async probe(tool) {
