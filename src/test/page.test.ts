@@ -22,10 +22,10 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
     commandRunning: false,
     mode: "native",
     tools: [
-      { id: "uv", label: "uv", installed: false, selected: false },
-      { id: "git", label: "git", installed: false, selected: false },
-      { id: "node", label: "Node.js", installed: false, selected: false },
-      { id: "pwsh", label: "PowerShell 7", installed: false, selected: false },
+      { id: "uv", label: "uv", readiness: "missing", selected: false },
+      { id: "git", label: "git", readiness: "missing", selected: false },
+      { id: "node", label: "Node.js", readiness: "missing", selected: false },
+      { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
     ],
     ...extra,
   };
@@ -463,10 +463,10 @@ describe("VansPod page", () => {
     assert.equal(actionAt < snippetAt && titleAt > snippetAt, true);
     assert.match(official, /aria-label="更新課堂內容"/);
     const readyTools = [
-      { id: "uv" as const, label: "uv", installed: true, selected: false },
-      { id: "git" as const, label: "git", installed: true, selected: false },
-      { id: "node" as const, label: "Node.js", installed: true, selected: false },
-      { id: "pwsh" as const, label: "PowerShell 7", installed: true, selected: false },
+      { id: "uv" as const, label: "uv", readiness: "ready" as const, selected: false },
+      { id: "git" as const, label: "git", readiness: "ready" as const, selected: false },
+      { id: "node" as const, label: "Node.js", readiness: "ready" as const, selected: false },
+      { id: "pwsh" as const, label: "PowerShell 7", readiness: "ready" as const, selected: false },
     ];
     const ready = renderPage(view({ tools: readyTools }));
     assert.match(ready, /<h2>環境<\/h2><span class="badge">已就緒<\/span>/);
@@ -476,10 +476,10 @@ describe("VansPod page", () => {
       view({
         installAvailable: true,
         tools: [
-          { id: "uv", label: "uv", installed: false, selected: true },
-          { id: "git", label: "git", installed: false, selected: false },
-          { id: "node", label: "Node.js", installed: true, selected: false },
-          { id: "pwsh", label: "PowerShell 7", installed: false, selected: false },
+          { id: "uv", label: "uv", readiness: "missing", selected: true },
+          { id: "git", label: "git", readiness: "missing", selected: false },
+          { id: "node", label: "Node.js", readiness: "ready", selected: false },
+          { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
         ],
       }));
     assert.match(onePicked, /class="go">確認安裝/);
@@ -535,6 +535,32 @@ describe("VansPod page", () => {
   });
 });
 
+describe("Environment Install card", () => {
+  const tools = [
+    { id: "uv" as const, label: "uv", readiness: "ready" as const, version: "uv 0.5.1", selected: false },
+    { id: "git" as const, label: "git", readiness: "missing" as const, reason: "找不到 git", selected: true },
+    { id: "node" as const, label: "Node.js", readiness: "needsRepair" as const, version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: true },
+    { id: "pwsh" as const, label: "PowerShell 7", readiness: "ready" as const, version: "PowerShell 7.4.6", selected: false },
+  ];
+  const row = (html: string, id: string) => html.match(new RegExp(`<label class="tool"><input type="checkbox" name="tool" value="${id}"[\\s\\S]*?</label>`))?.[0] ?? "";
+
+  it("shows each tool's Environment Tool Readiness and offers 安裝 or 修復", () => {
+    const html = renderPage(view({ installAvailable: true, tools }));
+    assert.match(row(html, "uv"), /<em>已就緒<\/em>/);
+    assert.doesNotMatch(row(html, "uv"), /tool-action/);
+    assert.match(row(html, "git"), /<em class="missing">未安裝<\/em><span class="tool-action">安裝<\/span>/);
+    assert.match(row(html, "node"), /<em class="needs-repair">需要修復<\/em><span class="tool-action">修復<\/span>/);
+    assert.match(row(html, "node"), /title="需要 Node\.js LTS，且 npm 必須可正常執行"/);
+    assert.match(html, /<h2>環境<\/h2><span class="badge off">未完成<\/span>/);
+    assert.match(html, /尚缺 2 項工具/);
+  });
+
+  it("counts a tool that needs repair as not ready", () => {
+    const html = renderPage(view({ tools: tools.map((tool) => ({ ...tool, readiness: tool.id === "node" ? "needsRepair" as const : "ready" as const })) }));
+    assert.match(html, /<span class="badge off">未完成<\/span>/);
+    assert.match(html, /尚缺 1 項工具/);
+  });
+});
 describe("Abort Install on the page", () => {
   const abortForms = (html: string) => [...html.matchAll(/<form[^>]*action="\/abort-install"[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);
 

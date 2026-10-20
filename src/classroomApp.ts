@@ -46,6 +46,17 @@ const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   pwsh: "PowerShell 7",
 };
 
+/** Environment Tool Readiness：已就緒／需要修復（找得到但驗證不通過或逾時）／未安裝（找不到）。 */
+export type EnvironmentReadiness = "ready" | "needsRepair" | "missing";
+
+export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string; reason?: string };
+
+/**
+ * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
+ * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
+ */
+export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
+
 export type MustRestartClient = "codex" | "claude" | "vscode";
 
 export type CopilotDocument = {
@@ -80,12 +91,12 @@ export type ClassroomAppDeps = {
     run(cwd: string, command: string, onOutput?: (output: string) => void, signal?: AbortSignal): Promise<CommandResult>;
   };
   environment: {
-    probe(tool: EnvironmentToolId): Promise<{ installed: boolean }>;
+    probe(tool: EnvironmentToolId): Promise<ToolReadiness>;
     install(
       tool: EnvironmentToolId,
       cwd: string,
       signal?: AbortSignal,
-    ): Promise<CommandResult>;
+    ): Promise<EnvironmentInstallResult>;
   };
   // 測試注入的寫檔口。核心不呼叫它，MCP 動作只跑 catalog command。
   files: {
@@ -155,7 +166,9 @@ export type ClientForward = {
 export type EnvironmentToolView = {
   id: EnvironmentToolId;
   label: string;
-  installed: boolean;
+  readiness: EnvironmentReadiness;
+  version?: string;
+  reason?: string;
   selected: boolean;
 };
 
@@ -246,11 +259,11 @@ export class ClassroomApp {
   private set mode(mode: ModelSwitchMode) { this.clientModes = { codex: mode, claude: mode }; }
   private modelIds: string[] = [];
   private modelProviders: VsCodeProvider[] = [];
-  private environmentInstalled: Record<EnvironmentToolId, boolean> = {
-    uv: false,
-    git: false,
-    node: false,
-    pwsh: false,
+  private environmentReadiness: Record<EnvironmentToolId, ToolReadiness> = {
+    uv: { readiness: "missing" },
+    git: { readiness: "missing" },
+    node: { readiness: "missing" },
+    pwsh: { readiness: "missing" },
   };
   private environmentSelected = new Set<EnvironmentToolId>();
   private environmentNotice: string | undefined;
@@ -378,14 +391,19 @@ export class ClassroomApp {
       return;
     }
     for (const tool of ENVIRONMENT_TOOLS) {
-      let installed = false;
-      try {
-        installed = (await this.deps.environment.probe(tool)).installed;
-      } catch {
-        installed = false;
-      }
-      this.environmentInstalled[tool] = installed;
+      await this.probeEnvironmentTool(tool);
     }
+  }
+
+  private async probeEnvironmentTool(tool: EnvironmentToolId): Promise<ToolReadiness> {
+    let readiness: ToolReadiness;
+    try {
+      readiness = await this.deps.environment.probe(tool);
+    } catch {
+      readiness = { readiness: "missing" };
+    }
+    this.environmentReadiness[tool] = readiness;
+    return readiness;
   }
 
   selectEnvironment(tools: readonly EnvironmentToolId[]): void {
@@ -411,19 +429,28 @@ export class ClassroomApp {
     this.commandRunning = true;
     this.environmentNotice = undefined;
     const abort = this.beginInstall();
-    const installedTools: EnvironmentToolId[] = [];
+    const rebootSuggested: EnvironmentToolId[] = [];
+    let failure: string | undefined;
     try {
       for (const tool of selected) {
-        let result: CommandResult;
+        let result: EnvironmentInstallResult | undefined;
         try {
           result = await this.deps.environment.install(tool, cwd, abort.signal);
         } catch {
+          result = undefined;
+        }
+        if (abort.signal.aborted) {
           break;
         }
-        if (abort.signal.aborted || !environmentInstallSucceeded(result)) {
-          break;
+        // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
+        // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
+        const verified = await this.probeEnvironmentTool(tool);
+        if (verified.readiness === "ready") {
+          if (result?.rebootRequired) rebootSuggested.push(tool);
+          continue;
         }
-        installedTools.push(tool);
+        failure = environmentInstallFailure(ENVIRONMENT_LABEL[tool], result, verified);
+        break;
       }
     } finally {
       this.endInstall();
@@ -432,21 +459,21 @@ export class ClassroomApp {
     if (abort.signal.aborted) {
       await this.checkEnvironment();
       this.environmentNotice = ENVIRONMENT_ABORTED;
-    } else if (installedTools.length > 0) {
-      // 偵測時會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
-      await this.checkEnvironment();
-      const missing = installedTools.filter((tool) => !this.environmentInstalled[tool]);
-      if (missing.length > 0) {
-        this.environmentNotice = `已執行安裝，但還偵測不到 ${missing.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")}。請稍後按「重新檢查」。`;
-      }
+      return;
     }
+    const notices = [];
+    if (rebootSuggested.length > 0) {
+      notices.push(`${rebootSuggested.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")} 已就緒，建議重新開機。`);
+    }
+    if (failure) notices.push(failure);
+    this.environmentNotice = notices.length > 0 ? notices.join("") : undefined;
   }
 
   private environmentTools(): EnvironmentToolView[] {
     return ENVIRONMENT_TOOLS.map((id) => ({
       id,
       label: ENVIRONMENT_LABEL[id],
-      installed: this.environmentInstalled[id],
+      ...this.environmentReadiness[id],
       selected: this.environmentSelected.has(id),
     }));
   }
@@ -1819,20 +1846,19 @@ export class ClassroomApp {
   }
 }
 
-function environmentInstallSucceeded(result: {
-  exitCode: number | undefined;
-  output: string;
-}): boolean {
-  if (result.exitCode === 0) {
-    return true;
-  }
-  if (typeof result.exitCode !== "number") {
-    return false;
-  }
-  return (
-    /already installed/i.test(result.output) ||
-    /no available upgrade found/i.test(result.output)
-  );
+/** 安裝後驗證未通過時的提示；安裝程式要求重新開機時，請學生重開機後再檢查。 */
+function environmentInstallFailure(
+  label: string,
+  result: EnvironmentInstallResult | undefined,
+  verified: ToolReadiness,
+): string {
+  const rejected = result?.exitAccepted === false && result.exitCode !== undefined
+    ? `安裝失敗（結束碼 ${result.exitCode}），`
+    : "";
+  const state = verified.readiness === "missing" ? "安裝後仍偵測不到" : "安裝後仍需要修復";
+  const reason = verified.reason ? `：${verified.reason}` : "";
+  const next = result?.rebootRequired ? "請重新開機後按「重新檢查」。" : "請稍後按「重新檢查」。";
+  return `${label} ${rejected}${state}${reason}。${next}`;
 }
 
 function usableCatalogYaml(value: unknown): string | undefined {

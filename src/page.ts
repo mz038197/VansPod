@@ -7,7 +7,7 @@ import { classroomUpdateControl, classroomUpdateStyles, classroomUpdateScript } 
 import { connectionMascot, connectionMascotStyles, connectionMascotScript, fittedPatrol } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
-import { COPIED_KEY_NOTICE, type ClassroomAppView } from "./classroomApp";
+import { COPIED_KEY_NOTICE, type ClassroomAppView, type EnvironmentReadiness } from "./classroomApp";
 import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import { UPDATE_BUTTON, VERSION_UPDATE_STYLES } from "./versionUpdateView";
@@ -169,14 +169,21 @@ function adapterForms(view: ClassroomAppView): string {
     (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
 
+/** Environment Tool Readiness 與按下「確認安裝」後對該工具做的事。 */
+const READINESS_MARK: Record<EnvironmentReadiness, string> = {
+  ready: "<em>已就緒</em>",
+  needsRepair: `<em class="needs-repair">需要修復</em><span class="tool-action">修復</span>`,
+  missing: `<em>未安裝</em><span class="tool-action">安裝</span>`,
+};
+
 function environmentInner(view: ClassroomAppView): string {
   const off = locked(view);
   const confirmOff = view.installAvailable && !view.commandRunning ? "" : " disabled";
   const tools = view.tools
     .map((tool) => {
       const checked = tool.selected ? " checked" : "";
-      const mark = tool.installed ? "已安裝" : "未安裝";
-      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span>${escapeHtml(tool.label)}</span> <em>${mark}</em></label>`;
+      const title = tool.reason ? ` title="${escapeHtml(tool.reason)}"` : "";
+      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span${title}>${escapeHtml(tool.label)}</span> ${READINESS_MARK[tool.readiness]}</label>`;
     })
     .join("");
   const note = view.environmentNotice
@@ -894,8 +901,8 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
           actions += abort;
           return "";
         });
-        const missing = view.tools.filter((tool) => !tool.installed).length;
-        const summary = !view.tools.length ? "尚未檢查工具" : missing ? `尚缺 ${missing} 項工具` : "所有工具已安裝";
+        const missing = view.tools.filter((tool) => tool.readiness !== "ready").length;
+        const summary = !view.tools.length ? "尚未檢查工具" : missing ? `尚缺 ${missing} 項工具` : "所有工具已就緒";
         body = body.replace(/<div class="tools">([\s\S]*?)<\/div>/,
           `<p class="environment-summary">${summary}</p><details class="environment-tools"><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
       }
@@ -933,7 +940,7 @@ export function renderPage(view: ClassroomAppView): string {
   );
   html = html.replaceAll(">Classroom</button>", ">課堂</button>");
   html = html.replaceAll(">Native</button>", ">個人</button>");
-  const envReady = view.tools.length > 0 && view.tools.every((tool) => tool.installed);
+  const envReady = view.tools.length > 0 && view.tools.every((tool) => tool.readiness === "ready");
   const envTag = envReady
     ? `<span class="badge">已就緒</span>`
     : `<span class="badge off">未完成</span>`;
@@ -1004,6 +1011,8 @@ export function renderPage(view: ClassroomAppView): string {
     .connection-separator { opacity: 0.5; }
     .tool em { color: var(--text); }
     .tool em.missing { color: var(--muted); }
+    .tool em.needs-repair { color: light-dark(#9a4a08, #fbbf24); }
+    .tool-action { flex-shrink: 0; padding: 1px 8px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 999px; color: var(--muted); font-size: 12px; }
     .install-card { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; width: 100%; padding: 12px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
     .install-card.installed { border-color: light-dark(#6ee7b7, #1f5a45); }
     .install-number { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: light-dark(#0d0d0d, #ececec); color: light-dark(#ffffff, #0d0d0d); font: 700 16px Consolas, "Cascadia Mono", monospace; }

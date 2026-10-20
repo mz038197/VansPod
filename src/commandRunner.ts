@@ -12,8 +12,10 @@ export async function collectOutput(
   cwd?: string,
   onOutput?: (output: string) => void,
   signal?: AbortSignal,
+  /** 呼叫端已讀過登錄檔 PATH 時傳入，省下一次 PowerShell。 */
+  baseEnv?: NodeJS.ProcessEnv,
 ): Promise<{ exitCode: number | undefined; output: string; spawnError: boolean; aborted: boolean }> {
-  const env = await envWithRegistryPath();
+  const env = baseEnv ?? await envWithRegistryPath();
   // 讀 PATH 期間學生可能已經按了停止；這時不要再啟動指令。
   if (signal?.aborted) return { exitCode: undefined, output: "", spawnError: false, aborted: true };
   return new Promise((resolve) => {

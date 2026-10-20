@@ -16,7 +16,9 @@ import type { CommandResult } from "../commandRunner";
 import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
+  type EnvironmentInstallResult,
   type EnvironmentToolId,
+  type ToolReadiness,
   type UpstreamSend,
 } from "../classroomApp";
 
@@ -354,12 +356,12 @@ function harness(
     codex?: Record<string, unknown>;
     claudeTerminal?: Record<string, unknown>;
     vsCode?: Record<string, unknown>;
-    probe?: (tool: EnvironmentToolId) => Promise<{ installed: boolean }>;
+    probe?: (tool: EnvironmentToolId) => Promise<ToolReadiness>;
     install?: (
       tool: EnvironmentToolId,
       cwd: string,
       signal?: AbortSignal,
-    ) => Promise<CommandResult>;
+    ) => Promise<EnvironmentInstallResult>;
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
@@ -475,7 +477,7 @@ function harness(
         if (options?.probe) {
           return options.probe(tool);
         }
-        return { installed: false };
+        return { readiness: "missing", reason: `找不到 ${tool}` };
       },
       async install(tool, cwd, signal) {
         installCalls.push({ tool, cwd });
@@ -3251,32 +3253,38 @@ actions:
 });
 
 describe("environment tools", () => {
-  it("lists uv, git, node, and pwsh, and does not count Windows PowerShell 5.1 as pwsh", async () => {
+  const ready = (version: string): ToolReadiness => ({ readiness: "ready", version });
+
+  it("lists uv, git, node, and pwsh with each tool's Environment Tool Readiness, version, and reason", async () => {
     const asked: string[] = [];
     const { app } = harness(undefined, {
       async probe(tool) {
         asked.push(tool);
-        if ((tool as string) === "powershell") {
-          return { installed: true };
-        }
-        return { installed: tool !== "pwsh" };
+        if (tool === "uv") return ready("uv 0.5.1");
+        if (tool === "node") return { readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行" };
+        return { readiness: "missing", reason: `找不到 ${tool}` };
       },
     });
     await app.checkEnvironment();
     const view = app.view();
-    assert.deepEqual(
-      view.tools.map((tool) => tool.id),
-      ["uv", "git", "node", "pwsh"],
-    );
-    assert.equal(view.tools.length, 4);
-    assert.equal(view.tools.find((tool) => tool.id === "pwsh")?.installed, false);
-    assert.equal(JSON.stringify(view.tools).includes("powershell"), false);
+    assert.deepEqual(view.tools, [
+      { id: "uv", label: "uv", readiness: "ready", version: "uv 0.5.1", selected: false },
+      { id: "git", label: "git", readiness: "missing", reason: "找不到 git", selected: false },
+      { id: "node", label: "Node.js", readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: false },
+      { id: "pwsh", label: "PowerShell 7", readiness: "missing", reason: "找不到 pwsh", selected: false },
+    ]);
     assert.deepEqual(asked, ["uv", "git", "node", "pwsh"]);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
+  it("treats a probe that throws as not installed", async () => {
+    const { app } = harness(undefined, { async probe() { throw new Error("boom"); } });
+    await app.checkEnvironment();
+    assert.ok(app.view().tools.every((tool) => tool.readiness === "missing"));
+  });
+
   it("installs a subset in list order inside the Project Folder after one confirm", async () => {
-    const { app, installCalls } = harness();
+    const { app, installCalls } = harness(undefined, { probe: async (tool) => ready(tool) });
     await app.setProjectFolder("D:\\lesson");
     app.selectEnvironment(["node", "uv"]);
     await app.confirmEnvironment();
@@ -3287,23 +3295,107 @@ describe("environment tools", () => {
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("stops after a real install failure and does not install later tools", async () => {
-    const { app, installCalls } = harness(undefined, {
+  it("verifies each tool right after installing it, before the next install starts", async () => {
+    const events: string[] = [];
+    const installed = new Set<EnvironmentToolId>();
+    const { app } = harness(undefined, {
+      async probe(tool) {
+        events.push(`probe ${tool}`);
+        return installed.has(tool) ? ready(tool) : { readiness: "missing" };
+      },
       async install(tool) {
-        if (tool === "git") {
-          return { exitCode: 1, output: "boom" };
-        }
-        return { exitCode: 0, output: "" };
+        events.push(`install ${tool}`);
+        installed.add(tool);
+        return { exitCode: 0, output: "", exitAccepted: true };
       },
     });
     await app.setProjectFolder("D:\\lesson");
-    app.selectEnvironment(["pwsh", "git", "uv"]);
+    app.selectEnvironment(["uv", "git"]);
     await app.confirmEnvironment();
-    assert.deepEqual(
-      installCalls.map((call) => call.tool),
-      ["uv", "git"],
-    );
-    assert.equal(JSON.stringify(app.view()).includes(KEY), false);
+    assert.deepEqual(events, ["install uv", "probe uv", "install git", "probe git"]);
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "uv")?.readiness, "ready");
+    assert.equal(view.tools.find((tool) => tool.id === "git")?.readiness, "ready");
+    assert.equal(view.environmentNotice, undefined);
+  });
+
+  it("fails an install that exits 0 when verification does not pass, and stops later tools", async () => {
+    const { app, installCalls } = harness(undefined, {
+      async probe(tool) {
+        return tool === "node" ? { readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行" } : { readiness: "missing" };
+      },
+      install: async () => ({ exitCode: 0, output: "", exitAccepted: true }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["node", "pwsh"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(installCalls.map((call) => call.tool), ["node"]);
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "node")?.readiness, "needsRepair");
+    assert.equal(view.environmentNotice, "Node.js 安裝後仍需要修復：需要 Node.js LTS，且 npm 必須可正常執行。請稍後按「重新檢查」。");
+  });
+
+  it("names a rejected installer exit code when the tool is still not detected", async () => {
+    const { app } = harness(undefined, {
+      install: async () => ({ exitCode: 1, output: "boom", exitAccepted: false }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["git"]);
+    await app.confirmEnvironment();
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "git")?.readiness, "missing");
+    assert.equal(view.environmentNotice, "git 安裝失敗（結束碼 1），安裝後仍偵測不到：找不到 git。請稍後按「重新檢查」。");
+  });
+
+  it("counts an install as successful when verification passes, whatever the installer exit code", async () => {
+    let installed = false;
+    const { app } = harness(undefined, {
+      async probe(tool) { return tool === "git" && installed ? ready("git version 2.47.0") : { readiness: "missing" }; },
+      async install() { installed = true; return { exitCode: 1, output: "No available upgrade found.\n", exitAccepted: false }; },
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["git"]);
+    await app.confirmEnvironment();
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "git")?.readiness, "ready");
+    assert.equal(view.environmentNotice, undefined);
+  });
+
+  it("is ready with a restart suggestion when the installer asks for a reboot and verification passes", async () => {
+    const { app } = harness(undefined, {
+      probe: async (tool) => tool === "pwsh" ? ready("PowerShell 7.4.6") : { readiness: "missing" },
+      install: async () => ({ exitCode: 3010, output: "", exitAccepted: true, rebootRequired: true }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["pwsh"]);
+    await app.confirmEnvironment();
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "pwsh")?.readiness, "ready");
+    assert.equal(view.environmentNotice, "PowerShell 7 已就緒，建議重新開機。");
+  });
+
+  it("needs repair and asks to restart, then recheck, when the installer asks for a reboot and verification fails", async () => {
+    const { app } = harness(undefined, {
+      probe: async (tool) => tool === "pwsh" ? { readiness: "needsRepair", reason: "pwsh --version 失敗（結束碼 1）" } : { readiness: "missing" },
+      install: async () => ({ exitCode: 3010, output: "", exitAccepted: true, rebootRequired: true }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["pwsh"]);
+    await app.confirmEnvironment();
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "pwsh")?.readiness, "needsRepair");
+    assert.equal(view.environmentNotice, "PowerShell 7 安裝後仍需要修復：pwsh --version 失敗（結束碼 1）。請重新開機後按「重新檢查」。");
+  });
+
+  it("verifies a tool whose installer throws instead of trusting it", async () => {
+    const { app, probeCalls } = harness(undefined, {
+      async install() { throw new Error("spawn failed"); },
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv", "git"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(probeCalls, ["uv"]);
+    assert.match(app.view().environmentNotice ?? "", /^uv 安裝後仍偵測不到/);
   });
 
   it("does not install when the selection is empty", async () => {
@@ -3380,95 +3472,6 @@ actions:
     release("done\n");
     await running;
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
-  });
-
-  it("rechecks after exit 0 so a freshly installed tool shows as ready without restarting VansPod", async () => {
-    let installed = false;
-    const { app } = harness(undefined, {
-      async probe(tool) { return { installed: tool === "uv" && installed }; },
-      async install() { installed = true; return { exitCode: 0, output: "" }; },
-    });
-    await app.setProjectFolder("D:\\lesson");
-    await app.checkEnvironment();
-    app.selectEnvironment(["uv"]);
-    await app.confirmEnvironment();
-    const view = app.view();
-    assert.equal(view.tools.find((tool) => tool.id === "uv")?.installed, true);
-    assert.equal(view.environmentNotice, undefined);
-    assert.equal(JSON.stringify(view).includes(KEY), false);
-  });
-
-  it("names the installed tools that still are not detected after the recheck", async () => {
-    const { app } = harness();
-    await app.setProjectFolder("D:\\lesson");
-    app.selectEnvironment(["uv", "node"]);
-    await app.confirmEnvironment();
-    const view = app.view();
-    assert.equal(view.tools.find((tool) => tool.id === "node")?.installed, false);
-    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 uv、Node.js。請稍後按「重新檢查」。");
-  });
-
-  it("treats the official already-installed message as success and a bare boom as failure", async () => {
-    const { app, installCalls, probeCalls } = harness(undefined, {
-      async install(tool) {
-        if (tool === "git") {
-          return {
-            exitCode: 1,
-            output:
-              'xcode-select: error: command line tools are already installed, use "Software Update" to install updates\n',
-          };
-        }
-        if (tool === "node") {
-          return { exitCode: 1, output: "boom" };
-        }
-        return { exitCode: 0, output: "" };
-      },
-    });
-    await app.setProjectFolder("D:\\lesson");
-    await app.checkEnvironment();
-    const probesAfterCheck = probeCalls.length;
-    app.selectEnvironment(["pwsh", "node", "git"]);
-    await app.confirmEnvironment();
-    assert.deepEqual(
-      installCalls.map((call) => call.tool),
-      ["git", "node"],
-    );
-    const view = app.view();
-    assert.equal(view.tools.every((tool) => tool.installed === false), true);
-    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 git。請稍後按「重新檢查」。");
-    assert.equal(probeCalls.length, probesAfterCheck * 2);
-    assert.equal(JSON.stringify(view).includes(KEY), false);
-  });
-
-  it("treats winget already-installed wording as success and rechecks the tools", async () => {
-    const { app, installCalls, probeCalls } = harness(undefined, {
-      async install(tool) {
-        if (tool === "git") {
-          return { exitCode: 1, output: "No available upgrade found.\n" };
-        }
-        if (tool === "node") {
-          return {
-            exitCode: -1978335189,
-            output: "Found an existing package already installed.\n",
-          };
-        }
-        return { exitCode: 1, output: "boom" };
-      },
-    });
-    await app.setProjectFolder("D:\\lesson");
-    await app.checkEnvironment();
-    const probesAfterCheck = probeCalls.length;
-    app.selectEnvironment(["pwsh", "node", "git"]);
-    await app.confirmEnvironment();
-    assert.deepEqual(
-      installCalls.map((call) => call.tool),
-      ["git", "node", "pwsh"],
-    );
-    const view = app.view();
-    assert.equal(view.tools.every((tool) => tool.installed === false), true);
-    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 git、Node.js。請稍後按「重新檢查」。");
-    assert.equal(probeCalls.length, probesAfterCheck * 2);
-    assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 });
 
@@ -4091,7 +4094,7 @@ describe("Abort Install", () => {
     const { app, runCalls } = harness(undefined, {
       run: async (_cwd, _command, onOutput, signal) => runCalls.length === 1 ? untilAborted("serving\n", onOutput, signal) : "done\n",
     });
-    await app.setProjectFolder("D:\lesson");
+    await app.setProjectFolder("D:\\lesson");
     await app.redeem("ABC12345", "Ada");
     app.prepare("demo");
     const installing = app.confirm();
@@ -4117,9 +4120,9 @@ describe("Abort Install", () => {
   it("aborts an Environment Install, skips later tools, and re-detects what is actually installed", async () => {
     const { app, installCalls, probeCalls } = harness(undefined, {
       install: async (_tool, _cwd, signal) => untilAborted("waiting for installer", undefined, signal),
-      probe: async (tool) => ({ installed: tool === "uv" }),
+      probe: async (tool) => tool === "uv" ? { readiness: "ready", version: "uv 0.5.1" } : { readiness: "missing" },
     });
-    await app.setProjectFolder("D:\lesson");
+    await app.setProjectFolder("D:\\lesson");
     app.selectEnvironment(["uv", "git"]);
     const installing = app.confirmEnvironment();
     assert.equal(app.view().commandRunning, true);
@@ -4129,7 +4132,7 @@ describe("Abort Install", () => {
     const view = app.view();
     assert.equal(view.commandRunning, false);
     assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
-    assert.equal(view.tools.find((tool) => tool.id === "uv")?.installed, true);
+    assert.equal(view.tools.find((tool) => tool.id === "uv")?.readiness, "ready");
     assert.match(view.environmentNotice ?? "", /已中止.*可能仍在執行/);
   });
 

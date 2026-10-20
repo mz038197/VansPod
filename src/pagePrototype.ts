@@ -54,7 +54,7 @@ function stateText(view: ClassroomAppView): string {
       snippets: view.catalog?.snippets?.length ?? 0,
       tools: view.tools.map((tool) => ({
         id: tool.id,
-        installed: tool.installed,
+        readiness: tool.readiness,
         selected: tool.selected,
       })),
       mustRestart: view.mustRestart ?? [],

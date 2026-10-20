@@ -11,6 +11,7 @@ import {
   ClassroomApp,
   ENVIRONMENT_TOOLS,
   type EnvironmentToolId,
+  type ToolReadiness,
   type NicknameRedeemResult,
   type ProxyClient,
   type UpstreamSend,
@@ -21,6 +22,8 @@ import { createPromptCapture } from "./promptCapture";
 import { writeClipboard } from "./clipboard";
 import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./commandRunner";
+import { createWindowsEnvironment } from "./windowsEnvironment";
+import { windowsEnvironmentSystem } from "./windowsEnvironmentSystem";
 import { exitDecision, removalInterruptions } from "./exitGuard";
 import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
@@ -223,26 +226,24 @@ function isEnvironmentTool(value: string): value is EnvironmentToolId {
 const MAC_PWSH_PAGE =
   "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos";
 
-function probeEnvironment(
-  tool: EnvironmentToolId,
-): Promise<{ installed: boolean }> {
+/** macOS 維持原本的偵測：找得到且有輸出版本就算已就緒（ADR-0008：第一版只完整支援 Windows）。 */
+function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
   return collectOutput(tool, ["--version"]).then((result) => {
     if (result.spawnError) {
-      return { installed: false };
+      return { readiness: "missing" };
     }
-    return { installed: result.exitCode === 0 || /\d/.test(result.output) };
+    return { readiness: result.exitCode === 0 || /\d/.test(result.output) ? "ready" : "missing" };
   });
 }
 
-function installEnvironment(
+function installMacEnvironment(
   tool: EnvironmentToolId,
   cwd: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
-  const launch =
-    process.platform === "darwin" && tool === "pwsh"
-      ? { command: "open", args: [MAC_PWSH_PAGE] }
-      : shellLaunch(environmentInstallCommand(tool));
+  const launch = tool === "pwsh"
+    ? { command: "open", args: [MAC_PWSH_PAGE] }
+    : shellLaunch(macEnvironmentInstallCommand(tool));
   return collectOutput(launch.command, launch.args, cwd, undefined, signal).then((result) => {
     if (result.aborted) return { exitCode: result.exitCode, output: result.output, aborted: true };
     if (result.spawnError) {
@@ -252,31 +253,17 @@ function installEnvironment(
   });
 }
 
-function environmentInstallCommand(tool: EnvironmentToolId): string {
-  if (process.platform === "darwin") {
-    if (tool === "uv") {
-      return "curl -LsSf https://astral.sh/uv/install.sh | sh";
-    }
-    if (tool === "git") {
-      return "xcode-select --install";
-    }
-    if (tool === "node") {
-      return 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && . "$HOME/.nvm/nvm.sh" && nvm install --lts && nvm alias default \'lts/*\'';
-    }
-    return "";
-  }
-  const quiet =
-    "--source winget --disable-interactivity -h --accept-package-agreements --accept-source-agreements";
+function macEnvironmentInstallCommand(tool: EnvironmentToolId): string {
   if (tool === "uv") {
-    return 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"';
+    return "curl -LsSf https://astral.sh/uv/install.sh | sh";
   }
   if (tool === "git") {
-    return `winget install --id Git.Git -e ${quiet}`;
+    return "xcode-select --install";
   }
   if (tool === "node") {
-    return `winget install --id OpenJS.NodeJS.LTS -e ${quiet}`;
+    return 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && . "$HOME/.nvm/nvm.sh" && nvm install --lts && nvm alias default \'lts/*\'';
   }
-  return `winget install --id Microsoft.PowerShell -e ${quiet}`;
+  return "";
 }
 
 function readBody(req: http.IncomingMessage, max = 16_384): Promise<string> {
@@ -484,10 +471,9 @@ export async function main(instance?: Instance): Promise<void> {
     projectFiles: { readClassroomInstalls },
     clipboard: { write: writeClipboard },
     commands: { run: runCommand },
-    environment: {
-      probe: probeEnvironment,
-      install: installEnvironment,
-    },
+    environment: process.platform === "win32"
+      ? createWindowsEnvironment(windowsEnvironmentSystem)
+      : { probe: probeMacEnvironment, install: installMacEnvironment },
     files: {
       async write() {
         throw new Error("VansPod 不寫 MCP 設定");
