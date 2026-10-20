@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { it } from "node:test";
-import { windowsEnvironmentSystem } from "../windowsEnvironmentSystem";
+import { createWindowsEnvironmentSystem, windowsEnvironmentSystem } from "../windowsEnvironmentSystem";
 
 async function trickyFolder(t: { after(fn: () => Promise<void>): void }): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod env "));
@@ -108,4 +108,13 @@ it("reports Abort Install as aborted, not timed out", async (t) => {
   const result = await windowsEnvironmentSystem.run(process.execPath, [script], { signal: controller.signal });
   assert.equal(result.aborted, true);
   assert.equal(result.timedOut, false);
+});
+
+it("counts the registry PATH lookup toward a check's timeout", async () => {
+  const system = createWindowsEnvironmentSystem({ environment: () => new Promise<NodeJS.ProcessEnv>(() => {}) });
+  const started = Date.now();
+  const result = await system.run(process.execPath, ["--version"], { timeoutMs: 300 });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.aborted, false);
+  assert.ok(Date.now() - started < 5_000);
 });

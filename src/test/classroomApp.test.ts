@@ -3521,6 +3521,30 @@ describe("environment tools", () => {
     assert.equal(view.environmentNotice, "PowerShell 7 安裝後仍需要修復：pwsh --version 失敗（結束碼 1）。請重新開機後按「重新檢查」。");
   });
 
+  it("needs repair, not missing, when the installer asks for a reboot and the tool is not detected yet", async () => {
+    const { app } = harness(undefined, {
+      probe: async () => ({ readiness: "missing", reason: "找不到 pwsh" }),
+      install: async () => ({ exitCode: 3010, output: "", exitAccepted: true, rebootRequired: true }),
+    });
+    app.selectEnvironment(["pwsh"]);
+    await app.confirmEnvironment();
+    const pwsh = app.view().tools.find((tool) => tool.id === "pwsh");
+    assert.equal(pwsh?.readiness, "needsRepair");
+    assert.equal(pwsh?.selected, true);
+    assert.equal(app.view().environmentNotice, "PowerShell 7 安裝後仍需要修復：找不到 pwsh。請重新開機後按「重新檢查」。");
+  });
+
+  it("uses the verification the installer already ran instead of probing the tool again", async () => {
+    const { app, probeCalls } = harness(undefined, {
+      install: async () => ({ exitCode: 0, output: "", exitAccepted: true, verified: { readiness: "ready", version: "1.105.1" } }),
+    });
+    app.selectEnvironment(["vscode"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(probeCalls, []);
+    assert.equal(app.view().tools.find((tool) => tool.id === "vscode")?.readiness, "ready");
+    assert.equal(app.view().environmentNotice, undefined);
+  });
+
   it("verifies a tool whose installer throws instead of trusting it", async () => {
     const { app, probeCalls } = harness(undefined, {
       async install() { throw new Error("spawn failed"); },
@@ -3564,6 +3588,7 @@ describe("environment tools", () => {
     assert.deepEqual(stage("git"), { stage: "waiting" });
     assert.equal(stage("node"), undefined);
     await settle();
+    assert.deepEqual(stage("uv"), { stage: "preparing" });
     installs.uv!.report({ stage: "downloading", downloaded: 1_048_576 });
     assert.deepEqual(stage("uv"), { stage: "downloading", downloaded: 1_048_576 });
     installs.uv!.report({ stage: "downloading", downloaded: 2_097_152, total: 8_388_608 });
@@ -3576,7 +3601,8 @@ describe("environment tools", () => {
     verifyUv({ readiness: "ready", version: "uv 0.5.1" });
     await settle();
     assert.deepEqual(stage("uv"), { stage: "done" });
-    assert.deepEqual(stage("git"), { stage: "installing" });
+    // 下一個工具開始時是「準備中」；安裝程式啟動後由 environment 回報「安裝中」。
+    assert.deepEqual(stage("git"), { stage: "preparing" });
     installs.git!.finish({ exitCode: 1, output: "" });
     await settle();
     await settle();
@@ -3601,8 +3627,8 @@ describe("environment tools", () => {
     for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
     const stage = (id: EnvironmentToolId) => app.view().tools.find((tool) => tool.id === id)?.progress;
     assert.deepEqual(stage("git"), { stage: "failed" });
-    // 安裝程式一啟動就算「安裝中」，即使 environment 沒有回報進度（例如 macOS）。
-    assert.deepEqual(stage("node"), { stage: "installing" });
+    // 還沒回報下載或安裝之前不假裝已經在安裝。
+    assert.deepEqual(stage("node"), { stage: "preparing" });
     finishNode({ exitCode: 0, output: "" });
     await run;
   });

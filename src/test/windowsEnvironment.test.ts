@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
   createWindowsEnvironment,
+  DownloadHttpError,
   type EnvironmentSystem,
   type RunOptions,
   type RunResult,
@@ -328,11 +329,25 @@ describe("Windows Environment Install: VS Code", () => {
   });
 
   it("gives up after 3 failed downloads and reports why", async () => {
-    const { downloads, ran, result } = await installVsCode({ downloads: [new Error("下載失敗（HTTP 503）")] });
+    const { downloads, ran, result } = await installVsCode({ downloads: [new DownloadHttpError(503)] });
     assert.equal(downloads.length, 3);
     assert.equal(ran.length, 0);
     assert.equal(result.exitAccepted, false);
     assert.match(result.failure ?? "", /下載失敗.*HTTP 503/);
+  });
+
+  it("retries only temporary download failures: network errors, 5xx, 408, 429, and incomplete downloads", async () => {
+    const temporary = [new Error("ECONNRESET"), new Error("下載未完成"), new DownloadHttpError(500), new DownloadHttpError(408), new DownloadHttpError(429)];
+    for (const failure of temporary) {
+      const { downloads } = await installVsCode({ downloads: [failure, "ok"] });
+      assert.equal(downloads.length, 2, failure.message);
+    }
+    for (const status of [400, 403, 404, 410]) {
+      const { downloads, ran, result } = await installVsCode({ downloads: [new DownloadHttpError(status), "ok"] });
+      assert.equal(downloads.length, 1, String(status));
+      assert.equal(ran.length, 0);
+      assert.match(result.failure ?? "", new RegExp(`HTTP ${status}`));
+    }
   });
 
   it("cancels a download on Abort Install without retrying and leaves no partial file", async () => {
@@ -391,6 +406,15 @@ describe("Windows Environment Install: VS Code", () => {
     });
     assert.equal(retry.downloads.length, 1);
     assert.equal(retry.ran.length, 1);
+  });
+
+  it("verifies VS Code exactly once after installing and returns that verdict", async () => {
+    const ready = await installVsCode();
+    assert.equal(ready.calls.filter((call) => call.command === "code").length, 1);
+    assert.deepEqual(ready.result.verified, { readiness: "ready", version: "1.105.1" });
+    const broken = await installVsCode({ code: { notFound: true } });
+    assert.equal(broken.calls.filter((call) => call.command === "code").length, 1);
+    assert.equal(broken.result.verified?.readiness, "missing");
   });
 
   it("asks for a reboot when the installer exits 3010", async () => {

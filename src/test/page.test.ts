@@ -630,6 +630,7 @@ describe("Environment Install card", () => {
   it("words every Environment Install stage for the student", () => {
     const MB = 1024 * 1024;
     assert.equal(environmentStageText({ stage: "waiting" }), "等待中");
+    assert.equal(environmentStageText({ stage: "preparing" }), "準備中");
     assert.equal(environmentStageText({ stage: "downloading" }), "下載中");
     assert.equal(environmentStageText({ stage: "downloading", downloaded: 3.5 * MB }), "下載中 3.5 MB");
     assert.equal(environmentStageText({ stage: "downloading", downloaded: 0, total: 0 }), "下載中 0.0 MB");

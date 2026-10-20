@@ -57,16 +57,22 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
  * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
  * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
  * failure：安裝程式沒有執行的原因（例如下載失敗、簽章不符），驗證未通過時顯示給學生。
+ * verified：environment 安裝後已經跑過的驗證（要依結果決定是否刪除安裝檔）；有值時 ClassroomApp 直接採用，不再 probe 一次。
  */
-export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean; failure?: string };
+export type EnvironmentInstallResult = CommandResult & {
+  exitAccepted?: boolean;
+  rebootRequired?: boolean;
+  failure?: string;
+  verified?: ToolReadiness;
+};
 
-/** Environment Install 中一個工具的階段：等待中、下載中、安裝中、驗證中、完成、失敗。 */
-export type EnvironmentInstallStage = "waiting" | "downloading" | "installing" | "verifying" | "done" | "failed";
+/** Environment Install 中一個工具的階段：等待中、準備中（輪到它、還沒開始下載或安裝）、下載中、安裝中、驗證中、完成、失敗。 */
+export type EnvironmentInstallStage = "waiting" | "preparing" | "downloading" | "installing" | "verifying" | "done" | "failed";
 
 /** 一個工具目前的階段；下載中附已下載位元組，伺服器沒給總量時沒有 total。 */
 export type EnvironmentInstallProgress = { stage: EnvironmentInstallStage; downloaded?: number; total?: number };
 
-/** environment.install 透過 onProgress 回報的進度；等待、完成與失敗由 ClassroomApp 決定。 */
+/** environment.install 透過 onProgress 回報的進度；等待、準備、完成與失敗由 ClassroomApp 決定。 */
 export type EnvironmentInstallReport = EnvironmentInstallProgress & { stage: "downloading" | "installing" | "verifying" };
 
 /** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
@@ -297,7 +303,8 @@ export class ClassroomApp {
   // 每次學生改勾選就加一；檢查開始後學生改過，檢查結束就不覆蓋他的勾選。
   private environmentSelectionEdits = 0;
   private environmentCheck: Promise<void> | undefined;
-  private environmentCheckStarted = false;
+  // 任何一次檢查開始過就為真：啟動時的背景檢查只跑一次，學生已按過「重新檢查」也不再補跑。
+  private initialEnvironmentCheckStarted = false;
   private environmentNotice: string | undefined;
   private environmentLog: EnvironmentInstallLog | undefined;
   // 背景 Environment Install 進行中才有：這次要裝的每個工具目前的階段。
@@ -429,11 +436,11 @@ export class ClassroomApp {
   checkEnvironment(): Promise<void> {
     if (this.environmentCheck) return this.environmentCheck;
     if (this.commandRunning) return Promise.resolve();
-    this.environmentCheckStarted = true;
+    this.initialEnvironmentCheckStarted = true;
     const edits = this.environmentSelectionEdits;
     const check = (async () => {
       try {
-        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        await this.probeAllEnvironmentTools();
         // 檢查期間學生自己改過勾選，就保留他的選擇。
         if (this.environmentSelectionEdits === edits) this.selectNotReadyEnvironmentTools();
         // 學生在 VansPod 外裝好 VS Code，按「重新檢查」也讓 VS Code Chat 跟著可用。
@@ -456,6 +463,10 @@ export class ClassroomApp {
     );
   }
 
+  private async probeAllEnvironmentTools(): Promise<void> {
+    await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+  }
+
   private async probeEnvironmentTool(tool: EnvironmentToolId): Promise<ToolReadiness> {
     let readiness: ToolReadiness;
     try {
@@ -465,6 +476,17 @@ export class ClassroomApp {
     }
     this.environmentReadiness[tool] = readiness;
     return readiness;
+  }
+
+  /**
+   * 安裝後的驗證：environment 已經驗證過就採用它的結果，每個工具只檢查一次。
+   * 安裝程式要求重新開機、工具還不能用時算「需要修復」：裝過了，重新開機後再檢查（US32）。
+   */
+  private async verifyInstalledTool(tool: EnvironmentToolId, result: EnvironmentInstallResult | undefined): Promise<ToolReadiness> {
+    let verified = result?.verified ?? await this.probeEnvironmentTool(tool);
+    if (result?.rebootRequired && verified.readiness === "missing") verified = { ...verified, readiness: "needsRepair" };
+    this.environmentReadiness[tool] = verified;
+    return verified;
   }
 
   selectEnvironment(tools: readonly EnvironmentToolId[]): void {
@@ -504,8 +526,8 @@ export class ClassroomApp {
       await this.startEnvironmentLog();
       for (const tool of selected) {
         if (abort.signal.aborted) break;
-        // 安裝程式一啟動就算「安裝中」；environment 可再回報下載中與下載量。
-        progress[tool] = { stage: "installing" };
+        // 輪到這個工具：先是「準備中」，environment 開始下載或啟動安裝程式時再回報下載中、安裝中。
+        progress[tool] = { stage: "preparing" };
         const report = (reported: EnvironmentInstallReport) => {
           if (abort.signal.aborted) return;
           progress[tool] = { ...reported };
@@ -522,7 +544,7 @@ export class ClassroomApp {
         // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
         // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
         progress[tool] = { stage: "verifying" };
-        const verified = await this.probeEnvironmentTool(tool);
+        const verified = await this.verifyInstalledTool(tool, result);
         await this.environmentLog?.verified(tool, verified).catch(() => {});
         if (verified.readiness === "ready") {
           progress[tool] = { stage: "done" };
@@ -536,7 +558,7 @@ export class ClassroomApp {
       }
       if (abort.signal.aborted) {
         // 中止後重新檢查全部工具，畫面顯示實際狀態（ADR-0008）；仍算在這次安裝裡。
-        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        await this.probeAllEnvironmentTools();
         this.selectNotReadyEnvironmentTools();
       }
     } finally {
@@ -1506,16 +1528,18 @@ export class ClassroomApp {
     if (this.stopping || !this.initialization) return;
     await this.initialization.catch(() => undefined);
     if (this.stopping || this.detectedClients.vsCodeChat) return;
-    try { this.detectedClients.vsCodeChat = await this.deps.detectClient?.("vsCodeChat") ?? false; }
-    catch { this.detectedClients.vsCodeChat = false; }
+    await this.detectClient("vsCodeChat");
     if (this.detectedClients.vsCodeChat) await this.startVsCodeRoute();
   }
 
   private async detectClients(): Promise<void> {
-    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(async client => {
-      try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
-      catch { this.detectedClients[client] = false; }
-    }));
+    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(client => this.detectClient(client)));
+  }
+
+  /** 偵測失敗就當作沒裝。 */
+  private async detectClient(client: AdapterClient | "vsCodeChat"): Promise<void> {
+    try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
+    catch { this.detectedClients[client] = false; }
   }
 
   private async reloadAllowlistNow(): Promise<void> {
@@ -1773,7 +1797,7 @@ export class ClassroomApp {
   private async startNow(): Promise<void> {
     this.stopping = false;
     // 啟動後在背景檢查一次開發工具；不擋住連線與路由的恢復。
-    if (!this.environmentCheckStarted) void this.checkEnvironment();
+    if (!this.initialEnvironmentCheckStarted) void this.checkEnvironment();
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
