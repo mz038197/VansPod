@@ -81,8 +81,12 @@ _Avoid_: 用來啟動長駐網站或服務、把仍在執行的網站稱為安�
 _Avoid_: Course Install Action、由 VansPod 在背景啟動課程網站
 
 **Environment Install**:
-VansPod 內建、為學生電腦安裝開發工具（如 uv、Git、Node.js、PowerShell）的安裝流程。它與 Course Install Action 不同，不由 Course Catalog 定義。
-_Avoid_: Course Install Action、課程資源安裝
+VansPod 內建、為學生電腦安裝開發工具（VS Code、uv、Git、Node.js、PowerShell 7）的安裝流程。它與 Course Install Action 不同，不由 Course Catalog 定義；工具裝在整台電腦而非專案，因此不需要先選 Project Folder。一個工具失敗不影響其他工具繼續安裝。它是學生準備開發工具的唯一入口，沒有另外的課前安裝程式。
+_Avoid_: Course Install Action、課程資源安裝、課前安裝助手
+
+**Environment Tool Readiness**:
+一個開發工具在學生電腦上的狀態：「已就緒」表示找得到且通過該工具的驗證（例如 Node.js 必須是 LTS 且 npm 可用）；「需要修復」表示找得到但驗證不通過或檢查逾時；「未安裝」表示找不到。需要修復的工具畫面提供「修復」，未安裝的提供「安裝」。
+_Avoid_: 只要指令能執行就算已就緒、把需要修復當成未安裝
 
 **Abort Install**:
 學生明確確認後，終止仍在執行的安裝及其衍生程序；結果為「已中止」，既不是成功也不是一般失敗。結束 VansPod 時遇到安裝中，須經學生確認中止才繼續結束，不得默默中斷。
