@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { collectOutput } from "./commandRunner";
@@ -118,5 +118,13 @@ export const windowsEnvironmentSystem: EnvironmentSystem = {
   signature,
   async wingetAvailable() {
     return (await resolveCommand("winget", await envWithRegistryPath())) !== undefined;
+  },
+  async openFolder(folder) {
+    if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
+    // explorer.exe 直接收路徑參數，中文、空白、驚嘆號都不必經過 cmd.exe 的引號規則。
+    const explorer = path.join(process.env.SystemRoot ?? "C:\\Windows", "explorer.exe");
+    const child = spawn(explorer, [folder], { detached: true, stdio: "ignore", windowsHide: false });
+    child.on("error", () => {});
+    child.unref();
   },
 };

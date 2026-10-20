@@ -39,7 +39,7 @@ export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
 
 export type EnvironmentToolId = (typeof ENVIRONMENT_TOOLS)[number];
 
-const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
+export const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   uv: "uv",
   git: "git",
   node: "Node.js",
@@ -56,6 +56,14 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
  * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
  */
 export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
+
+/** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
+export type EnvironmentInstallLog = {
+  /** 本次的紀錄資料夾，結果畫面「開啟紀錄資料夾」開啟它。 */
+  folder: string;
+  verified(tool: EnvironmentToolId, readiness: ToolReadiness): Promise<void>;
+  finish(summary: string): Promise<void>;
+};
 
 export type MustRestartClient = "codex" | "claude" | "vscode";
 
