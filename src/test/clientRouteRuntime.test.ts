@@ -88,16 +88,34 @@ it("assigns VS Code Chat identity from its accepting listener regardless of requ
   assert.equal(await response.text(), "vsCodeChat");
 });
 
-it("reports only Claude Code red when its base-port-plus-one listener is occupied", async () => {
-  const occupied = http.createServer((_request, response) => response.end("occupied"));
-  await new Promise<void>((resolve, reject) => {
-    occupied.once("error", reject);
-    occupied.listen(0, "127.0.0.1", resolve);
+function listen(server: http.Server, port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => resolve(true));
   });
-  const address = occupied.address();
-  assert.ok(address && typeof address === "object" && address.port > 1);
+}
+
+/** 占住一個埠，並確認它前一個埠是空的；系統給的埠前一個常被別的連線用掉，就換一組再試。 */
+async function occupyPortAfterFreeOne(): Promise<{ occupied: http.Server; port: number }> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const occupied = http.createServer((_request, response) => response.end("occupied"));
+    assert.ok(await listen(occupied, 0));
+    const address = occupied.address();
+    assert.ok(address && typeof address === "object");
+    const probe = http.createServer();
+    if (address.port > 1 && await listen(probe, address.port - 1)) {
+      await new Promise<void>(resolve => probe.close(() => resolve()));
+      return { occupied, port: address.port };
+    }
+    await new Promise<void>(resolve => occupied.close(() => resolve()));
+  }
+  throw new Error("找不到前一個埠是空的連接埠");
+}
+
+it("reports only Claude Code red when its base-port-plus-one listener is occupied", async () => {
+  const { occupied, port } = await occupyPortAfterFreeOne();
   const runtime = createClientRouteRuntime({
-    basePort: address.port - 1,
+    basePort: port - 1,
     async handle(accepted, _request, response) {
       response.end(accepted.route ?? "ui-only");
     },
