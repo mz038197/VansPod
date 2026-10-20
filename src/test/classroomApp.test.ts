@@ -359,7 +359,6 @@ function harness(
     probe?: (tool: EnvironmentToolId) => Promise<ToolReadiness>;
     install?: (
       tool: EnvironmentToolId,
-      cwd: string,
       signal?: AbortSignal,
     ) => Promise<EnvironmentInstallResult>;
     providers?: Array<Record<string, unknown>>;
@@ -374,7 +373,7 @@ function harness(
   const fileReads: string[] = [];
   const runCalls: { cwd: string; command: string }[] = [];
   const probeCalls: EnvironmentToolId[] = [];
-  const installCalls: { tool: EnvironmentToolId; cwd: string }[] = [];
+  const installCalls: EnvironmentToolId[] = [];
   const modelKeys: string[] = [];
   let providers = structuredClone(options?.providers ?? []);
   const copilotWrites: { providers: Array<Record<string, unknown>> }[] = [];
@@ -479,10 +478,10 @@ function harness(
         }
         return { readiness: "missing", reason: `找不到 ${tool}` };
       },
-      async install(tool, cwd, signal) {
-        installCalls.push({ tool, cwd });
+      async install(tool, signal) {
+        installCalls.push(tool);
         if (options?.install) {
-          return options.install(tool, cwd, signal);
+          return options.install(tool, signal);
         }
         return { exitCode: 0, output: "" };
       },
@@ -3269,9 +3268,9 @@ describe("environment tools", () => {
     const view = app.view();
     assert.deepEqual(view.tools, [
       { id: "uv", label: "uv", readiness: "ready", version: "uv 0.5.1", selected: false },
-      { id: "git", label: "git", readiness: "missing", reason: "找不到 git", selected: false },
-      { id: "node", label: "Node.js", readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: false },
-      { id: "pwsh", label: "PowerShell 7", readiness: "missing", reason: "找不到 pwsh", selected: false },
+      { id: "git", label: "git", readiness: "missing", reason: "找不到 git", selected: true },
+      { id: "node", label: "Node.js", readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: true },
+      { id: "pwsh", label: "PowerShell 7", readiness: "missing", reason: "找不到 pwsh", selected: true },
     ]);
     assert.deepEqual(asked, ["uv", "git", "node", "pwsh"]);
     assert.equal(JSON.stringify(view).includes(KEY), false);
@@ -3283,16 +3282,116 @@ describe("environment tools", () => {
     assert.ok(app.view().tools.every((tool) => tool.readiness === "missing"));
   });
 
-  it("installs a subset in list order inside the Project Folder after one confirm", async () => {
+  it("installs a subset in list order after one confirm, without a Project Folder", async () => {
     const { app, installCalls } = harness(undefined, { probe: async (tool) => ready(tool) });
-    await app.setProjectFolder("D:\\lesson");
     app.selectEnvironment(["node", "uv"]);
     await app.confirmEnvironment();
-    assert.deepEqual(installCalls, [
-      { tool: "uv", cwd: "D:\\lesson" },
-      { tool: "node", cwd: "D:\\lesson" },
-    ]);
+    assert.deepEqual(installCalls, ["uv", "node"]);
+    assert.equal(app.view().projectFolder, undefined);
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
+  });
+
+  it("checks Environment Tool Readiness once in the background on start, showing each tool as checking until its result is in", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { app, probeCalls } = harness(undefined, {
+      async probe(tool) { await gate; return tool === "uv" ? ready("uv 0.5.1") : { readiness: "missing" }; },
+    });
+    assert.ok(app.view().tools.every((tool) => tool.readiness === "checking"));
+    await app.start();
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
+    assert.ok(app.view().tools.every((tool) => tool.readiness === "checking"));
+    release();
+    await app.checkEnvironment();
+    assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
+    assert.deepEqual(app.view().tools.map((tool) => tool.readiness), ["ready", "missing", "missing", "missing"]);
+    await app.stop();
+    await app.start();
+    assert.equal(probeCalls.length, 4);
+    await app.stop();
+  });
+
+  it("selects the tools that are not ready after a check and keeps the student's changes until the next check", async () => {
+    const { app } = harness(undefined, {
+      async probe(tool) {
+        if (tool === "uv") return ready("uv 0.5.1");
+        if (tool === "node") return { readiness: "needsRepair", reason: "需要 Node.js LTS，且 npm 必須可正常執行" };
+        return { readiness: "missing" };
+      },
+    });
+    await app.checkEnvironment();
+    const selected = () => app.view().tools.filter((tool) => tool.selected).map((tool) => tool.id);
+    assert.deepEqual(selected(), ["git", "node", "pwsh"]);
+    app.selectEnvironment(["node"]);
+    assert.deepEqual(selected(), ["node"]);
+    assert.deepEqual(selected(), ["node"]);
+    await app.checkEnvironment();
+    assert.deepEqual(selected(), ["git", "node", "pwsh"]);
+  });
+
+  it("keeps a selection the student changed while the check was still running", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { app } = harness(undefined, { async probe() { await gate; return { readiness: "missing" }; } });
+    const checking = app.checkEnvironment();
+    app.selectEnvironment(["git"]);
+    release();
+    await checking;
+    assert.deepEqual(app.view().tools.filter((tool) => tool.selected).map((tool) => tool.id), ["git"]);
+  });
+
+  it("waits for a running check before installing so it installs against fresh readiness", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    const { app } = harness(undefined, {
+      async probe(tool) { await gate; events.push(`probe ${tool}`); return { readiness: "missing" }; },
+      async install(tool) { events.push(`install ${tool}`); return { exitCode: 0, output: "" }; },
+    });
+    const checking = app.checkEnvironment();
+    app.selectEnvironment(["uv"]);
+    const installing = app.confirmEnvironment();
+    release();
+    await Promise.all([checking, installing]);
+    assert.deepEqual(events.slice(0, 5), ["probe uv", "probe git", "probe node", "probe pwsh", "install uv"]);
+  });
+
+  it("keeps installing after a tool fails and lists every failed tool with its reason", async () => {
+    const installed = new Set<EnvironmentToolId>();
+    const { app, installCalls } = harness(undefined, {
+      async probe(tool) {
+        if (tool === "node") return { readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行" };
+        return installed.has(tool) ? ready(tool) : { readiness: "missing", reason: `找不到 ${tool}` };
+      },
+      async install(tool) {
+        if (tool === "git") throw new Error("spawn failed");
+        if (tool === "uv" || tool === "pwsh") installed.add(tool);
+        return { exitCode: 0, output: "", exitAccepted: true };
+      },
+    });
+    app.selectEnvironment(["uv", "git", "node", "pwsh"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(installCalls, ["uv", "git", "node", "pwsh"]);
+    const view = app.view();
+    assert.deepEqual(view.tools.map((tool) => tool.readiness), ["ready", "missing", "needsRepair", "ready"]);
+    assert.equal(
+      view.environmentNotice,
+      "git 安裝後仍偵測不到：找不到 git。請稍後按「重新檢查」。Node.js 安裝後仍需要修復：需要 Node.js LTS，且 npm 必須可正常執行。請稍後按「重新檢查」。",
+    );
+  });
+
+  it("selects only the tools still not ready after an install, so confirming again retries just those", async () => {
+    let gitWorks = false;
+    const { app, installCalls } = harness(undefined, {
+      async probe(tool) { return tool === "git" && !gitWorks ? { readiness: "missing" } : ready(tool); },
+    });
+    app.selectEnvironment(["uv", "git"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(app.view().tools.filter((tool) => tool.selected).map((tool) => tool.id), ["git"]);
+    gitWorks = true;
+    await app.confirmEnvironment();
+    assert.deepEqual(installCalls, ["uv", "git", "git"]);
+    assert.equal(app.view().environmentNotice, undefined);
   });
 
   it("verifies each tool right after installing it, before the next install starts", async () => {
@@ -3319,17 +3418,15 @@ describe("environment tools", () => {
     assert.equal(view.environmentNotice, undefined);
   });
 
-  it("fails an install that exits 0 when verification does not pass, and stops later tools", async () => {
-    const { app, installCalls } = harness(undefined, {
+  it("fails an install that exits 0 when verification does not pass", async () => {
+    const { app } = harness(undefined, {
       async probe(tool) {
-        return tool === "node" ? { readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行" } : { readiness: "missing" };
+        return tool === "node" ? { readiness: "needsRepair", version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行" } : ready(tool);
       },
       install: async () => ({ exitCode: 0, output: "", exitAccepted: true }),
     });
-    await app.setProjectFolder("D:\\lesson");
     app.selectEnvironment(["node", "pwsh"]);
     await app.confirmEnvironment();
-    assert.deepEqual(installCalls.map((call) => call.tool), ["node"]);
     const view = app.view();
     assert.equal(view.tools.find((tool) => tool.id === "node")?.readiness, "needsRepair");
     assert.equal(view.environmentNotice, "Node.js 安裝後仍需要修復：需要 Node.js LTS，且 npm 必須可正常執行。請稍後按「重新檢查」。");
@@ -3391,8 +3488,7 @@ describe("environment tools", () => {
     const { app, probeCalls } = harness(undefined, {
       async install() { throw new Error("spawn failed"); },
     });
-    await app.setProjectFolder("D:\\lesson");
-    app.selectEnvironment(["uv", "git"]);
+    app.selectEnvironment(["uv"]);
     await app.confirmEnvironment();
     assert.deepEqual(probeCalls, ["uv"]);
     assert.match(app.view().environmentNotice ?? "", /^uv 安裝後仍偵測不到/);
@@ -3406,13 +3502,6 @@ describe("environment tools", () => {
     assert.deepEqual(installCalls, []);
   });
 
-  it("does not install without a Project Folder", async () => {
-    const { app, installCalls } = harness();
-    app.selectEnvironment(["uv", "git", "node", "pwsh"]);
-    await app.confirmEnvironment();
-    assert.deepEqual(installCalls, []);
-    assert.equal(app.view().projectFolder, undefined);
-  });
 
   it("holds the command lock while an install is pending", async () => {
     let release: (value: { exitCode: number | undefined; output: string }) => void =
@@ -4119,16 +4208,15 @@ describe("Abort Install", () => {
 
   it("aborts an Environment Install, skips later tools, and re-detects what is actually installed", async () => {
     const { app, installCalls, probeCalls } = harness(undefined, {
-      install: async (_tool, _cwd, signal) => untilAborted("waiting for installer", undefined, signal),
+      install: async (_tool, signal) => untilAborted("waiting for installer", undefined, signal),
       probe: async (tool) => tool === "uv" ? { readiness: "ready", version: "uv 0.5.1" } : { readiness: "missing" },
     });
-    await app.setProjectFolder("D:\\lesson");
     app.selectEnvironment(["uv", "git"]);
     const installing = app.confirmEnvironment();
     assert.equal(app.view().commandRunning, true);
     app.abortInstall();
     await installing;
-    assert.deepEqual(installCalls.map((call) => call.tool), ["uv"]);
+    assert.deepEqual(installCalls, ["uv"]);
     const view = app.view();
     assert.equal(view.commandRunning, false);
     assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);

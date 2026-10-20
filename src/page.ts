@@ -170,15 +170,22 @@ function adapterForms(view: ClassroomAppView): string {
 }
 
 /** Environment Tool Readiness 與按下「確認安裝」後對該工具做的事。 */
-const READINESS_MARK: Record<EnvironmentReadiness, string> = {
+const READINESS_MARK: Record<EnvironmentReadiness | "checking", string> = {
   ready: "<em>已就緒</em>",
   needsRepair: `<em class="needs-repair">需要修復</em><span class="tool-action">修復</span>`,
   missing: `<em>未安裝</em><span class="tool-action">安裝</span>`,
+  checking: `<em class="checking">檢查中</em>`,
 };
+
+/** 第一次檢查還沒有結果的工具不算缺，整張卡顯示「檢查中」。 */
+function environmentChecking(view: ClassroomAppView): boolean {
+  return view.tools.some((tool) => tool.readiness === "checking");
+}
 
 function environmentInner(view: ClassroomAppView): string {
   const off = locked(view);
-  const confirmOff = view.installAvailable && !view.commandRunning ? "" : " disabled";
+  // 開發工具與 Project Folder 無關：沒選資料夾也能安裝。
+  const confirmOff = view.commandRunning ? " disabled" : "";
   const tools = view.tools
     .map((tool) => {
       const checked = tool.selected ? " checked" : "";
@@ -902,7 +909,9 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
           return "";
         });
         const missing = view.tools.filter((tool) => tool.readiness !== "ready").length;
-        const summary = !view.tools.length ? "尚未檢查工具" : missing ? `尚缺 ${missing} 項工具` : "所有工具已就緒";
+        const summary = !view.tools.length ? "尚未檢查工具"
+          : environmentChecking(view) ? "正在檢查工具…"
+          : missing ? `尚缺 ${missing} 項工具` : "所有工具已就緒";
         body = body.replace(/<div class="tools">([\s\S]*?)<\/div>/,
           `<p class="environment-summary">${summary}</p><details class="environment-tools"><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
       }
@@ -943,6 +952,7 @@ export function renderPage(view: ClassroomAppView): string {
   const envReady = view.tools.length > 0 && view.tools.every((tool) => tool.readiness === "ready");
   const envTag = envReady
     ? `<span class="badge">已就緒</span>`
+    : environmentChecking(view) ? `<span class="badge off">檢查中</span>`
     : `<span class="badge off">未完成</span>`;
   html = html.replace(
     `<section class="tile"><h2>環境</h2>`,

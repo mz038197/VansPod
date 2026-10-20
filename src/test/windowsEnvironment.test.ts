@@ -114,7 +114,7 @@ describe("Windows Environment Install", () => {
   it("installs Git, Node.js LTS, and PowerShell 7 with silent winget", async () => {
     const { system, calls } = fakeSystem({ winget: { output: "Successfully installed\n" } });
     const environment = createWindowsEnvironment(system);
-    for (const tool of ["git", "node", "pwsh"] as const) await environment.install(tool, "D:\\lesson");
+    for (const tool of ["git", "node", "pwsh"] as const) await environment.install(tool);
     assert.deepEqual(calls.map((call) => [call.command, ...call.args].join(" ")), [
       "winget install --id Git.Git -e --source winget --disable-interactivity -h --accept-package-agreements --accept-source-agreements",
       "winget install --id OpenJS.NodeJS.LTS -e --source winget --disable-interactivity -h --accept-package-agreements --accept-source-agreements",
@@ -125,7 +125,7 @@ describe("Windows Environment Install", () => {
 
   it("installs uv with the official install script", async () => {
     const { system, calls } = fakeSystem({ "powershell.exe": { output: "" } });
-    await createWindowsEnvironment(system).install("uv", "D:\\lesson");
+    await createWindowsEnvironment(system).install("uv");
     assert.deepEqual(calls.map((call) => [call.command, ...call.args]), [
       ["powershell.exe", "-ExecutionPolicy", "ByPass", "-c", "irm https://astral.sh/uv/install.ps1 | iex"],
     ]);
@@ -136,7 +136,7 @@ describe("Windows Environment Install", () => {
     const rejected = [1, -1978335216, 2316632080];
     for (const exitCode of [...accepted, ...rejected]) {
       const { system } = fakeSystem({ winget: { exitCode, output: "winget output\n" } });
-      const result = await createWindowsEnvironment(system).install("git", "D:\\lesson");
+      const result = await createWindowsEnvironment(system).install("git");
       assert.equal(result.exitCode, exitCode);
       assert.equal(result.exitAccepted, accepted.includes(exitCode), String(exitCode));
       assert.equal(result.rebootRequired ?? false, exitCode === 3010, String(exitCode));
@@ -145,7 +145,7 @@ describe("Windows Environment Install", () => {
 
   it("reports a launch failure when winget cannot be found", async () => {
     const { system } = fakeSystem({});
-    const result = await createWindowsEnvironment(system).install("pwsh", "D:\\lesson");
+    const result = await createWindowsEnvironment(system).install("pwsh");
     assert.equal(result.exitAccepted, false);
     assert.match(result.output, /無法啟動/);
   });
@@ -153,7 +153,7 @@ describe("Windows Environment Install", () => {
   it("passes Abort Install through to the running installer", async () => {
     const controller = new AbortController();
     const { system, calls } = fakeSystem({ winget: { aborted: true, exitCode: undefined, output: "partial" } });
-    const result = await createWindowsEnvironment(system).install("node", "D:\\lesson", controller.signal);
+    const result = await createWindowsEnvironment(system).install("node", controller.signal);
     assert.equal(calls[0]?.options.signal, controller.signal);
     assert.equal(result.aborted, true);
     assert.equal(result.exitAccepted, false);

@@ -555,6 +555,21 @@ describe("Environment Install card", () => {
     assert.match(html, /尚缺 2 項工具/);
   });
 
+  it("lets the student install without a Project Folder", () => {
+    const html = renderPage(view({ installAvailable: false, tools }));
+    assert.equal(/<button[^>]*form="settings-environment"[^>]*>確認安裝/.test(html), true);
+    assert.doesNotMatch(html.match(/<button[^>]*form="settings-environment"[^>]*>確認安裝/)?.[0] ?? "", /disabled/);
+  });
+
+  it("shows tools as being checked, not as 未安裝, until the first check finishes", () => {
+    const html = renderPage(view({ tools: tools.map((tool) => ({ id: tool.id, label: tool.label, readiness: "checking" as const, selected: false })) }));
+    for (const tool of tools) assert.match(row(html, tool.id), /<em class="checking">檢查中<\/em>/);
+    assert.doesNotMatch(html, /未安裝/);
+    assert.doesNotMatch(html, /尚缺/);
+    assert.match(html, /正在檢查工具/);
+    assert.match(html, /<h2>環境<\/h2><span class="badge off">檢查中<\/span>/);
+  });
+
   it("counts a tool that needs repair as not ready", () => {
     const html = renderPage(view({ tools: tools.map((tool) => ({ ...tool, readiness: tool.id === "node" ? "needsRepair" as const : "ready" as const })) }));
     assert.match(html, /<span class="badge off">未完成<\/span>/);
