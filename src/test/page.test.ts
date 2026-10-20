@@ -27,6 +27,7 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
       { id: "node", label: "Node.js", readiness: "missing", selected: false },
       { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
     ],
+    environmentInstalling: false,
     ...extra,
   };
 }

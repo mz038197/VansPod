@@ -17,6 +17,7 @@ import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
   type EnvironmentInstallLog,
+  type EnvironmentInstallReport,
   type EnvironmentInstallResult,
   type EnvironmentToolId,
   type ToolReadiness,
@@ -361,6 +362,7 @@ function harness(
     install?: (
       tool: EnvironmentToolId,
       signal?: AbortSignal,
+      onProgress?: (progress: EnvironmentInstallReport) => void,
     ) => Promise<EnvironmentInstallResult>;
     startLog?: () => Promise<EnvironmentInstallLog>;
     providers?: Array<Record<string, unknown>>;
@@ -482,11 +484,11 @@ function harness(
         }
         return { readiness: "missing", reason: `找不到 ${tool}` };
       },
-      async install(tool, signal) {
+      async install(tool, signal, onProgress) {
         installCalls.push(tool);
         environmentLog.push(`install ${tool}`);
         if (options?.install) {
-          return options.install(tool, signal);
+          return options.install(tool, signal, onProgress);
         }
         return { exitCode: 0, output: "" };
       },
@@ -3522,6 +3524,73 @@ describe("environment tools", () => {
   });
 
 
+  it("shows each tool's stage and download bytes while an Environment Install runs", async () => {
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const installs: Partial<Record<EnvironmentToolId, { report: (progress: EnvironmentInstallReport) => void; finish: (result: EnvironmentInstallResult) => void }>> = {};
+    let verifyUv: (readiness: ToolReadiness) => void = () => {};
+    let installing = false;
+    const { app } = harness(undefined, {
+      probe: async (tool) => {
+        if (installing && tool === "uv") return new Promise<ToolReadiness>((resolve) => { verifyUv = resolve; });
+        return { readiness: "missing" };
+      },
+      install: (tool, _signal, onProgress) => new Promise((resolve) => {
+        installs[tool] = { report: (progress) => onProgress?.(progress), finish: resolve };
+      }),
+    });
+    await app.checkEnvironment();
+    installing = true;
+    app.selectEnvironment(["uv", "git"]);
+    const run = app.confirmEnvironment();
+    const stage = (id: EnvironmentToolId) => app.view().tools.find((tool) => tool.id === id)?.progress;
+    assert.equal(app.view().environmentInstalling, true);
+    assert.deepEqual(stage("uv"), { stage: "waiting" });
+    assert.deepEqual(stage("git"), { stage: "waiting" });
+    assert.equal(stage("node"), undefined);
+    await settle();
+    installs.uv!.report({ stage: "downloading", downloaded: 1_048_576 });
+    assert.deepEqual(stage("uv"), { stage: "downloading", downloaded: 1_048_576 });
+    installs.uv!.report({ stage: "downloading", downloaded: 2_097_152, total: 8_388_608 });
+    assert.deepEqual(stage("uv"), { stage: "downloading", downloaded: 2_097_152, total: 8_388_608 });
+    installs.uv!.report({ stage: "installing" });
+    assert.deepEqual(stage("uv"), { stage: "installing" });
+    installs.uv!.finish({ exitCode: 0, output: "" });
+    await settle();
+    assert.deepEqual(stage("uv"), { stage: "verifying" });
+    verifyUv({ readiness: "ready", version: "uv 0.5.1" });
+    await settle();
+    assert.deepEqual(stage("uv"), { stage: "done" });
+    assert.deepEqual(stage("git"), { stage: "installing" });
+    installs.git!.finish({ exitCode: 1, output: "" });
+    await settle();
+    await settle();
+    await run;
+    const view = app.view();
+    assert.equal(view.environmentInstalling, false);
+    assert.equal(view.commandRunning, false);
+    assert.equal(view.tools.find((tool) => tool.id === "uv")?.readiness, "ready");
+    assert.equal(view.tools.every((tool) => tool.progress === undefined), true);
+  });
+
+  it("reports a failed tool's stage while later tools keep installing", async () => {
+    let finishNode: (result: EnvironmentInstallResult) => void = () => {};
+    const { app } = harness(undefined, {
+      install: async (tool) => tool === "node"
+        ? new Promise<EnvironmentInstallResult>((resolve) => { finishNode = resolve; })
+        : { exitCode: 1, output: "" },
+    });
+    await app.checkEnvironment();
+    app.selectEnvironment(["git", "node"]);
+    const run = app.confirmEnvironment();
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    const stage = (id: EnvironmentToolId) => app.view().tools.find((tool) => tool.id === id)?.progress;
+    assert.deepEqual(stage("git"), { stage: "failed" });
+    // 安裝程式一啟動就算「安裝中」，即使 environment 沒有回報進度（例如 macOS）。
+    assert.deepEqual(stage("node"), { stage: "installing" });
+    finishNode({ exitCode: 0, output: "" });
+    await run;
+  });
+
   it("holds the command lock while an install is pending", async () => {
     let release: (value: { exitCode: number | undefined; output: string }) => void =
       () => {};
@@ -4242,6 +4311,33 @@ describe("Abort Install", () => {
     assert.deepEqual(probeCalls, ["uv", "git", "node", "pwsh"]);
     assert.equal(view.tools.find((tool) => tool.id === "uv")?.readiness, "ready");
     assert.match(view.environmentNotice ?? "", /已中止.*可能仍在執行/);
+  });
+
+  it("keeps the install lock and progress until the re-check after an Environment Install abort finishes", async () => {
+    let aborted = false;
+    let finishRecheck: () => void = () => {};
+    const recheck = new Promise<void>((resolve) => { finishRecheck = resolve; });
+    const { app } = harness(undefined, {
+      install: async (_tool, signal) => untilAborted("waiting for installer", undefined, signal),
+      probe: async () => {
+        if (aborted) await recheck;
+        return { readiness: "missing" };
+      },
+    });
+    app.selectEnvironment(["uv", "git"]);
+    const installing = app.confirmEnvironment();
+    await new Promise((resolve) => setImmediate(resolve));
+    aborted = true;
+    const stopping = app.abortInstall();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(app.view().commandRunning, true);
+    assert.equal(app.view().environmentInstalling, true);
+    await assert.rejects(app.stop(), /安裝中/);
+    finishRecheck();
+    await stopping;
+    assert.equal(app.view().commandRunning, false);
+    await installing;
+    assert.equal(app.view().environmentInstalling, false);
   });
 
   it("does nothing when no install is running", () => {
