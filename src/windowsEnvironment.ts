@@ -18,11 +18,13 @@ export type RunResult = { exitCode: number | undefined; output: string; notFound
 
 export type DownloadOptions = { signal?: AbortSignal; onProgress?: (received: number, total: number | undefined) => void };
 
+export { DownloadHttpError } from "./officialInstaller";
+
 /** Windows 環境安裝模組唯一依賴的系統動作；測試注入假的版本。 */
 export type EnvironmentSystem = {
   /** 執行程序：每次都套用登錄檔最新的 PATH；可設逾時、可中止。 */
   run(command: string, args: string[], options?: RunOptions): Promise<RunResult>;
-  /** 串流下載到 destination，可回報進度、可中止。 */
+  /** 串流下載到 destination，可回報進度、可中止；伺服器回覆非 2xx 時丟出 DownloadHttpError。 */
   download(url: string, destination: string, options?: DownloadOptions): Promise<void>;
   /** Authenticode 簽章查詢：status 為 "Valid" 才有效；subject 是簽署者憑證主體。 */
   signature(file: string): Promise<{ status: string; subject: string }>;

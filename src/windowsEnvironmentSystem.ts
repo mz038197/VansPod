@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { collectOutput } from "./commandRunner";
+import { DownloadHttpError } from "./officialInstaller";
 import { envWithRegistryPath } from "./systemPath";
 import { VERSION } from "./version";
 import type { EnvironmentSystem, RunOptions, RunResult } from "./windowsEnvironment";
@@ -96,7 +97,7 @@ async function download(url: string, destination: string, options: { signal?: Ab
   const file = await fs.open(destination, "w");
   try {
     const response = await fetch(url, { signal: options.signal, headers: { "User-Agent": `VansPod/${VERSION}` } });
-    if (!response.ok || !response.body) throw new Error(`下載失敗（HTTP ${response.status}）`);
+    if (!response.ok || !response.body) throw new DownloadHttpError(response.status);
     const length = Number(response.headers.get("content-length"));
     const total = Number.isFinite(length) && length > 0 ? length : undefined;
     let received = 0;

@@ -63,8 +63,21 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** 串流下載並回報進度；暫時失敗等一下再試。成功或中止回傳 undefined，用盡次數回傳最後的錯誤訊息。 */
-async function downloadWithRetry(installer: OfficialInstaller, file: string, context: OfficialInstallContext): Promise<string | undefined> {
+/** 下載時伺服器回覆非 2xx：帶著 HTTP 狀態，讓重試只針對暫時性的失敗。 */
+export class DownloadHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`下載失敗（HTTP ${status}）`);
+  }
+}
+
+/** 值得重試的下載失敗：連線錯誤、下載不完整、5xx、408、429；其他 4xx（例如 404）重試也不會好。 */
+function isTemporary(error: unknown): boolean {
+  if (!(error instanceof DownloadHttpError)) return true;
+  return error.status >= 500 || error.status === 408 || error.status === 429;
+}
+
+/** 串流下載並回報進度；暫時失敗等一下再試。成功或中止回傳 undefined，失敗回傳最後的錯誤訊息。 */
+async function downloadWithRetry(installer: OfficialInstaller, file: string, context: OfficialInstallContext): Promise<{ error: string; attempts: number } | undefined> {
   const { system, signal, onProgress } = context;
   let lastError = "";
   for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1) {
@@ -81,10 +94,11 @@ async function downloadWithRetry(installer: OfficialInstaller, file: string, con
       if (signal?.aborted) return undefined;
       lastError = error instanceof Error ? error.message : String(error);
       await context.log(`第 ${attempt} 次下載失敗：${lastError}\r\n`);
+      if (!isTemporary(error)) return { error: lastError, attempts: attempt };
       if (attempt < DOWNLOAD_ATTEMPTS) await wait(context.retryDelayMs, signal);
     }
   }
-  return lastError;
+  return { error: lastError, attempts: DOWNLOAD_ATTEMPTS };
 }
 
 /**
@@ -116,9 +130,9 @@ export async function installOfficialInstaller(installer: OfficialInstaller, con
   }
   if (!reused) {
     await context.log(`== ${installer.label} 下載 ==\r\n網址：${installer.url}\r\n存放：${file}\r\n`);
-    const error = await downloadWithRetry(installer, file, context);
+    const failure = await downloadWithRetry(installer, file, context);
     if (signal?.aborted) return aborted();
-    if (error !== undefined) return failed(`下載失敗：${error}（已嘗試 ${DOWNLOAD_ATTEMPTS} 次）`);
+    if (failure !== undefined) return failed(`下載失敗：${failure.error}（已嘗試 ${failure.attempts} 次）`);
     // 執行前確認簽章：不是預期發行者簽署的檔案一律不執行，也不留下。
     const rejected = await checkSignature(system, file, installer.signer);
     if (rejected !== undefined) {
