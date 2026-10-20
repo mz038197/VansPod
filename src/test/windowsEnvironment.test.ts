@@ -155,6 +155,20 @@ describe("Windows Environment Install", () => {
     assert.match(result.output, /無法啟動/);
   });
 
+  it("reports installing while the installer runs and verifying once it exits", async () => {
+    const reports: string[] = [];
+    const { system } = fakeSystem({ winget: () => { reports.push("run"); return { output: "" }; } });
+    await createWindowsEnvironment(system).install("git", undefined, (progress) => reports.push(progress.stage));
+    assert.deepEqual(reports, ["installing", "run", "verifying"]);
+  });
+
+  it("does not report verifying after Abort Install", async () => {
+    const reports: string[] = [];
+    const { system } = fakeSystem({ winget: { aborted: true, exitCode: undefined } });
+    await createWindowsEnvironment(system).install("git", new AbortController().signal, (progress) => reports.push(progress.stage));
+    assert.deepEqual(reports, ["installing"]);
+  });
+
   it("passes Abort Install through to the running installer", async () => {
     const controller = new AbortController();
     const { system, calls } = fakeSystem({ winget: { aborted: true, exitCode: undefined, output: "partial" } });

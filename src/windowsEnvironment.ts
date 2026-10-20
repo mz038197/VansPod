@@ -1,6 +1,7 @@
 import {
   ENVIRONMENT_LABEL,
   type EnvironmentInstallLog,
+  type EnvironmentInstallReport,
   type EnvironmentInstallResult,
   type EnvironmentToolId,
   type ToolReadiness,
@@ -120,13 +121,20 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
       await system.openFolder(folder);
     },
     /** 開發工具與 Project Folder 無關；程序在使用者家目錄執行（見 windowsEnvironmentSystem）。 */
-    async install(tool: EnvironmentToolId, signal?: AbortSignal): Promise<EnvironmentInstallResult> {
+    async install(
+      tool: EnvironmentToolId,
+      signal?: AbortSignal,
+      onProgress?: (progress: EnvironmentInstallReport) => void,
+    ): Promise<EnvironmentInstallResult> {
       const { command, args } = installLaunch(tool);
+      onProgress?.({ stage: "installing" });
       // 安裝不設逾時（ADR-0008）：卡住時由學生 Abort Install。
       const result = await system.run(command, args, { signal });
       await currentLog?.append(installEntry(tool, command, args, result));
       if (result.aborted) return { output: result.output, exitCode: result.exitCode, aborted: true, exitAccepted: false };
       if (result.notFound) return { output: "安裝命令無法啟動。", exitCode: undefined, exitAccepted: false };
+      // 安裝程式結束後由 ClassroomApp 立刻驗證。
+      onProgress?.({ stage: "verifying" });
       const exitAccepted = result.exitCode !== undefined && WINGET_ACCEPTED.includes(result.exitCode);
       return {
         output: result.output,
