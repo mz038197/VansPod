@@ -30,6 +30,7 @@ function fakeSystem(replies: Record<string, Reply | ((call: Call) => Reply | Pro
     async signature() { throw new Error("not used"); },
     async wingetAvailable() { return true; },
     async openFolder(folder) { opened.push(folder); },
+    async start() {},
     ...overrides,
   };
   return { system, calls, opened };
@@ -489,5 +490,22 @@ describe("Environment Install logs", () => {
     const { system, opened } = fakeSystem({});
     await createWindowsEnvironment(system).openLogFolder("C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000");
     assert.deepEqual(opened, ["C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000"]);
+  });
+});
+
+describe("Open VS Code", () => {
+  it("starts VS Code on a folder whose path has Chinese, spaces, and punctuation, without waiting for it", async () => {
+    const started: Array<{ command: string; args: string[] }> = [];
+    const { system, calls } = fakeSystem({}, { async start(command, args) { started.push({ command, args }); } });
+    const environment = createWindowsEnvironment(system);
+
+    await environment.openVsCode("D:\\課程 O'Neil!\\lesson 1");
+    await environment.openVsCode();
+
+    assert.deepEqual(started, [
+      { command: "code", args: ["D:\\課程 O'Neil!\\lesson 1"] },
+      { command: "code", args: [] },
+    ]);
+    assert.deepEqual(calls, [], "opening VS Code does not run and wait on a process");
   });
 });

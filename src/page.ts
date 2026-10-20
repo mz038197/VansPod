@@ -242,6 +242,10 @@ function environmentInner(view: ClassroomAppView): string {
   const openLog = view.environmentLogFolder && !view.commandRunning
     ? `<form method="post" action="/environment-log"><button type="submit" class="quiet">開啟紀錄資料夾</button></form>`
     : "";
+  // 有 Project Folder 時伺服器以該資料夾開啟 VS Code。
+  const openVsCode = view.tools.some((tool) => tool.id === "vscode" && tool.readiness === "ready")
+    ? `<form method="post" action="/open-vscode"><button type="submit" class="quiet">開啟 VS Code</button></form>`
+    : "";
   return `<form method="post" action="/environment-check">
       <button type="submit" class="quiet"${off}>重新檢查</button>
     </form>
@@ -249,7 +253,7 @@ function environmentInner(view: ClassroomAppView): string {
       <div class="tools">${tools}</div>
       <button type="submit" class="go"${confirmOff}${view.commandRunning ? " hidden" : ""}>確認安裝</button>
     </form>
-    ${note}${openLog}${abortInstallForm(view)}`;
+    ${note}${openVsCode}${openLog}${abortInstallForm(view)}`;
 }
 
 /** Abort Install 入口；僅在安裝執行中顯示，送出前由 installProgressScript 確認。 */

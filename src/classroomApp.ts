@@ -121,6 +121,8 @@ export type ClassroomAppDeps = {
     /** 開始一次安裝紀錄；沒有實作的平台（macOS）不留紀錄。 */
     startLog?(): Promise<EnvironmentInstallLog>;
     openLogFolder?(folder: string): Promise<void>;
+    /** 「開啟 VS Code」：有 Project Folder 時以該資料夾開啟，沒有時只開 VS Code。 */
+    openVsCode?(folder?: string): Promise<void>;
   };
   // 測試注入的寫檔口。核心不呼叫它，MCP 動作只跑 catalog command。
   files: {
@@ -434,6 +436,8 @@ export class ClassroomApp {
         await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
         // 檢查期間學生自己改過勾選，就保留他的選擇。
         if (this.environmentSelectionEdits === edits) this.selectNotReadyEnvironmentTools();
+        // 學生在 VansPod 外裝好 VS Code，按「重新檢查」也讓 VS Code Chat 跟著可用。
+        if (this.environmentReadiness.vscode?.readiness === "ready") await this.redetectVsCodeChat();
       } finally {
         this.environmentCheck = undefined;
       }
@@ -523,6 +527,7 @@ export class ClassroomApp {
         if (verified.readiness === "ready") {
           progress[tool] = { stage: "done" };
           if (result?.rebootRequired) rebootSuggested.push(tool);
+          if (tool === "vscode") await this.redetectVsCodeChat();
           continue;
         }
         // 單一工具失敗不中斷後續工具；結果列出每個失敗的工具與原因。
@@ -570,6 +575,14 @@ export class ClassroomApp {
       return;
     }
     await this.deps.environment.openLogFolder?.(this.environmentLog.folder);
+  }
+
+  /** 「開啟 VS Code」只在 VS Code 已就緒時有效；有 Project Folder 就直接開那個資料夾。 */
+  async openVsCode(): Promise<void> {
+    if (this.environmentReadiness.vscode?.readiness !== "ready") {
+      return;
+    }
+    await this.deps.environment.openVsCode?.(this.projectFolder);
   }
 
   private environmentTools(): EnvironmentToolView[] {
@@ -1485,6 +1498,17 @@ export class ClassroomApp {
       this.clientModes.claude = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* The visible red state remains authoritative. */ }
     }
+  }
+
+  /** VS Code 剛就緒：只重新偵測 VS Code Chat 並啟動它的 Client Route，其他 Client Route 不動。 */
+  private async redetectVsCodeChat(): Promise<void> {
+    // 還沒啟動或正在停止就不碰 Client Route；啟動中的初始偵測先跑完，避免重複啟動路由。
+    if (this.stopping || !this.initialization) return;
+    await this.initialization.catch(() => undefined);
+    if (this.stopping || this.detectedClients.vsCodeChat) return;
+    try { this.detectedClients.vsCodeChat = await this.deps.detectClient?.("vsCodeChat") ?? false; }
+    catch { this.detectedClients.vsCodeChat = false; }
+    if (this.detectedClients.vsCodeChat) await this.startVsCodeRoute();
   }
 
   private async detectClients(): Promise<void> {

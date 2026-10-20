@@ -596,6 +596,17 @@ describe("Environment Install card", () => {
     assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder })), /InstallLogs/, "the path stays off the page");
   });
 
+  it("offers 開啟 VS Code in the environment card only while VS Code is ready", () => {
+    const card = (html: string) => html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const openVsCode = /<form method="post" action="\/open-vscode"><button type="submit" class="quiet">開啟 VS Code<\/button><\/form>/;
+    const withVsCode = (readiness: "ready" | "needsRepair" | "missing" | "checking") =>
+      [...tools, { id: "vscode" as const, label: "VS Code", readiness, selected: false }];
+    assert.match(card(renderPage(view({ tools: withVsCode("ready") }))), openVsCode);
+    for (const readiness of ["needsRepair", "missing", "checking"] as const) {
+      assert.doesNotMatch(renderPage(view({ tools: withVsCode(readiness) })), /open-vscode/, readiness);
+    }
+  });
+
   it("shows each tool's stage and download progress while an Environment Install runs", () => {
     const MB = 1024 * 1024;
     const running = [
