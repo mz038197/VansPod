@@ -473,11 +473,15 @@ export class ClassroomApp {
     return readiness;
   }
 
-  /** 安裝後的驗證：environment 已經驗證過就採用它的結果，每個工具只檢查一次。 */
+  /**
+   * 安裝後的驗證：environment 已經驗證過就採用它的結果，每個工具只檢查一次。
+   * 安裝程式要求重新開機、工具還不能用時算「需要修復」：裝過了，重新開機後再檢查（US32）。
+   */
   private async verifyInstalledTool(tool: EnvironmentToolId, result: EnvironmentInstallResult | undefined): Promise<ToolReadiness> {
-    if (!result?.verified) return this.probeEnvironmentTool(tool);
-    this.environmentReadiness[tool] = result.verified;
-    return result.verified;
+    let verified = result?.verified ?? await this.probeEnvironmentTool(tool);
+    if (result?.rebootRequired && verified.readiness === "missing") verified = { ...verified, readiness: "needsRepair" };
+    this.environmentReadiness[tool] = verified;
+    return verified;
   }
 
   selectEnvironment(tools: readonly EnvironmentToolId[]): void {

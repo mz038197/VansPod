@@ -3521,6 +3521,19 @@ describe("environment tools", () => {
     assert.equal(view.environmentNotice, "PowerShell 7 安裝後仍需要修復：pwsh --version 失敗（結束碼 1）。請重新開機後按「重新檢查」。");
   });
 
+  it("needs repair, not missing, when the installer asks for a reboot and the tool is not detected yet", async () => {
+    const { app } = harness(undefined, {
+      probe: async () => ({ readiness: "missing", reason: "找不到 pwsh" }),
+      install: async () => ({ exitCode: 3010, output: "", exitAccepted: true, rebootRequired: true }),
+    });
+    app.selectEnvironment(["pwsh"]);
+    await app.confirmEnvironment();
+    const pwsh = app.view().tools.find((tool) => tool.id === "pwsh");
+    assert.equal(pwsh?.readiness, "needsRepair");
+    assert.equal(pwsh?.selected, true);
+    assert.equal(app.view().environmentNotice, "PowerShell 7 安裝後仍需要修復：找不到 pwsh。請重新開機後按「重新檢查」。");
+  });
+
   it("uses the verification the installer already ran instead of probing the tool again", async () => {
     const { app, probeCalls } = harness(undefined, {
       install: async () => ({ exitCode: 0, output: "", exitAccepted: true, verified: { readiness: "ready", version: "1.105.1" } }),
