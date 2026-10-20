@@ -10,6 +10,7 @@ import path from "node:path";
 import {
   ClassroomApp,
   ENVIRONMENT_TOOLS,
+  type EnvironmentInstallReport,
   type EnvironmentToolId,
   type ToolReadiness,
   type NicknameRedeemResult,
@@ -242,7 +243,9 @@ function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
 function installMacEnvironment(
   tool: EnvironmentToolId,
   signal?: AbortSignal,
+  onProgress?: (progress: EnvironmentInstallReport) => void,
 ): Promise<CommandResult> {
+  onProgress?.({ stage: "installing" });
   const launch = tool === "pwsh"
     ? { command: "open", args: [MAC_PWSH_PAGE] }
     : tool === "vscode"

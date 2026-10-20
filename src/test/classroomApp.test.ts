@@ -3588,6 +3588,7 @@ describe("environment tools", () => {
     assert.deepEqual(stage("git"), { stage: "waiting" });
     assert.equal(stage("node"), undefined);
     await settle();
+    assert.deepEqual(stage("uv"), { stage: "preparing" });
     installs.uv!.report({ stage: "downloading", downloaded: 1_048_576 });
     assert.deepEqual(stage("uv"), { stage: "downloading", downloaded: 1_048_576 });
     installs.uv!.report({ stage: "downloading", downloaded: 2_097_152, total: 8_388_608 });
@@ -3600,7 +3601,8 @@ describe("environment tools", () => {
     verifyUv({ readiness: "ready", version: "uv 0.5.1" });
     await settle();
     assert.deepEqual(stage("uv"), { stage: "done" });
-    assert.deepEqual(stage("git"), { stage: "installing" });
+    // 下一個工具開始時是「準備中」；安裝程式啟動後由 environment 回報「安裝中」。
+    assert.deepEqual(stage("git"), { stage: "preparing" });
     installs.git!.finish({ exitCode: 1, output: "" });
     await settle();
     await settle();
@@ -3625,8 +3627,8 @@ describe("environment tools", () => {
     for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
     const stage = (id: EnvironmentToolId) => app.view().tools.find((tool) => tool.id === id)?.progress;
     assert.deepEqual(stage("git"), { stage: "failed" });
-    // 安裝程式一啟動就算「安裝中」，即使 environment 沒有回報進度（例如 macOS）。
-    assert.deepEqual(stage("node"), { stage: "installing" });
+    // 還沒回報下載或安裝之前不假裝已經在安裝。
+    assert.deepEqual(stage("node"), { stage: "preparing" });
     finishNode({ exitCode: 0, output: "" });
     await run;
   });

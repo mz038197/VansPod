@@ -66,13 +66,13 @@ export type EnvironmentInstallResult = CommandResult & {
   verified?: ToolReadiness;
 };
 
-/** Environment Install 中一個工具的階段：等待中、下載中、安裝中、驗證中、完成、失敗。 */
-export type EnvironmentInstallStage = "waiting" | "downloading" | "installing" | "verifying" | "done" | "failed";
+/** Environment Install 中一個工具的階段：等待中、準備中（輪到它、還沒開始下載或安裝）、下載中、安裝中、驗證中、完成、失敗。 */
+export type EnvironmentInstallStage = "waiting" | "preparing" | "downloading" | "installing" | "verifying" | "done" | "failed";
 
 /** 一個工具目前的階段；下載中附已下載位元組，伺服器沒給總量時沒有 total。 */
 export type EnvironmentInstallProgress = { stage: EnvironmentInstallStage; downloaded?: number; total?: number };
 
-/** environment.install 透過 onProgress 回報的進度；等待、完成與失敗由 ClassroomApp 決定。 */
+/** environment.install 透過 onProgress 回報的進度；等待、準備、完成與失敗由 ClassroomApp 決定。 */
 export type EnvironmentInstallReport = EnvironmentInstallProgress & { stage: "downloading" | "installing" | "verifying" };
 
 /** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
@@ -521,8 +521,8 @@ export class ClassroomApp {
       await this.startEnvironmentLog();
       for (const tool of selected) {
         if (abort.signal.aborted) break;
-        // 安裝程式一啟動就算「安裝中」；environment 可再回報下載中與下載量。
-        progress[tool] = { stage: "installing" };
+        // 輪到這個工具：先是「準備中」，environment 開始下載或啟動安裝程式時再回報下載中、安裝中。
+        progress[tool] = { stage: "preparing" };
         const report = (reported: EnvironmentInstallReport) => {
           if (abort.signal.aborted) return;
           progress[tool] = { ...reported };

@@ -191,6 +191,7 @@ function environmentChecking(view: ClassroomAppView): boolean {
 
 const STAGE_TEXT: Record<EnvironmentInstallStage, string> = {
   waiting: "等待中",
+  preparing: "準備中",
   downloading: "下載中",
   installing: "安裝中",
   verifying: "驗證中",
