@@ -12,7 +12,9 @@ function envValue(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 async function isFile(file: string): Promise<boolean> {
-  try { return (await fs.stat(file)).isFile(); } catch { return false; }
+  try { return (await fs.stat(file)).isFile(); } catch { /* 可能是無法 stat 的應用程式執行別名 */ }
+  // winget 是 WindowsApps 裡的應用程式執行別名：stat 會得到 EACCES，但 lstat 看得到、也能直接執行。
+  try { return (await fs.lstat(file)).isSymbolicLink(); } catch { return false; }
 }
 
 /** 像 cmd.exe 一樣在 PATH × PATHEXT 找指令；找不到回傳 undefined。 */
