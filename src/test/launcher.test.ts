@@ -11,6 +11,8 @@ const { freeBasePort }: { freeBasePort(): Promise<number> } = require("../../scr
 const execute = promisify(execFile);
 const entry = path.join(__dirname, "..", "entry.js");
 const expectedVersion = JSON.parse(readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).version;
+// 停止後背景服務留下的子程序（例如開發工具檢查）可能還占著家目錄一下子；Windows 上刪除會 EBUSY，稍等重試。
+const removeHome = (home: string) => fs.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
 test("failed client initialization reports a useful error and leaves no unmanageable worker", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-start-failure-"));
@@ -31,7 +33,7 @@ test("failed client initialization reports a useful error and leaves no unmanage
   } finally {
     const state = await fs.readFile(path.join(home, "local", "VansPod", "runtime", "instance.json"), "utf8").then(raw => JSON.parse(raw) as {pid: number}).catch(() => undefined);
     if (state) { try { process.kill(state.pid); } catch {} }
-    await fs.rm(home, {recursive: true, force: true});
+    await removeHome(home);
   }
 });
 
@@ -74,7 +76,7 @@ test("start returns while one background service survives and repeated starts sh
     assert.equal(stopped.running, false);
   } finally {
     await execute(process.execPath, [entry, "stop"], { env }).catch(() => undefined);
-    await fs.rm(home, { recursive: true, force: true });
+    await removeHome(home);
   }
 });
 
@@ -107,7 +109,7 @@ test("confirmed full removal clears VansPod data and preserves student projects 
     assert.equal(await fs.readFile(path.join(home, "local", "classroom-app", "student.txt"), "utf8"), "student work");
   } finally {
     await execute(process.execPath, [entry, "stop"], { env }).catch(() => undefined);
-    await fs.rm(home, { recursive: true, force: true });
+    await removeHome(home);
   }
 });
 
@@ -121,5 +123,5 @@ test("version and help work without starting a service or creating student data"
     assert.match(help.stdout, /start.*status.*stop.*uninstall/s);
     assert.doesNotMatch(help.stdout, /vanspod open/);
     assert.deepEqual(await fs.readdir(home), []);
-  } finally { await fs.rm(home, { recursive: true, force: true }); }
+  } finally { await removeHome(home); }
 });
