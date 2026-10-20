@@ -575,6 +575,16 @@ describe("Environment Install card", () => {
     assert.match(html, /<span class="badge off">未完成<\/span>/);
     assert.match(html, /尚缺 1 項工具/);
   });
+
+  it("offers 開啟紀錄資料夾 in the environment card after an install, but not while one runs", () => {
+    const card = (html: string) => html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const openLog = /<form method="post" action="\/environment-log"><button type="submit" class="quiet">開啟紀錄資料夾<\/button><\/form>/;
+    assert.doesNotMatch(renderPage(view({ tools })), /environment-log/);
+    const folder = "C:\\VansPod\\InstallLogs\\2026-10-20_100000";
+    assert.match(card(renderPage(view({ tools, environmentLogFolder: folder }))), openLog);
+    assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder, commandRunning: true })), /environment-log/);
+    assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder })), /InstallLogs/, "the path stays off the page");
+  });
 });
 describe("Abort Install on the page", () => {
   const abortForms = (html: string) => [...html.matchAll(/<form[^>]*action="\/abort-install"[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);

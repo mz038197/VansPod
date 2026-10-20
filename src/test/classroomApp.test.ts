@@ -16,6 +16,7 @@ import type { CommandResult } from "../commandRunner";
 import { fixture, withFakeRouter } from "./fakeRouter";
 import {
   ClassroomApp,
+  type EnvironmentInstallLog,
   type EnvironmentInstallResult,
   type EnvironmentToolId,
   type ToolReadiness,
@@ -361,6 +362,7 @@ function harness(
       tool: EnvironmentToolId,
       signal?: AbortSignal,
     ) => Promise<EnvironmentInstallResult>;
+    startLog?: () => Promise<EnvironmentInstallLog>;
     providers?: Array<Record<string, unknown>>;
     setModelOptions?: (value: ModelOptions | null) => Promise<void>;
     vsCodeRouteSettings?: VsCodeRouteSettings;
@@ -374,6 +376,8 @@ function harness(
   const runCalls: { cwd: string; command: string }[] = [];
   const probeCalls: EnvironmentToolId[] = [];
   const installCalls: EnvironmentToolId[] = [];
+  const environmentLog: string[] = [];
+  const openedLogFolders: string[] = [];
   const modelKeys: string[] = [];
   let providers = structuredClone(options?.providers ?? []);
   const copilotWrites: { providers: Array<Record<string, unknown>> }[] = [];
@@ -480,10 +484,23 @@ function harness(
       },
       async install(tool, signal) {
         installCalls.push(tool);
+        environmentLog.push(`install ${tool}`);
         if (options?.install) {
           return options.install(tool, signal);
         }
         return { exitCode: 0, output: "" };
+      },
+      async startLog() {
+        if (options?.startLog) return options.startLog();
+        environmentLog.push("start");
+        return {
+          folder: "C:\\VansPod\\InstallLogs\\2026-10-20_100000",
+          async verified(tool, readiness) { environmentLog.push(`verified ${tool} ${readiness.readiness}`); },
+          async finish(summary) { environmentLog.push(`finish ${summary}`); },
+        };
+      },
+      async openLogFolder(folder) {
+        openedLogFolders.push(folder);
       },
     },
     stopProcess() {
@@ -579,6 +596,8 @@ function harness(
     runCalls,
     probeCalls,
     installCalls,
+    environmentLog,
+    openedLogFolders,
     failClipboard(error: Error) {
       clipboardError = error;
     },
@@ -4214,6 +4233,7 @@ describe("Abort Install", () => {
     app.selectEnvironment(["uv", "git"]);
     const installing = app.confirmEnvironment();
     assert.equal(app.view().commandRunning, true);
+    await new Promise((resolve) => setImmediate(resolve)); // 等 uv 的安裝程式真的開始
     app.abortInstall();
     await installing;
     assert.deepEqual(installCalls, ["uv"]);
@@ -4229,5 +4249,73 @@ describe("Abort Install", () => {
     app.abortInstall();
     assert.equal(app.view().commandRunning, false);
     assert.equal(app.view().commandAborted, undefined);
+  });
+});
+
+describe("Environment Install logs", () => {
+  const LOG_FOLDER = "C:\\VansPod\\InstallLogs\\2026-10-20_100000";
+
+  it("logs one run: starts the log, records each tool's verification, and finishes it", async () => {
+    const installed = new Set<EnvironmentToolId>();
+    const { app, environmentLog } = harness(undefined, {
+      probe: async (tool) => installed.has(tool) ? { readiness: "ready", version: tool } : { readiness: "missing" },
+      install: async (tool) => { installed.add(tool); return { exitCode: 0, output: "", exitAccepted: true }; },
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv", "git"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(environmentLog, ["start", "install uv", "verified uv ready", "install git", "verified git ready", "finish 完成"]);
+    assert.equal(app.view().environmentLogFolder, LOG_FOLDER);
+  });
+
+  it("logs a failed install with its verification and the failure in the summary", async () => {
+    const { app, environmentLog } = harness(undefined, {
+      install: async () => ({ exitCode: 1, output: "boom", exitAccepted: false }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["git"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(environmentLog.slice(0, 3), ["start", "install git", "verified git missing"]);
+    assert.match(environmentLog.at(-1) ?? "", /^finish .*git 安裝失敗（結束碼 1）/);
+    assert.equal(app.view().environmentLogFolder, LOG_FOLDER);
+  });
+
+  it("logs an aborted install", async () => {
+    const { app, environmentLog } = harness(undefined, {
+      install: async (_tool, signal) => new Promise((resolve) => {
+        signal?.addEventListener("abort", () => resolve({ output: "partial", exitCode: undefined, aborted: true }), { once: true });
+      }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv", "git"]);
+    const installing = app.confirmEnvironment();
+    await new Promise((resolve) => setImmediate(resolve));
+    await app.abortInstall();
+    await installing;
+    assert.deepEqual(environmentLog, ["start", "install uv", "finish 已中止"]);
+    assert.equal(app.view().environmentLogFolder, LOG_FOLDER);
+  });
+
+  it("still installs when the log cannot be started", async () => {
+    const { app, installCalls } = harness(undefined, {
+      startLog: async () => { throw new Error("disk full"); },
+      probe: async () => ({ readiness: "ready" }),
+    });
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv"]);
+    await app.confirmEnvironment();
+    assert.deepEqual(installCalls, ["uv"]);
+    assert.equal(app.view().environmentLogFolder, undefined);
+  });
+
+  it("opens this run's log folder", async () => {
+    const { app, openedLogFolders } = harness(undefined, { probe: async () => ({ readiness: "ready" }) });
+    await app.openEnvironmentLog();
+    assert.deepEqual(openedLogFolders, [], "nothing to open before any install");
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv"]);
+    await app.confirmEnvironment();
+    await app.openEnvironmentLog();
+    assert.deepEqual(openedLogFolders, [LOG_FOLDER]);
   });
 });

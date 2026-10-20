@@ -1,4 +1,12 @@
-import type { EnvironmentInstallResult, EnvironmentToolId, ToolReadiness } from "./classroomApp";
+import {
+  ENVIRONMENT_LABEL,
+  type EnvironmentInstallLog,
+  type EnvironmentInstallResult,
+  type EnvironmentToolId,
+  type ToolReadiness,
+} from "./classroomApp";
+import { type InstallLogFile, startInstallLogFile } from "./environmentInstallLog";
+import { managementDirectory } from "./instance";
 
 export type RunOptions = { timeoutMs?: number; signal?: AbortSignal; onOutput?: (output: string) => void };
 
@@ -16,6 +24,14 @@ export type EnvironmentSystem = {
   /** Authenticode 簽章查詢：status 為 "Valid" 才有效；subject 是簽署者憑證主體。 */
   signature(file: string): Promise<{ status: string; subject: string }>;
   wingetAvailable(): Promise<boolean>;
+  /** 在檔案總管開啟資料夾。 */
+  openFolder(folder: string): Promise<void>;
+};
+
+export type WindowsEnvironmentOptions = {
+  /** VansPod 管理資料夾；安裝紀錄寫在其下的 InstallLogs。 */
+  managementDirectory?: string;
+  now?: () => Date;
 };
 
 const VERSION_CHECK: Record<EnvironmentToolId, { command: string; pattern: RegExp }> = {
@@ -62,13 +78,53 @@ function installLaunch(tool: EnvironmentToolId): { command: string; args: string
   return { command: "winget", args: ["install", "--id", WINGET_ID[tool], "-e", ...WINGET_QUIET] };
 }
 
-export function createWindowsEnvironment(system: EnvironmentSystem) {
+function readinessText(readiness: ToolReadiness): string {
+  const detail = (text: string | undefined) => (text ? `：${text}` : "");
+  if (readiness.readiness === "ready") return `已就緒${readiness.version ? `（${readiness.version}）` : ""}`;
+  return `${readiness.readiness === "needsRepair" ? "需要修復" : "未安裝"}${detail(readiness.reason)}`;
+}
+
+function quoteForLog(value: string): string {
+  return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+function installEntry(tool: EnvironmentToolId, command: string, args: string[], result: RunResult): string {
+  const outcome = result.aborted ? "已中止" : result.notFound ? "無法啟動" : `${result.exitCode ?? "未知"}`;
+  return [
+    `== ${ENVIRONMENT_LABEL[tool]} ==`,
+    `指令：${[command, ...args].map(quoteForLog).join(" ")}`,
+    `結束碼：${outcome}`,
+    "輸出：",
+    result.output.trimEnd(),
+    "",
+  ].join("\r\n");
+}
+
+export function createWindowsEnvironment(system: EnvironmentSystem, options: WindowsEnvironmentOptions = {}) {
+  // 目前這次 Environment Install 的紀錄；startLog() 開始新的一次。
+  let currentLog: InstallLogFile | undefined;
   return {
+    /** 開始一次 Environment Install 的紀錄，之後每個工具的安裝都寫進同一個資料夾。 */
+    async startLog(): Promise<EnvironmentInstallLog> {
+      const now = options.now?.() ?? new Date();
+      const log = await startInstallLogFile(options.managementDirectory ?? managementDirectory(), now);
+      currentLog = log;
+      await log.append(`VansPod Environment Install ${now.toISOString()}\r\n\r\n`);
+      return {
+        folder: log.folder,
+        verified: (tool, readiness) => log.append(`驗證 ${ENVIRONMENT_LABEL[tool]}：${readinessText(readiness)}\r\n\r\n`),
+        finish: (summary) => log.append(`結果：${summary}\r\n`),
+      };
+    },
+    async openLogFolder(folder: string): Promise<void> {
+      await system.openFolder(folder);
+    },
     /** 開發工具與 Project Folder 無關；程序在使用者家目錄執行（見 windowsEnvironmentSystem）。 */
     async install(tool: EnvironmentToolId, signal?: AbortSignal): Promise<EnvironmentInstallResult> {
       const { command, args } = installLaunch(tool);
       // 安裝不設逾時（ADR-0008）：卡住時由學生 Abort Install。
       const result = await system.run(command, args, { signal });
+      await currentLog?.append(installEntry(tool, command, args, result));
       if (result.aborted) return { output: result.output, exitCode: result.exitCode, aborted: true, exitAccepted: false };
       if (result.notFound) return { output: "安裝命令無法啟動。", exitCode: undefined, exitAccepted: false };
       const exitAccepted = result.exitCode !== undefined && WINGET_ACCEPTED.includes(result.exitCode);

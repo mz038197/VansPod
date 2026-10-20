@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import {
   createWindowsEnvironment,
@@ -13,6 +16,7 @@ type Call = { command: string; args: string[]; options: RunOptions };
 /** 假的系統動作：依「指令 + 參數」回覆，記下每次呼叫。 */
 function fakeSystem(replies: Record<string, Reply | ((call: Call) => Reply | Promise<Reply>)>) {
   const calls: Call[] = [];
+  const opened: string[] = [];
   const system: EnvironmentSystem = {
     async run(command, args, options = {}) {
       const call = { command, args, options };
@@ -25,8 +29,9 @@ function fakeSystem(replies: Record<string, Reply | ((call: Call) => Reply | Pro
     async download() { throw new Error("not used"); },
     async signature() { throw new Error("not used"); },
     async wingetAvailable() { return true; },
+    async openFolder(folder) { opened.push(folder); },
   };
-  return { system, calls };
+  return { system, calls, opened };
 }
 
 describe("Windows Environment Tool Readiness", () => {
@@ -157,5 +162,99 @@ describe("Windows Environment Install", () => {
     assert.equal(calls[0]?.options.signal, controller.signal);
     assert.equal(result.aborted, true);
     assert.equal(result.exitAccepted, false);
+  });
+});
+
+describe("Environment Install logs", () => {
+  async function tempRoot(): Promise<string> {
+    return fs.mkdtemp(path.join(os.tmpdir(), "vanspod 安裝紀錄 "));
+  }
+
+  async function readLog(folder: string): Promise<string> {
+    return fs.readFile(path.join(folder, "install.log"), "utf8");
+  }
+
+  it("writes each tool's command, output, exit code, and verification into InstallLogs\\<time>", async () => {
+    const root = await tempRoot();
+    const { system } = fakeSystem({
+      winget: { exitCode: 3010, output: "Successfully installed Git\n" },
+      "git --version": { output: "git version 2.47.0.windows.1\n" },
+    });
+    const environment = createWindowsEnvironment(system, {
+      managementDirectory: root,
+      now: () => new Date(2026, 9, 20, 23, 5, 9),
+    });
+
+    const log = await environment.startLog();
+    await environment.install("git");
+    await log.verified("git", await environment.probe("git"));
+    await log.finish("完成");
+
+    assert.equal(log.folder, path.join(root, "InstallLogs", "2026-10-20_230509"));
+    const text = await readLog(log.folder);
+    assert.match(text, /winget install --id Git\.Git -e/);
+    assert.match(text, /Successfully installed Git/);
+    assert.match(text, /結束碼：3010/);
+    assert.match(text, /已就緒.*git version 2\.47\.0/);
+    assert.match(text, /完成/);
+  });
+
+  it("keeps only the 10 most recent install logs", async () => {
+    const root = await tempRoot();
+    const { system } = fakeSystem({});
+    let minute = 0;
+    const environment = createWindowsEnvironment(system, {
+      managementDirectory: root,
+      now: () => new Date(2026, 9, 20, 10, minute++, 0),
+    });
+    const folders: string[] = [];
+    for (let run = 0; run < 12; run += 1) folders.push((await environment.startLog()).folder);
+
+    const kept = (await fs.readdir(path.join(root, "InstallLogs"))).sort();
+    assert.deepEqual(kept, folders.slice(2).map((folder) => path.basename(folder)));
+  });
+
+  it("gives two installs started in the same second separate folders", async () => {
+    const root = await tempRoot();
+    const { system } = fakeSystem({});
+    const environment = createWindowsEnvironment(system, { managementDirectory: root, now: () => new Date(2026, 9, 20, 10, 0, 0) });
+    const first = await environment.startLog();
+    const second = await environment.startLog();
+    assert.notEqual(first.folder, second.folder);
+  });
+
+  it("records an aborted install", async () => {
+    const root = await tempRoot();
+    const { system } = fakeSystem({ winget: { aborted: true, exitCode: undefined, output: "Downloading 40%" } });
+    const environment = createWindowsEnvironment(system, { managementDirectory: root });
+    const log = await environment.startLog();
+    await environment.install("node", new AbortController().signal);
+    await log.finish("已中止");
+
+    const text = await readLog(log.folder);
+    assert.match(text, /OpenJS\.NodeJS\.LTS/);
+    assert.match(text, /Downloading 40%/);
+    assert.match(text, /結束碼：已中止/);
+    assert.match(text, /結果：已中止/);
+  });
+
+  it("records a failed install with its exit code and failed verification", async () => {
+    const root = await tempRoot();
+    const { system } = fakeSystem({ winget: { exitCode: 1, output: "Installer failed\n" } });
+    const environment = createWindowsEnvironment(system, { managementDirectory: root });
+    const log = await environment.startLog();
+    await environment.install("pwsh");
+    await log.verified("pwsh", await environment.probe("pwsh"));
+
+    const text = await readLog(log.folder);
+    assert.match(text, /結束碼：1/);
+    assert.match(text, /Installer failed/);
+    assert.match(text, /驗證 PowerShell 7：未安裝：找不到 pwsh/);
+  });
+
+  it("opens an install log folder in File Explorer", async () => {
+    const { system, opened } = fakeSystem({});
+    await createWindowsEnvironment(system).openLogFolder("C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000");
+    assert.deepEqual(opened, ["C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000"]);
   });
 });

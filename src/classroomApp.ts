@@ -39,7 +39,7 @@ export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
 
 export type EnvironmentToolId = (typeof ENVIRONMENT_TOOLS)[number];
 
-const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
+export const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   uv: "uv",
   git: "git",
   node: "Node.js",
@@ -56,6 +56,14 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
  * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
  */
 export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
+
+/** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
+export type EnvironmentInstallLog = {
+  /** 本次的紀錄資料夾，結果畫面「開啟紀錄資料夾」開啟它。 */
+  folder: string;
+  verified(tool: EnvironmentToolId, readiness: ToolReadiness): Promise<void>;
+  finish(summary: string): Promise<void>;
+};
 
 export type MustRestartClient = "codex" | "claude" | "vscode";
 
@@ -97,6 +105,9 @@ export type ClassroomAppDeps = {
       tool: EnvironmentToolId,
       signal?: AbortSignal,
     ): Promise<EnvironmentInstallResult>;
+    /** 開始一次安裝紀錄；沒有實作的平台（macOS）不留紀錄。 */
+    startLog?(): Promise<EnvironmentInstallLog>;
+    openLogFolder?(folder: string): Promise<void>;
   };
   // 測試注入的寫檔口。核心不呼叫它，MCP 動作只跑 catalog command。
   files: {
@@ -206,6 +217,8 @@ export type ClassroomAppView = {
   modelId?: string;
   tools: EnvironmentToolView[];
   environmentNotice?: string;
+  /** 最近一次 Environment Install 的紀錄資料夾；有值時結果畫面提供「開啟紀錄資料夾」。 */
+  environmentLogFolder?: string;
   mustRestart?: MustRestartClient[];
   modelRestart?: MustRestartClient[];
   connectionError?: string;
@@ -267,6 +280,7 @@ export class ClassroomApp {
   private environmentCheck: Promise<void> | undefined;
   private environmentCheckStarted = false;
   private environmentNotice: string | undefined;
+  private environmentLog: EnvironmentInstallLog | undefined;
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
@@ -357,6 +371,9 @@ export class ClassroomApp {
     if (this.commandAborted) view.commandAborted = true;
     if (this.mode === "classroom" && this.modelIds[0]) {
       view.modelId = this.modelIds[0];
+    }
+    if (this.environmentLog) {
+      view.environmentLogFolder = this.environmentLog.folder;
     }
     if (this.environmentNotice) {
       view.environmentNotice = this.environmentNotice;
@@ -455,6 +472,7 @@ export class ClassroomApp {
     try {
       // 啟動時的背景檢查還沒結束就先等它，避免檢查與安裝後的驗證互相覆蓋。
       if (this.environmentCheck) await this.environmentCheck;
+      await this.startEnvironmentLog();
       for (const tool of selected) {
         if (abort.signal.aborted) break;
         let result: EnvironmentInstallResult | undefined;
@@ -469,6 +487,7 @@ export class ClassroomApp {
         // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
         // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
         const verified = await this.probeEnvironmentTool(tool);
+        await this.environmentLog?.verified(tool, verified).catch(() => {});
         if (verified.readiness === "ready") {
           if (result?.rebootRequired) rebootSuggested.push(tool);
           continue;
@@ -483,6 +502,7 @@ export class ClassroomApp {
     if (abort.signal.aborted) {
       await this.checkEnvironment();
       this.environmentNotice = ENVIRONMENT_ABORTED;
+      await this.environmentLog?.finish("已中止").catch(() => {});
       return;
     }
     const notices = [];
@@ -493,6 +513,24 @@ export class ClassroomApp {
     this.environmentNotice = notices.length > 0 ? notices.join("") : undefined;
     // 安裝後的驗證也算一次檢查：再按「確認安裝」只處理仍未就緒的工具。
     this.selectNotReadyEnvironmentTools();
+    await this.environmentLog?.finish(this.environmentNotice ?? "完成").catch(() => {});
+  }
+
+  /** 每次 Environment Install 開一份新紀錄；紀錄開不了也照常安裝。 */
+  private async startEnvironmentLog(): Promise<void> {
+    try {
+      this.environmentLog = await this.deps.environment.startLog?.();
+    } catch {
+      this.environmentLog = undefined;
+    }
+  }
+
+  /** 結果畫面「開啟紀錄資料夾」：開啟最近一次安裝的紀錄資料夾。 */
+  async openEnvironmentLog(): Promise<void> {
+    if (!this.environmentLog) {
+      return;
+    }
+    await this.deps.environment.openLogFolder?.(this.environmentLog.folder);
   }
 
   private environmentTools(): EnvironmentToolView[] {

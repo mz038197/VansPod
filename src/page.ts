@@ -196,6 +196,10 @@ function environmentInner(view: ClassroomAppView): string {
   const note = view.environmentNotice
     ? `<p class="hint">${escapeHtml(view.environmentNotice)}</p>`
     : "";
+  // 紀錄資料夾的路徑不放進頁面；伺服器開啟 ClassroomApp 記得的最近一次。
+  const openLog = view.environmentLogFolder && !view.commandRunning
+    ? `<form method="post" action="/environment-log"><button type="submit" class="quiet">開啟紀錄資料夾</button></form>`
+    : "";
   return `<form method="post" action="/environment-check">
       <button type="submit" class="quiet"${off}>重新檢查</button>
     </form>
@@ -203,7 +207,7 @@ function environmentInner(view: ClassroomAppView): string {
       <div class="tools">${tools}</div>
       <button type="submit" class="go"${confirmOff}${view.commandRunning ? " hidden" : ""}>確認安裝</button>
     </form>
-    ${note}${abortInstallForm(view)}`;
+    ${note}${openLog}${abortInstallForm(view)}`;
 }
 
 /** Abort Install 入口；僅在安裝執行中顯示，送出前由 installProgressScript 確認。 */
