@@ -1,13 +1,20 @@
 import { VERSION as APP_VERSION } from "./version";
 import { resolveAppearance } from "./appearance";
 import { installProgressScript } from "./installProgress";
+import { environmentProgressScript } from "./environmentProgress";
 import { settingsActionsScript } from "./settingsActions";
 import { modelStatusScript } from "./modelStatus";
 import { classroomUpdateControl, classroomUpdateStyles, classroomUpdateScript } from "./classroomUpdate";
 import { connectionMascot, connectionMascotStyles, connectionMascotScript, fittedPatrol } from "./connectionMascot";
 import { clientIcons } from "./clientIcons";
 import { environmentIcons } from "./environmentIcons";
-import { COPIED_KEY_NOTICE, type ClassroomAppView } from "./classroomApp";
+import {
+  COPIED_KEY_NOTICE,
+  type ClassroomAppView,
+  type EnvironmentInstallProgress,
+  type EnvironmentInstallStage,
+  type EnvironmentReadiness,
+} from "./classroomApp";
 import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import { UPDATE_BUTTON, VERSION_UPDATE_STYLES } from "./versionUpdateView";
@@ -169,27 +176,85 @@ function adapterForms(view: ClassroomAppView): string {
     (view.adapterNotice ? `<p class="hint">${escapeHtml(view.adapterNotice)}</p>` : "");
 }
 
+/** Environment Tool Readiness 與按下「確認安裝」後對該工具做的事。 */
+const READINESS_MARK: Record<EnvironmentReadiness | "checking", string> = {
+  ready: "<em>已就緒</em>",
+  needsRepair: `<em class="needs-repair">需要修復</em><span class="tool-action">修復</span>`,
+  missing: `<em>未安裝</em><span class="tool-action">安裝</span>`,
+  checking: `<em class="checking">檢查中</em>`,
+};
+
+/** 第一次檢查還沒有結果的工具不算缺，整張卡顯示「檢查中」。 */
+function environmentChecking(view: ClassroomAppView): boolean {
+  return view.tools.some((tool) => tool.readiness === "checking");
+}
+
+const STAGE_TEXT: Record<EnvironmentInstallStage, string> = {
+  waiting: "等待中",
+  preparing: "準備中",
+  downloading: "下載中",
+  installing: "安裝中",
+  verifying: "驗證中",
+  done: "完成",
+  failed: "失敗",
+};
+
+function megabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+/** 一個工具在 Environment Install 中的階段文字；下載中附已下載量，知道總量時再附總量與百分比。 */
+export function environmentStageText(progress: EnvironmentInstallProgress): string {
+  const text = STAGE_TEXT[progress.stage];
+  if (progress.stage !== "downloading" || progress.downloaded === undefined) return text;
+  if (!progress.total) return `${text} ${megabytes(progress.downloaded)} MB`;
+  const percent = Math.min(100, Math.floor((progress.downloaded / progress.total) * 100));
+  return `${text} ${megabytes(progress.downloaded)} / ${megabytes(progress.total)} MB（${percent}%）`;
+}
+
+/** GET /environment-status：背景 Environment Install 是否還在跑，以及這次安裝裡每個工具的階段文字。 */
+export function environmentStatus(view: ClassroomAppView): { running: boolean; tools: Array<{ id: string; stage: string }> } {
+  return {
+    running: view.environmentInstalling,
+    tools: view.tools.flatMap((tool) => (tool.progress ? [{ id: tool.id, stage: environmentStageText(tool.progress) }] : [])),
+  };
+}
+
 function environmentInner(view: ClassroomAppView): string {
   const off = locked(view);
-  const confirmOff = view.installAvailable && !view.commandRunning ? "" : " disabled";
+  // 開發工具與 Project Folder 無關：沒選資料夾也能安裝。
+  const confirmOff = view.commandRunning ? " disabled" : "";
   const tools = view.tools
     .map((tool) => {
       const checked = tool.selected ? " checked" : "";
-      const mark = tool.installed ? "已安裝" : "未安裝";
-      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span>${escapeHtml(tool.label)}</span> <em>${mark}</em></label>`;
+      const title = tool.reason ? ` title="${escapeHtml(tool.reason)}"` : "";
+      // 安裝中的工具顯示階段；頁面輪詢 /environment-status 更新這段文字。
+      const mark = view.environmentInstalling && tool.progress
+        ? `<span class="tool-stage" data-environment-stage="${escapeHtml(tool.id)}">${escapeHtml(environmentStageText(tool.progress))}</span>`
+        : READINESS_MARK[tool.readiness];
+      return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span${title}>${escapeHtml(tool.label)}</span> ${mark}</label>`;
     })
     .join("");
+  const polling = view.environmentInstalling ? " data-environment-progress" : "";
   const note = view.environmentNotice
     ? `<p class="hint">${escapeHtml(view.environmentNotice)}</p>`
+    : "";
+  // 紀錄資料夾的路徑不放進頁面；伺服器開啟 ClassroomApp 記得的最近一次。
+  const openLog = view.environmentLogFolder && !view.commandRunning
+    ? `<form method="post" action="/environment-log"><button type="submit" class="quiet">開啟紀錄資料夾</button></form>`
+    : "";
+  // 有 Project Folder 時伺服器以該資料夾開啟 VS Code。
+  const openVsCode = view.tools.some((tool) => tool.id === "vscode" && tool.readiness === "ready")
+    ? `<form method="post" action="/open-vscode"><button type="submit" class="quiet">開啟 VS Code</button></form>`
     : "";
   return `<form method="post" action="/environment-check">
       <button type="submit" class="quiet"${off}>重新檢查</button>
     </form>
-    <form class="stack" method="post" action="/environment">
+    <form class="stack" method="post" action="/environment"${polling}>
       <div class="tools">${tools}</div>
       <button type="submit" class="go"${confirmOff}${view.commandRunning ? " hidden" : ""}>確認安裝</button>
     </form>
-    ${note}${abortInstallForm(view)}`;
+    ${note}${openVsCode}${openLog}${abortInstallForm(view)}`;
 }
 
 /** Abort Install 入口；僅在安裝執行中顯示，送出前由 installProgressScript 確認。 */
@@ -894,10 +959,15 @@ function organizeSettings(html: string, view: ClassroomAppView): string {
           actions += abort;
           return "";
         });
-        const missing = view.tools.filter((tool) => !tool.installed).length;
-        const summary = !view.tools.length ? "尚未檢查工具" : missing ? `尚缺 ${missing} 項工具` : "所有工具已安裝";
+        const missing = view.tools.filter((tool) => tool.readiness !== "ready").length;
+        const summary = !view.tools.length ? "尚未檢查工具"
+          : view.environmentInstalling ? "正在安裝工具…"
+          : environmentChecking(view) ? "正在檢查工具…"
+          : missing ? `尚缺 ${missing} 項工具` : "所有工具已就緒";
+        // 安裝中展開工具清單，學生直接看到每個工具的階段。
+        const open = view.environmentInstalling ? " open" : "";
         body = body.replace(/<div class="tools">([\s\S]*?)<\/div>/,
-          `<p class="environment-summary">${summary}</p><details class="environment-tools"><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
+          `<p class="environment-summary">${summary}</p><details class="environment-tools"${open}><summary>查看與選擇工具</summary><div class="tools">$1</div></details>`);
       }
       cards.push(`<section class="tile settings-card${title === "環境" ? " environment-card" : ""}" data-setting="${title}">${head}<div class="settings-content">${body}</div>${reminder}<div class="settings-actions">${actions}</div></section>`);
       return "";
@@ -933,9 +1003,10 @@ export function renderPage(view: ClassroomAppView): string {
   );
   html = html.replaceAll(">Classroom</button>", ">課堂</button>");
   html = html.replaceAll(">Native</button>", ">個人</button>");
-  const envReady = view.tools.length > 0 && view.tools.every((tool) => tool.installed);
+  const envReady = view.tools.length > 0 && view.tools.every((tool) => tool.readiness === "ready");
   const envTag = envReady
     ? `<span class="badge">已就緒</span>`
+    : environmentChecking(view) ? `<span class="badge off">檢查中</span>`
     : `<span class="badge off">未完成</span>`;
   html = html.replace(
     `<section class="tile"><h2>環境</h2>`,
@@ -1004,6 +1075,8 @@ export function renderPage(view: ClassroomAppView): string {
     .connection-separator { opacity: 0.5; }
     .tool em { color: var(--text); }
     .tool em.missing { color: var(--muted); }
+    .tool em.needs-repair { color: light-dark(#9a4a08, #fbbf24); }
+    .tool-action { flex-shrink: 0; padding: 1px 8px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 999px; color: var(--muted); font-size: 12px; }
     .install-card { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; width: 100%; padding: 12px; border: 1px solid light-dark(#dfe3e8, #404044); border-radius: 12px; background: light-dark(#f8fafc, #252528); }
     .install-card.installed { border-color: light-dark(#6ee7b7, #1f5a45); }
     .install-number { flex-shrink: 0; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: light-dark(#0d0d0d, #ececec); color: light-dark(#ffffff, #0d0d0d); font: 700 16px Consolas, "Cascadia Mono", monospace; }
@@ -1099,6 +1172,7 @@ export function renderPage(view: ClassroomAppView): string {
     .environment-summary { font-weight: 600; }
     .environment-tools > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
     .environment-tools .tools { margin-top: 12px; }
+    .tool-stage { color: var(--muted); font-size: 13px; }
     @media (max-width: 40rem) { .settings-grid { grid-template-columns: 1fr; } }
     .key-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .key-row p { color: var(--muted); font-size: 13px; }
@@ -1116,7 +1190,7 @@ export function renderPage(view: ClassroomAppView): string {
     main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
     ${classroomUpdateStyles}
   </style>
-  <script>${drawerScript()}${installProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
+  <script>${drawerScript()}${installProgressScript}${environmentProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }

@@ -35,15 +35,52 @@ export type ModelSwitchMode = "native" | "classroom";
 export type ClientModes = Record<AdapterClient, ModelSwitchMode>;
 type ClientControl = AdapterClient | "vscode";
 
-export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh"] as const;
+// 新工具加在最後，不改既有 id。
+export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh", "vscode"] as const;
 
 export type EnvironmentToolId = (typeof ENVIRONMENT_TOOLS)[number];
 
-const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
+export const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   uv: "uv",
   git: "git",
   node: "Node.js",
   pwsh: "PowerShell 7",
+  vscode: "VS Code",
+};
+
+/** Environment Tool Readiness：已就緒／需要修復（找得到但驗證不通過或逾時）／未安裝（找不到）。 */
+export type EnvironmentReadiness = "ready" | "needsRepair" | "missing";
+
+export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string; reason?: string };
+
+/**
+ * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
+ * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
+ * failure：安裝程式沒有執行的原因（例如下載失敗、簽章不符），驗證未通過時顯示給學生。
+ * verified：environment 安裝後已經跑過的驗證（要依結果決定是否刪除安裝檔）；有值時 ClassroomApp 直接採用，不再 probe 一次。
+ */
+export type EnvironmentInstallResult = CommandResult & {
+  exitAccepted?: boolean;
+  rebootRequired?: boolean;
+  failure?: string;
+  verified?: ToolReadiness;
+};
+
+/** Environment Install 中一個工具的階段：等待中、準備中（輪到它、還沒開始下載或安裝）、下載中、安裝中、驗證中、完成、失敗。 */
+export type EnvironmentInstallStage = "waiting" | "preparing" | "downloading" | "installing" | "verifying" | "done" | "failed";
+
+/** 一個工具目前的階段；下載中附已下載位元組，伺服器沒給總量時沒有 total。 */
+export type EnvironmentInstallProgress = { stage: EnvironmentInstallStage; downloaded?: number; total?: number };
+
+/** environment.install 透過 onProgress 回報的進度；等待、準備、完成與失敗由 ClassroomApp 決定。 */
+export type EnvironmentInstallReport = EnvironmentInstallProgress & { stage: "downloading" | "installing" | "verifying" };
+
+/** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
+export type EnvironmentInstallLog = {
+  /** 本次的紀錄資料夾，結果畫面「開啟紀錄資料夾」開啟它。 */
+  folder: string;
+  verified(tool: EnvironmentToolId, readiness: ToolReadiness): Promise<void>;
+  finish(summary: string): Promise<void>;
 };
 
 export type MustRestartClient = "codex" | "claude" | "vscode";
@@ -80,12 +117,18 @@ export type ClassroomAppDeps = {
     run(cwd: string, command: string, onOutput?: (output: string) => void, signal?: AbortSignal): Promise<CommandResult>;
   };
   environment: {
-    probe(tool: EnvironmentToolId): Promise<{ installed: boolean }>;
+    probe(tool: EnvironmentToolId): Promise<ToolReadiness>;
+    /** 開發工具與 Project Folder 無關；實作自行決定工作目錄（使用者家目錄）。 */
     install(
       tool: EnvironmentToolId,
-      cwd: string,
       signal?: AbortSignal,
-    ): Promise<CommandResult>;
+      onProgress?: (progress: EnvironmentInstallReport) => void,
+    ): Promise<EnvironmentInstallResult>;
+    /** 開始一次安裝紀錄；沒有實作的平台（macOS）不留紀錄。 */
+    startLog?(): Promise<EnvironmentInstallLog>;
+    openLogFolder?(folder: string): Promise<void>;
+    /** 「開啟 VS Code」：有 Project Folder 時以該資料夾開啟，沒有時只開 VS Code。 */
+    openVsCode?(folder?: string): Promise<void>;
   };
   // 測試注入的寫檔口。核心不呼叫它，MCP 動作只跑 catalog command。
   files: {
@@ -155,8 +198,13 @@ export type ClientForward = {
 export type EnvironmentToolView = {
   id: EnvironmentToolId;
   label: string;
-  installed: boolean;
+  /** checking：還沒有第一次檢查結果；不可顯示成「未安裝」。 */
+  readiness: EnvironmentReadiness | "checking";
+  version?: string;
+  reason?: string;
   selected: boolean;
+  /** 只在 Environment Install 進行中、且這個工具在這次安裝裡時才有。 */
+  progress?: EnvironmentInstallProgress;
 };
 
 export type ClassroomAppView = {
@@ -191,7 +239,11 @@ export type ClassroomAppView = {
   allowedModels?: string[];
   modelId?: string;
   tools: EnvironmentToolView[];
+  /** Environment Install 在背景執行中；頁面據此輪詢進度。 */
+  environmentInstalling: boolean;
   environmentNotice?: string;
+  /** 最近一次 Environment Install 的紀錄資料夾；有值時結果畫面提供「開啟紀錄資料夾」。 */
+  environmentLogFolder?: string;
   mustRestart?: MustRestartClient[];
   modelRestart?: MustRestartClient[];
   connectionError?: string;
@@ -246,14 +298,17 @@ export class ClassroomApp {
   private set mode(mode: ModelSwitchMode) { this.clientModes = { codex: mode, claude: mode }; }
   private modelIds: string[] = [];
   private modelProviders: VsCodeProvider[] = [];
-  private environmentInstalled: Record<EnvironmentToolId, boolean> = {
-    uv: false,
-    git: false,
-    node: false,
-    pwsh: false,
-  };
+  private environmentReadiness: Partial<Record<EnvironmentToolId, ToolReadiness>> = {};
   private environmentSelected = new Set<EnvironmentToolId>();
+  // 每次學生改勾選就加一；檢查開始後學生改過，檢查結束就不覆蓋他的勾選。
+  private environmentSelectionEdits = 0;
+  private environmentCheck: Promise<void> | undefined;
+  // 任何一次檢查開始過就為真：啟動時的背景檢查只跑一次，學生已按過「重新檢查」也不再補跑。
+  private initialEnvironmentCheckStarted = false;
   private environmentNotice: string | undefined;
+  private environmentLog: EnvironmentInstallLog | undefined;
+  // 背景 Environment Install 進行中才有：這次要裝的每個工具目前的階段。
+  private environmentProgress: Partial<Record<EnvironmentToolId, EnvironmentInstallProgress>> | undefined;
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
@@ -292,6 +347,7 @@ export class ClassroomApp {
       adapters: { ...this.adapters },
       adapterNotice: this.adapterNotice,
       tools: this.environmentTools(),
+      environmentInstalling: this.environmentProgress !== undefined,
     };
     if (this.connectionError) view.connectionError = this.connectionError;
     if (this.notice && this.notice === this.connectionNotice) view.connectionNotice = this.connectionNotice;
@@ -345,6 +401,9 @@ export class ClassroomApp {
     if (this.mode === "classroom" && this.modelIds[0]) {
       view.modelId = this.modelIds[0];
     }
+    if (this.environmentLog) {
+      view.environmentLogFolder = this.environmentLog.folder;
+    }
     if (this.environmentNotice) {
       view.environmentNotice = this.environmentNotice;
     }
@@ -373,32 +432,76 @@ export class ClassroomApp {
     };
   }
 
-  async checkEnvironment(): Promise<void> {
-    if (this.commandRunning) {
-      return;
-    }
-    for (const tool of ENVIRONMENT_TOOLS) {
-      let installed = false;
+  /** 檢查全部工具的 Environment Tool Readiness；已有檢查在跑就等它，不重複探測。 */
+  checkEnvironment(): Promise<void> {
+    if (this.environmentCheck) return this.environmentCheck;
+    if (this.commandRunning) return Promise.resolve();
+    this.initialEnvironmentCheckStarted = true;
+    const edits = this.environmentSelectionEdits;
+    const check = (async () => {
       try {
-        installed = (await this.deps.environment.probe(tool)).installed;
-      } catch {
-        installed = false;
+        await this.probeAllEnvironmentTools();
+        // 檢查期間學生自己改過勾選，就保留他的選擇。
+        if (this.environmentSelectionEdits === edits) this.selectNotReadyEnvironmentTools();
+        // 學生在 VansPod 外裝好 VS Code，按「重新檢查」也讓 VS Code Chat 跟著可用。
+        if (this.environmentReadiness.vscode?.readiness === "ready") await this.redetectVsCodeChat();
+      } finally {
+        this.environmentCheck = undefined;
       }
-      this.environmentInstalled[tool] = installed;
+    })();
+    this.environmentCheck = check;
+    return check;
+  }
+
+  /** 每次檢查後的預設勾選：未就緒（未安裝或需要修復）的工具。 */
+  private selectNotReadyEnvironmentTools(): void {
+    this.environmentSelected = new Set(
+      ENVIRONMENT_TOOLS.filter((id) => {
+        const checked = this.environmentReadiness[id];
+        return checked !== undefined && checked.readiness !== "ready";
+      }),
+    );
+  }
+
+  private async probeAllEnvironmentTools(): Promise<void> {
+    await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+  }
+
+  private async probeEnvironmentTool(tool: EnvironmentToolId): Promise<ToolReadiness> {
+    let readiness: ToolReadiness;
+    try {
+      readiness = await this.deps.environment.probe(tool);
+    } catch {
+      readiness = { readiness: "missing" };
     }
+    this.environmentReadiness[tool] = readiness;
+    return readiness;
+  }
+
+  /**
+   * 安裝後的驗證：environment 已經驗證過就採用它的結果，每個工具只檢查一次。
+   * 安裝程式要求重新開機、工具還不能用時算「需要修復」：裝過了，重新開機後再檢查（US32）。
+   */
+  private async verifyInstalledTool(tool: EnvironmentToolId, result: EnvironmentInstallResult | undefined): Promise<ToolReadiness> {
+    let verified = result?.verified ?? await this.probeEnvironmentTool(tool);
+    if (result?.rebootRequired && verified.readiness === "missing") verified = { ...verified, readiness: "needsRepair" };
+    this.environmentReadiness[tool] = verified;
+    return verified;
   }
 
   selectEnvironment(tools: readonly EnvironmentToolId[]): void {
     if (this.commandRunning) {
       return;
     }
+    this.environmentSelectionEdits += 1;
     this.environmentSelected = new Set(
       ENVIRONMENT_TOOLS.filter((id) => tools.includes(id)),
     );
   }
 
+  /** Environment Install：開發工具與 Project Folder 無關，沒選資料夾也能安裝。 */
   async confirmEnvironment(): Promise<void> {
-    if (this.stopping || this.commandRunning || !this.projectFolder) {
+    if (this.stopping || this.commandRunning) {
       return;
     }
     const selected = ENVIRONMENT_TOOLS.filter((id) =>
@@ -407,47 +510,110 @@ export class ClassroomApp {
     if (selected.length === 0) {
       return;
     }
-    const cwd = this.projectFolder;
+    // 頁面請求不等安裝結束（見 start.ts 的 POST /environment）；commandRunning 在整段背景安裝期間保持為真，
+    // exit guard、版本更新與移除都靠它詢問是否中止。
     this.commandRunning = true;
     this.environmentNotice = undefined;
+    const progress: Partial<Record<EnvironmentToolId, EnvironmentInstallProgress>> = {};
+    for (const tool of selected) progress[tool] = { stage: "waiting" };
+    this.environmentProgress = progress;
     const abort = this.beginInstall();
-    const installedTools: EnvironmentToolId[] = [];
+    const rebootSuggested: EnvironmentToolId[] = [];
+    const failures: string[] = [];
     try {
+      // 啟動時的背景檢查還沒結束就先等它，避免檢查與安裝後的驗證互相覆蓋。
+      if (this.environmentCheck) await this.environmentCheck;
+      await this.startEnvironmentLog();
       for (const tool of selected) {
-        let result: CommandResult;
+        if (abort.signal.aborted) break;
+        // 輪到這個工具：先是「準備中」，environment 開始下載或啟動安裝程式時再回報下載中、安裝中。
+        progress[tool] = { stage: "preparing" };
+        const report = (reported: EnvironmentInstallReport) => {
+          if (abort.signal.aborted) return;
+          progress[tool] = { ...reported };
+        };
+        let result: EnvironmentInstallResult | undefined;
         try {
-          result = await this.deps.environment.install(tool, cwd, abort.signal);
+          result = await this.deps.environment.install(tool, abort.signal, report);
         } catch {
+          result = undefined;
+        }
+        if (abort.signal.aborted) {
           break;
         }
-        if (abort.signal.aborted || !environmentInstallSucceeded(result)) {
-          break;
+        // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
+        // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
+        progress[tool] = { stage: "verifying" };
+        const verified = await this.verifyInstalledTool(tool, result);
+        await this.environmentLog?.verified(tool, verified).catch(() => {});
+        if (verified.readiness === "ready") {
+          progress[tool] = { stage: "done" };
+          if (result?.rebootRequired) rebootSuggested.push(tool);
+          if (tool === "vscode") await this.redetectVsCodeChat();
+          continue;
         }
-        installedTools.push(tool);
+        // 單一工具失敗不中斷後續工具；結果列出每個失敗的工具與原因。
+        progress[tool] = { stage: "failed" };
+        failures.push(environmentInstallFailure(ENVIRONMENT_LABEL[tool], result, verified));
+      }
+      if (abort.signal.aborted) {
+        // 中止後重新檢查全部工具，畫面顯示實際狀態（ADR-0008）；仍算在這次安裝裡。
+        await this.probeAllEnvironmentTools();
+        this.selectNotReadyEnvironmentTools();
       }
     } finally {
+      this.environmentProgress = undefined;
       this.endInstall();
       this.commandRunning = false;
     }
     if (abort.signal.aborted) {
-      await this.checkEnvironment();
       this.environmentNotice = ENVIRONMENT_ABORTED;
-    } else if (installedTools.length > 0) {
-      // 偵測時會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
-      await this.checkEnvironment();
-      const missing = installedTools.filter((tool) => !this.environmentInstalled[tool]);
-      if (missing.length > 0) {
-        this.environmentNotice = `已執行安裝，但還偵測不到 ${missing.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")}。請稍後按「重新檢查」。`;
-      }
+      await this.environmentLog?.finish("已中止").catch(() => {});
+      return;
     }
+    const notices = [];
+    if (rebootSuggested.length > 0) {
+      notices.push(`${rebootSuggested.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")} 已就緒，建議重新開機。`);
+    }
+    notices.push(...failures);
+    this.environmentNotice = notices.length > 0 ? notices.join("") : undefined;
+    // 安裝後的驗證也算一次檢查：再按「確認安裝」只處理仍未就緒的工具。
+    this.selectNotReadyEnvironmentTools();
+    await this.environmentLog?.finish(this.environmentNotice ?? "完成").catch(() => {});
+  }
+
+  /** 每次 Environment Install 開一份新紀錄；紀錄開不了也照常安裝。 */
+  private async startEnvironmentLog(): Promise<void> {
+    try {
+      this.environmentLog = await this.deps.environment.startLog?.();
+    } catch {
+      this.environmentLog = undefined;
+    }
+  }
+
+  /** 結果畫面「開啟紀錄資料夾」：開啟最近一次安裝的紀錄資料夾。 */
+  async openEnvironmentLog(): Promise<void> {
+    if (!this.environmentLog) {
+      return;
+    }
+    await this.deps.environment.openLogFolder?.(this.environmentLog.folder);
+  }
+
+  /** 「開啟 VS Code」只在 VS Code 已就緒時有效；有 Project Folder 就直接開那個資料夾。 */
+  async openVsCode(): Promise<void> {
+    if (this.environmentReadiness.vscode?.readiness !== "ready") {
+      return;
+    }
+    await this.deps.environment.openVsCode?.(this.projectFolder);
   }
 
   private environmentTools(): EnvironmentToolView[] {
     return ENVIRONMENT_TOOLS.map((id) => ({
       id,
       label: ENVIRONMENT_LABEL[id],
-      installed: this.environmentInstalled[id],
+      ...(this.environmentReadiness[id] ?? { readiness: "checking" as const }),
       selected: this.environmentSelected.has(id),
+      ...(this.environmentProgress?.[id] ? { progress: { ...this.environmentProgress[id] } } : {}),
     }));
   }
 
@@ -1356,11 +1522,24 @@ export class ClassroomApp {
     }
   }
 
+  /** VS Code 剛就緒：只重新偵測 VS Code Chat 並啟動它的 Client Route，其他 Client Route 不動。 */
+  private async redetectVsCodeChat(): Promise<void> {
+    // 還沒啟動或正在停止就不碰 Client Route；啟動中的初始偵測先跑完，避免重複啟動路由。
+    if (this.stopping || !this.initialization) return;
+    await this.initialization.catch(() => undefined);
+    if (this.stopping || this.detectedClients.vsCodeChat) return;
+    await this.detectClient("vsCodeChat");
+    if (this.detectedClients.vsCodeChat) await this.startVsCodeRoute();
+  }
+
   private async detectClients(): Promise<void> {
-    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(async client => {
-      try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
-      catch { this.detectedClients[client] = false; }
-    }));
+    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(client => this.detectClient(client)));
+  }
+
+  /** 偵測失敗就當作沒裝。 */
+  private async detectClient(client: AdapterClient | "vsCodeChat"): Promise<void> {
+    try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
+    catch { this.detectedClients[client] = false; }
   }
 
   private async reloadAllowlistNow(): Promise<void> {
@@ -1617,6 +1796,8 @@ export class ClassroomApp {
 
   private async startNow(): Promise<void> {
     this.stopping = false;
+    // 啟動後在背景檢查一次開發工具；不擋住連線與路由的恢復。
+    if (!this.initialEnvironmentCheckStarted) void this.checkEnvironment();
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
@@ -1819,20 +2000,21 @@ export class ClassroomApp {
   }
 }
 
-function environmentInstallSucceeded(result: {
-  exitCode: number | undefined;
-  output: string;
-}): boolean {
-  if (result.exitCode === 0) {
-    return true;
-  }
-  if (typeof result.exitCode !== "number") {
-    return false;
-  }
-  return (
-    /already installed/i.test(result.output) ||
-    /no available upgrade found/i.test(result.output)
-  );
+/** 安裝後驗證未通過時的提示；安裝程式要求重新開機時，請學生重開機後再檢查。 */
+function environmentInstallFailure(
+  label: string,
+  result: EnvironmentInstallResult | undefined,
+  verified: ToolReadiness,
+): string {
+  const rejected = result?.failure
+    ? `${result.failure}，`
+    : result?.exitAccepted === false && result.exitCode !== undefined
+      ? `安裝失敗（結束碼 ${result.exitCode}），`
+      : "";
+  const state = verified.readiness === "missing" ? "安裝後仍偵測不到" : "安裝後仍需要修復";
+  const reason = verified.reason ? `：${verified.reason}` : "";
+  const next = result?.rebootRequired ? "請重新開機後按「重新檢查」。" : "請稍後按「重新檢查」。";
+  return `${label} ${rejected}${state}${reason}。${next}`;
 }
 
 function usableCatalogYaml(value: unknown): string | undefined {

@@ -10,17 +10,21 @@ import path from "node:path";
 import {
   ClassroomApp,
   ENVIRONMENT_TOOLS,
+  type EnvironmentInstallReport,
   type EnvironmentToolId,
+  type ToolReadiness,
   type NicknameRedeemResult,
   type ProxyClient,
   type UpstreamSend,
   type UpstreamTarget,
 } from "./classroomApp";
-import { modelStatus, renderInspectorPage, renderPage } from "./page";
+import { environmentStatus, modelStatus, renderInspectorPage, renderPage } from "./page";
 import { createPromptCapture } from "./promptCapture";
 import { writeClipboard } from "./clipboard";
 import { pickProjectFolder } from "./folderPicker";
 import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./commandRunner";
+import { createWindowsEnvironment } from "./windowsEnvironment";
+import { windowsEnvironmentSystem } from "./windowsEnvironmentSystem";
 import { exitDecision, removalInterruptions } from "./exitGuard";
 import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
@@ -222,28 +226,32 @@ function isEnvironmentTool(value: string): value is EnvironmentToolId {
 
 const MAC_PWSH_PAGE =
   "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos";
+// VS Code 的直接下載安裝只做 Windows；macOS 開啟官方下載頁，由學生自己安裝。
+const MAC_VSCODE_PAGE = "https://code.visualstudio.com/download";
 
-function probeEnvironment(
-  tool: EnvironmentToolId,
-): Promise<{ installed: boolean }> {
-  return collectOutput(tool, ["--version"]).then((result) => {
+/** macOS 維持原本的偵測：找得到且有輸出版本就算已就緒（ADR-0008：第一版只完整支援 Windows）。 */
+function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
+  return collectOutput(tool === "vscode" ? "code" : tool, ["--version"]).then((result) => {
     if (result.spawnError) {
-      return { installed: false };
+      return { readiness: "missing" };
     }
-    return { installed: result.exitCode === 0 || /\d/.test(result.output) };
+    return { readiness: result.exitCode === 0 || /\d/.test(result.output) ? "ready" : "missing" };
   });
 }
 
-function installEnvironment(
+/** 開發工具與 Project Folder 無關，安裝一律在使用者家目錄執行。 */
+function installMacEnvironment(
   tool: EnvironmentToolId,
-  cwd: string,
   signal?: AbortSignal,
+  onProgress?: (progress: EnvironmentInstallReport) => void,
 ): Promise<CommandResult> {
-  const launch =
-    process.platform === "darwin" && tool === "pwsh"
-      ? { command: "open", args: [MAC_PWSH_PAGE] }
-      : shellLaunch(environmentInstallCommand(tool));
-  return collectOutput(launch.command, launch.args, cwd, undefined, signal).then((result) => {
+  onProgress?.({ stage: "installing" });
+  const launch = tool === "pwsh"
+    ? { command: "open", args: [MAC_PWSH_PAGE] }
+    : tool === "vscode"
+      ? { command: "open", args: [MAC_VSCODE_PAGE] }
+      : shellLaunch(macEnvironmentInstallCommand(tool));
+  return collectOutput(launch.command, launch.args, os.homedir(), undefined, signal).then((result) => {
     if (result.aborted) return { exitCode: result.exitCode, output: result.output, aborted: true };
     if (result.spawnError) {
       return { exitCode: 1, output: "安裝命令無法啟動。" };
@@ -252,31 +260,17 @@ function installEnvironment(
   });
 }
 
-function environmentInstallCommand(tool: EnvironmentToolId): string {
-  if (process.platform === "darwin") {
-    if (tool === "uv") {
-      return "curl -LsSf https://astral.sh/uv/install.sh | sh";
-    }
-    if (tool === "git") {
-      return "xcode-select --install";
-    }
-    if (tool === "node") {
-      return 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && . "$HOME/.nvm/nvm.sh" && nvm install --lts && nvm alias default \'lts/*\'';
-    }
-    return "";
-  }
-  const quiet =
-    "--source winget --disable-interactivity -h --accept-package-agreements --accept-source-agreements";
+function macEnvironmentInstallCommand(tool: EnvironmentToolId): string {
   if (tool === "uv") {
-    return 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"';
+    return "curl -LsSf https://astral.sh/uv/install.sh | sh";
   }
   if (tool === "git") {
-    return `winget install --id Git.Git -e ${quiet}`;
+    return "xcode-select --install";
   }
   if (tool === "node") {
-    return `winget install --id OpenJS.NodeJS.LTS -e ${quiet}`;
+    return 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && . "$HOME/.nvm/nvm.sh" && nvm install --lts && nvm alias default \'lts/*\'';
   }
-  return `winget install --id Microsoft.PowerShell -e ${quiet}`;
+  return "";
 }
 
 function readBody(req: http.IncomingMessage, max = 16_384): Promise<string> {
@@ -484,10 +478,9 @@ export async function main(instance?: Instance): Promise<void> {
     projectFiles: { readClassroomInstalls },
     clipboard: { write: writeClipboard },
     commands: { run: runCommand },
-    environment: {
-      probe: probeEnvironment,
-      install: installEnvironment,
-    },
+    environment: process.platform === "win32"
+      ? createWindowsEnvironment(windowsEnvironmentSystem)
+      : { probe: probeMacEnvironment, install: installMacEnvironment },
     files: {
       async write() {
         throw new Error("VansPod 不寫 MCP 設定");
@@ -568,6 +561,14 @@ export async function main(instance?: Instance): Promise<void> {
           "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ running: view.commandRunning, output: view.commandOutput ?? "" }));
+        return;
+      }
+      if (req.method === "GET" && pathname === "/environment-status") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify(environmentStatus(app.view())));
         return;
       }
       if (req.method === "GET" && pathname === "/model-status") {
@@ -697,13 +698,27 @@ export async function main(instance?: Instance): Promise<void> {
         goHome(params);
         return;
       }
+      if (req.method === "POST" && pathname === "/environment-log") {
+        const params = new URLSearchParams(await readBody(req));
+        await app.openEnvironmentLog();
+        goHome(params);
+        return;
+      }
+      if (req.method === "POST" && pathname === "/open-vscode") {
+        const params = new URLSearchParams(await readBody(req));
+        await app.openVsCode().catch(() => {});
+        goHome(params);
+        return;
+      }
       if (req.method === "POST" && pathname === "/environment") {
         const params = new URLSearchParams(await readBody(req));
         const tools = params
           .getAll("tool")
           .filter((value): value is EnvironmentToolId => isEnvironmentTool(value));
         app.selectEnvironment(tools);
-        await app.confirmEnvironment();
+        // 背景安裝：請求立刻回來，頁面輪詢 /environment-status。commandRunning 在 confirmEnvironment 同步開頭就設好，
+        // 轉回首頁時已顯示進行中，exit guard、版本更新與移除也照常看得到這次安裝。
+        void app.confirmEnvironment().catch(() => {});
         goHome(params);
         return;
       }

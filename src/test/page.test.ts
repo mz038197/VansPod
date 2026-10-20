@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
-import { modelStatus, renderInspectorPage, renderPage } from "../page";
+import { environmentStageText, environmentStatus, modelStatus, renderInspectorPage, renderPage } from "../page";
+import { environmentProgressScript } from "../environmentProgress";
 import { patrolKeyframes } from "../connectionMascot";
 import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
@@ -22,11 +23,12 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
     commandRunning: false,
     mode: "native",
     tools: [
-      { id: "uv", label: "uv", installed: false, selected: false },
-      { id: "git", label: "git", installed: false, selected: false },
-      { id: "node", label: "Node.js", installed: false, selected: false },
-      { id: "pwsh", label: "PowerShell 7", installed: false, selected: false },
+      { id: "uv", label: "uv", readiness: "missing", selected: false },
+      { id: "git", label: "git", readiness: "missing", selected: false },
+      { id: "node", label: "Node.js", readiness: "missing", selected: false },
+      { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
     ],
+    environmentInstalling: false,
     ...extra,
   };
 }
@@ -42,6 +44,14 @@ it("renders independent adapter choices with Responses defaults and Claude Messa
 });
 
 describe("VansPod page", () => {
+  it("lists VS Code with its icon after the existing tools", () => {
+    const tools = [...view().tools, { id: "vscode" as const, label: "VS Code", readiness: "missing" as const, selected: true }];
+    const html = renderPage(view({ tools }));
+    const row = html.match(/<label class="tool"><input type="checkbox" name="tool" value="vscode"[^]*?<\/label>/)?.[0] ?? "";
+    assert.match(row, /<svg[^]*?<\/svg><span[^>]*>VS Code<\/span>/);
+    assert.ok(html.indexOf('name="tool" value="pwsh"') < html.indexOf('name="tool" value="vscode"'));
+  });
+
   it("lets the mascot announce a copied Classroom API Key without exposing the key", () => {
     const notice = "已複製 Classroom API Key。請勿分享給不信任的人。";
     const html = renderPage(view({ connectionNotice: notice, notice }));
@@ -463,10 +473,10 @@ describe("VansPod page", () => {
     assert.equal(actionAt < snippetAt && titleAt > snippetAt, true);
     assert.match(official, /aria-label="更新課堂內容"/);
     const readyTools = [
-      { id: "uv" as const, label: "uv", installed: true, selected: false },
-      { id: "git" as const, label: "git", installed: true, selected: false },
-      { id: "node" as const, label: "Node.js", installed: true, selected: false },
-      { id: "pwsh" as const, label: "PowerShell 7", installed: true, selected: false },
+      { id: "uv" as const, label: "uv", readiness: "ready" as const, selected: false },
+      { id: "git" as const, label: "git", readiness: "ready" as const, selected: false },
+      { id: "node" as const, label: "Node.js", readiness: "ready" as const, selected: false },
+      { id: "pwsh" as const, label: "PowerShell 7", readiness: "ready" as const, selected: false },
     ];
     const ready = renderPage(view({ tools: readyTools }));
     assert.match(ready, /<h2>環境<\/h2><span class="badge">已就緒<\/span>/);
@@ -476,10 +486,10 @@ describe("VansPod page", () => {
       view({
         installAvailable: true,
         tools: [
-          { id: "uv", label: "uv", installed: false, selected: true },
-          { id: "git", label: "git", installed: false, selected: false },
-          { id: "node", label: "Node.js", installed: true, selected: false },
-          { id: "pwsh", label: "PowerShell 7", installed: false, selected: false },
+          { id: "uv", label: "uv", readiness: "missing", selected: true },
+          { id: "git", label: "git", readiness: "missing", selected: false },
+          { id: "node", label: "Node.js", readiness: "ready", selected: false },
+          { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
         ],
       }));
     assert.match(onePicked, /class="go">確認安裝/);
@@ -535,6 +545,126 @@ describe("VansPod page", () => {
   });
 });
 
+describe("Environment Install card", () => {
+  const tools = [
+    { id: "uv" as const, label: "uv", readiness: "ready" as const, version: "uv 0.5.1", selected: false },
+    { id: "git" as const, label: "git", readiness: "missing" as const, reason: "找不到 git", selected: true },
+    { id: "node" as const, label: "Node.js", readiness: "needsRepair" as const, version: "v25.0.0", reason: "需要 Node.js LTS，且 npm 必須可正常執行", selected: true },
+    { id: "pwsh" as const, label: "PowerShell 7", readiness: "ready" as const, version: "PowerShell 7.4.6", selected: false },
+  ];
+  const row = (html: string, id: string) => html.match(new RegExp(`<label class="tool"><input type="checkbox" name="tool" value="${id}"[\\s\\S]*?</label>`))?.[0] ?? "";
+
+  it("shows each tool's Environment Tool Readiness and offers 安裝 or 修復", () => {
+    const html = renderPage(view({ installAvailable: true, tools }));
+    assert.match(row(html, "uv"), /<em>已就緒<\/em>/);
+    assert.doesNotMatch(row(html, "uv"), /tool-action/);
+    assert.match(row(html, "git"), /<em class="missing">未安裝<\/em><span class="tool-action">安裝<\/span>/);
+    assert.match(row(html, "node"), /<em class="needs-repair">需要修復<\/em><span class="tool-action">修復<\/span>/);
+    assert.match(row(html, "node"), /title="需要 Node\.js LTS，且 npm 必須可正常執行"/);
+    assert.match(html, /<h2>環境<\/h2><span class="badge off">未完成<\/span>/);
+    assert.match(html, /尚缺 2 項工具/);
+  });
+
+  it("lets the student install without a Project Folder", () => {
+    const html = renderPage(view({ installAvailable: false, tools }));
+    assert.equal(/<button[^>]*form="settings-environment"[^>]*>確認安裝/.test(html), true);
+    assert.doesNotMatch(html.match(/<button[^>]*form="settings-environment"[^>]*>確認安裝/)?.[0] ?? "", /disabled/);
+  });
+
+  it("shows tools as being checked, not as 未安裝, until the first check finishes", () => {
+    const html = renderPage(view({ tools: tools.map((tool) => ({ id: tool.id, label: tool.label, readiness: "checking" as const, selected: false })) }));
+    for (const tool of tools) assert.match(row(html, tool.id), /<em class="checking">檢查中<\/em>/);
+    assert.doesNotMatch(html, /未安裝/);
+    assert.doesNotMatch(html, /尚缺/);
+    assert.match(html, /正在檢查工具/);
+    assert.match(html, /<h2>環境<\/h2><span class="badge off">檢查中<\/span>/);
+  });
+
+  it("counts a tool that needs repair as not ready", () => {
+    const html = renderPage(view({ tools: tools.map((tool) => ({ ...tool, readiness: tool.id === "node" ? "needsRepair" as const : "ready" as const })) }));
+    assert.match(html, /<span class="badge off">未完成<\/span>/);
+    assert.match(html, /尚缺 1 項工具/);
+  });
+
+  it("offers 開啟紀錄資料夾 in the environment card after an install, but not while one runs", () => {
+    const card = (html: string) => html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const openLog = /<form method="post" action="\/environment-log"><button type="submit" class="quiet">開啟紀錄資料夾<\/button><\/form>/;
+    assert.doesNotMatch(renderPage(view({ tools })), /environment-log/);
+    const folder = "C:\\VansPod\\InstallLogs\\2026-10-20_100000";
+    assert.match(card(renderPage(view({ tools, environmentLogFolder: folder }))), openLog);
+    assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder, commandRunning: true })), /environment-log/);
+    assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder })), /InstallLogs/, "the path stays off the page");
+  });
+
+  it("offers 開啟 VS Code in the environment card only while VS Code is ready", () => {
+    const card = (html: string) => html.match(/<section[^>]*data-setting="環境"[\s\S]*?<\/section>/)?.[0] ?? "";
+    const openVsCode = /<form method="post" action="\/open-vscode"><button type="submit" class="quiet">開啟 VS Code<\/button><\/form>/;
+    const withVsCode = (readiness: "ready" | "needsRepair" | "missing" | "checking") =>
+      [...tools, { id: "vscode" as const, label: "VS Code", readiness, selected: false }];
+    assert.match(card(renderPage(view({ tools: withVsCode("ready") }))), openVsCode);
+    for (const readiness of ["needsRepair", "missing", "checking"] as const) {
+      assert.doesNotMatch(renderPage(view({ tools: withVsCode(readiness) })), /open-vscode/, readiness);
+    }
+  });
+
+  it("shows each tool's stage and download progress while an Environment Install runs", () => {
+    const MB = 1024 * 1024;
+    const running = [
+      { ...tools[0], progress: { stage: "done" as const } },
+      { ...tools[1], progress: { stage: "downloading" as const, downloaded: 2 * MB, total: 8 * MB } },
+      { ...tools[2], progress: { stage: "waiting" as const } },
+      tools[3],
+    ];
+    const html = renderPage(view({ commandRunning: true, environmentInstalling: true, tools: running }));
+    const stage = (id: string) => row(html, id).match(new RegExp(`<span class="tool-stage" data-environment-stage="${id}">([^<]*)</span>`))?.[1];
+    assert.equal(stage("uv"), "完成");
+    assert.equal(stage("git"), "下載中 2.0 / 8.0 MB（25%）");
+    assert.equal(stage("node"), "等待中");
+    assert.equal(stage("pwsh"), undefined, "tools outside this install keep their readiness");
+    assert.match(row(html, "pwsh"), /<em>已就緒<\/em>/);
+    assert.match(html, /<details class="environment-tools" open>/);
+    assert.match(html, /正在安裝工具…/);
+    assert.match(html, /<form[^>]*data-environment-progress/);
+  });
+
+  it("words every Environment Install stage for the student", () => {
+    const MB = 1024 * 1024;
+    assert.equal(environmentStageText({ stage: "waiting" }), "等待中");
+    assert.equal(environmentStageText({ stage: "preparing" }), "準備中");
+    assert.equal(environmentStageText({ stage: "downloading" }), "下載中");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 3.5 * MB }), "下載中 3.5 MB");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 0, total: 0 }), "下載中 0.0 MB");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 50 * MB, total: 100 * MB }), "下載中 50.0 / 100.0 MB（50%）");
+    assert.equal(environmentStageText({ stage: "installing" }), "安裝中");
+    assert.equal(environmentStageText({ stage: "verifying" }), "驗證中");
+    assert.equal(environmentStageText({ stage: "done" }), "完成");
+    assert.equal(environmentStageText({ stage: "failed" }), "失敗");
+  });
+
+  it("reports the running Environment Install's stages for polling", () => {
+    const running = [
+      { ...tools[0], progress: { stage: "installing" as const } },
+      { ...tools[1], progress: { stage: "downloading" as const, downloaded: 1024 * 1024 } },
+      tools[2],
+      tools[3],
+    ];
+    assert.deepEqual(environmentStatus(view({ commandRunning: true, environmentInstalling: true, tools: running })), {
+      running: true,
+      tools: [{ id: "uv", stage: "安裝中" }, { id: "git", stage: "下載中 1.0 MB" }],
+    });
+    assert.deepEqual(environmentStatus(view({ tools })), { running: false, tools: [] });
+  });
+
+  it("polls for progress while an Environment Install runs", () => {
+    const html = renderPage(view({ commandRunning: true, environmentInstalling: true, tools: [{ ...tools[1], progress: { stage: "waiting" as const } }] }));
+    assert.ok(html.includes(environmentProgressScript));
+  });
+
+  it("does not poll for progress when no Environment Install runs", () => {
+    assert.doesNotMatch(renderPage(view({ tools })), /<form[^>]*data-environment-progress/);
+    assert.doesNotMatch(renderPage(view({ tools, commandRunning: true })), /<form[^>]*data-environment-progress/, "a Course Install Action is not an Environment Install");
+  });
+});
 describe("Abort Install on the page", () => {
   const abortForms = (html: string) => [...html.matchAll(/<form[^>]*action="\/abort-install"[^>]*>[\s\S]*?<\/form>/g)].map((match) => match[0]);
 
