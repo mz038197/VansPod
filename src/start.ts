@@ -17,7 +17,7 @@ import {
   type UpstreamSend,
   type UpstreamTarget,
 } from "./classroomApp";
-import { modelStatus, renderInspectorPage, renderPage } from "./page";
+import { environmentStatus, modelStatus, renderInspectorPage, renderPage } from "./page";
 import { createPromptCapture } from "./promptCapture";
 import { writeClipboard } from "./clipboard";
 import { pickProjectFolder } from "./folderPicker";
@@ -556,6 +556,14 @@ export async function main(instance?: Instance): Promise<void> {
         res.end(JSON.stringify({ running: view.commandRunning, output: view.commandOutput ?? "" }));
         return;
       }
+      if (req.method === "GET" && pathname === "/environment-status") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify(environmentStatus(app.view())));
+        return;
+      }
       if (req.method === "GET" && pathname === "/model-status") {
         res.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
@@ -695,7 +703,9 @@ export async function main(instance?: Instance): Promise<void> {
           .getAll("tool")
           .filter((value): value is EnvironmentToolId => isEnvironmentTool(value));
         app.selectEnvironment(tools);
-        await app.confirmEnvironment();
+        // 背景安裝：請求立刻回來，頁面輪詢 /environment-status。commandRunning 在 confirmEnvironment 同步開頭就設好，
+        // 轉回首頁時已顯示進行中，exit guard、版本更新與移除也照常看得到這次安裝。
+        void app.confirmEnvironment().catch(() => {});
         goHome(params);
         return;
       }
