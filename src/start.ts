@@ -701,6 +701,12 @@ export async function main(instance?: Instance): Promise<void> {
         goHome(params);
         return;
       }
+      if (req.method === "POST" && pathname === "/open-vscode") {
+        const params = new URLSearchParams(await readBody(req));
+        await app.openVsCode().catch(() => {});
+        goHome(params);
+        return;
+      }
       if (req.method === "POST" && pathname === "/environment") {
         const params = new URLSearchParams(await readBody(req));
         const tools = params

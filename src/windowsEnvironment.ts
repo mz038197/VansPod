@@ -31,6 +31,8 @@ export type EnvironmentSystem = {
   wingetAvailable(): Promise<boolean>;
   /** 在檔案總管開啟資料夾。 */
   openFolder(folder: string): Promise<void>;
+  /** 啟動視窗程式後立即返回，不等它結束；指令同樣依登錄檔最新的 PATH 尋找。 */
+  start(command: string, args: string[]): Promise<void>;
 };
 
 export type WindowsEnvironmentOptions = {
@@ -237,6 +239,10 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
     },
     async openLogFolder(folder: string): Promise<void> {
       await system.openFolder(folder);
+    },
+    /** 「開啟 VS Code」：有資料夾就以它開啟。 */
+    async openVsCode(folder?: string): Promise<void> {
+      await system.start("code", folder ? [folder] : []);
     },
     /** 開發工具與 Project Folder 無關；程序在使用者家目錄執行（見 windowsEnvironmentSystem）。 */
     async install(

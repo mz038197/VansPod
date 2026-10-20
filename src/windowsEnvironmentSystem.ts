@@ -142,4 +142,22 @@ export const windowsEnvironmentSystem: EnvironmentSystem = {
     child.on("error", () => {});
     child.unref();
   },
+  async start(command, args) {
+    if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
+    const env = await envWithRegistryPath();
+    const file = await resolveCommand(command, env);
+    if (!file) throw new Error(`找不到 ${command}`);
+    const target = launch(file, args);
+    // code.cmd 經由 cmd.exe 轉手：隱藏 cmd 視窗，VS Code 自己的視窗照常出現。
+    const child = spawn(target.command, target.args, {
+      cwd: os.homedir(),
+      env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      windowsVerbatimArguments: target.command === "cmd.exe",
+    });
+    child.on("error", () => {});
+    child.unref();
+  },
 };

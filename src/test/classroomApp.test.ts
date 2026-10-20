@@ -380,6 +380,7 @@ function harness(
   const installCalls: EnvironmentToolId[] = [];
   const environmentLog: string[] = [];
   const openedLogFolders: string[] = [];
+  const openedVsCode: Array<string | undefined> = [];
   const modelKeys: string[] = [];
   let providers = structuredClone(options?.providers ?? []);
   const copilotWrites: { providers: Array<Record<string, unknown>> }[] = [];
@@ -504,6 +505,9 @@ function harness(
       async openLogFolder(folder) {
         openedLogFolders.push(folder);
       },
+      async openVsCode(folder) {
+        openedVsCode.push(folder);
+      },
     },
     stopProcess() {
       stops += 1;
@@ -600,6 +604,7 @@ function harness(
     installCalls,
     environmentLog,
     openedLogFolders,
+    openedVsCode,
     failClipboard(error: Error) {
       clipboardError = error;
     },
@@ -4424,5 +4429,108 @@ describe("Environment Install logs", () => {
     await app.confirmEnvironment();
     await app.openEnvironmentLog();
     assert.deepEqual(openedLogFolders, [LOG_FOLDER]);
+  });
+});
+
+describe("VS Code Chat after Environment Install", () => {
+  function vsCodeHarness() {
+    let vsCodeInstalled = false;
+    const starts: string[] = [];
+    const detections: string[] = [];
+    const runtime: ClientRouteRuntime = {
+      async start(route) { starts.push(route); return { route, health: "green", origin: "http://127.0.0.1:47823" }; },
+      async stop() {},
+    };
+    const h = harness(undefined, {
+      detectClient: async (client) => {
+        detections.push(client);
+        return client === "codex" || (client === "vsCodeChat" && vsCodeInstalled);
+      },
+      clientRouteRuntime: runtime,
+      vsCodeRouteSettings: {
+        async initializeNative() { return { changed: false }; },
+        async publish() { return { changed: false }; },
+        async restore() { return { changed: false }; },
+      },
+      probe: async (tool) => tool === "vscode" && vsCodeInstalled
+        ? { readiness: "ready", version: "1.95.0" }
+        : { readiness: "missing" },
+      install: async (tool) => {
+        if (tool === "vscode") vsCodeInstalled = true;
+        return { exitCode: 0, output: "" };
+      },
+    });
+    return { ...h, starts, detections, installVsCodeElsewhere: () => { vsCodeInstalled = true; } };
+  }
+
+  it("re-detects VS Code Chat once VS Code verifies after install, so its route leaves gray without a reload", async () => {
+    const { app, starts, detections } = vsCodeHarness();
+    await app.start();
+    await app.checkEnvironment();
+    assert.equal(app.view().clientRoutes?.vsCodeChat.health, "gray");
+    const codexBefore = app.view().clientRoutes?.codex;
+    starts.length = 0;
+    detections.length = 0;
+
+    app.selectEnvironment(["vscode"]);
+    await app.confirmEnvironment();
+
+    assert.equal(app.view().clientRoutes?.vsCodeChat.health, "green");
+    assert.deepEqual(detections, ["vsCodeChat"], "only VS Code Chat is re-detected");
+    assert.deepEqual(starts, ["vsCodeChat"], "other Client Routes are not restarted");
+    assert.deepEqual(app.view().clientRoutes?.codex, codexBefore);
+  });
+
+  it("re-detects VS Code Chat when a check finds VS Code newly ready", async () => {
+    const { app, starts, detections, installVsCodeElsewhere } = vsCodeHarness();
+    await app.start();
+    await app.checkEnvironment();
+    starts.length = 0;
+    detections.length = 0;
+
+    installVsCodeElsewhere();
+    await app.checkEnvironment();
+
+    assert.equal(app.view().clientRoutes?.vsCodeChat.health, "green");
+    assert.deepEqual(detections, ["vsCodeChat"]);
+    assert.deepEqual(starts, ["vsCodeChat"]);
+
+    await app.checkEnvironment();
+    assert.deepEqual(detections, ["vsCodeChat"], "an already detected VS Code is not re-detected on every check");
+  });
+
+  it("opens VS Code on the Project Folder when one is chosen, and alone when not", async () => {
+    const { app, openedVsCode } = harness(undefined, { probe: async () => ({ readiness: "ready" }) });
+    await app.checkEnvironment();
+
+    await app.openVsCode();
+    await app.setProjectFolder("D:\\lesson");
+    await app.openVsCode();
+
+    assert.deepEqual(openedVsCode, [undefined, "D:\\lesson"]);
+  });
+
+  it("does not open VS Code while it is not ready", async () => {
+    const { app, openedVsCode } = harness(undefined, {
+      probe: async (tool) => tool === "vscode" ? { readiness: "needsRepair" } : { readiness: "ready" },
+    });
+    await app.openVsCode();
+    await app.checkEnvironment();
+    await app.openVsCode();
+
+    assert.deepEqual(openedVsCode, []);
+  });
+
+  it("does not re-detect clients when VS Code is still not ready after an install", async () => {
+    const { app, detections } = vsCodeHarness();
+    await app.start();
+    await app.checkEnvironment();
+    detections.length = 0;
+
+    app.selectEnvironment(["uv"]);
+    await app.confirmEnvironment();
+
+    assert.deepEqual(detections, []);
+    assert.equal(app.view().clientRoutes?.vsCodeChat.health, "gray");
   });
 });
