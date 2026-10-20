@@ -660,6 +660,12 @@ describe("Environment Install card", () => {
     assert.ok(html.includes(environmentProgressScript));
   });
 
+  it("polls while the first Environment Tool Readiness check runs, so the card shows the results without a manual refresh", () => {
+    const checking = tools.map((tool) => ({ ...tool, readiness: "checking" as const }));
+    assert.match(renderPage(view({ tools: checking })), /<form[^>]*data-environment-progress/);
+    assert.equal(environmentStatus(view({ tools: checking })).running, true);
+  });
+
   it("does not poll for progress when no Environment Install runs", () => {
     assert.doesNotMatch(renderPage(view({ tools })), /<form[^>]*data-environment-progress/);
     assert.doesNotMatch(renderPage(view({ tools, commandRunning: true })), /<form[^>]*data-environment-progress/, "a Course Install Action is not an Environment Install");

@@ -1,6 +1,6 @@
 /**
- * 背景 Environment Install 的進度輪詢：頁面帶 data-environment-progress 時，每 500ms 讀 /environment-status
- * 更新每個工具的階段文字；安裝結束就重新整理頁面顯示結果。狀態在伺服器上，重新整理頁面後照樣接著輪詢。
+ * 背景 Environment Install 與第一次檢查的輪詢：頁面帶 data-environment-progress 時，每 500ms 讀 /environment-status
+ * 更新每個工具的階段文字；安裝或檢查結束就重新整理頁面顯示結果。狀態在伺服器上，重新整理頁面後照樣接著輪詢。
  */
 export const environmentProgressScript = `
   (function () {

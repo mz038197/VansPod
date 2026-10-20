@@ -212,10 +212,15 @@ export function environmentStageText(progress: EnvironmentInstallProgress): stri
   return `${text} ${megabytes(progress.downloaded)} / ${megabytes(progress.total)} MB（${percent}%）`;
 }
 
-/** GET /environment-status：背景 Environment Install 是否還在跑，以及這次安裝裡每個工具的階段文字。 */
+/** 背景安裝或第一次檢查還沒結束時，頁面要輪詢，結束後重新整理顯示結果。 */
+function environmentPolling(view: ClassroomAppView): boolean {
+  return view.environmentInstalling || environmentChecking(view);
+}
+
+/** GET /environment-status：背景 Environment Install 或第一次檢查是否還在跑，以及這次安裝裡每個工具的階段文字。 */
 export function environmentStatus(view: ClassroomAppView): { running: boolean; tools: Array<{ id: string; stage: string }> } {
   return {
-    running: view.environmentInstalling,
+    running: environmentPolling(view),
     tools: view.tools.flatMap((tool) => (tool.progress ? [{ id: tool.id, stage: environmentStageText(tool.progress) }] : [])),
   };
 }
@@ -235,7 +240,7 @@ function environmentInner(view: ClassroomAppView): string {
       return `<label class="tool"><input type="checkbox" name="tool" value="${escapeHtml(tool.id)}"${checked}${off}> ${environmentIcons[tool.id]}<span${title}>${escapeHtml(tool.label)}</span> ${mark}</label>`;
     })
     .join("");
-  const polling = view.environmentInstalling ? " data-environment-progress" : "";
+  const polling = environmentPolling(view) ? " data-environment-progress" : "";
   const note = view.environmentNotice
     ? `<p class="hint">${escapeHtml(view.environmentNotice)}</p>`
     : "";
