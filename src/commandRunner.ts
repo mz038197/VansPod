@@ -1,17 +1,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { envWithRegistryPath } from "./systemPath";
 
 export type CommandResult = { output: string; exitCode: number | undefined; aborted?: boolean };
 
 const ABORTED_NOTICE = "\n已中止。\n";
 const ABORT_GRACE_MS = 5000;
 
-export function collectOutput(
+export async function collectOutput(
   command: string,
   args: string[],
   cwd?: string,
   onOutput?: (output: string) => void,
   signal?: AbortSignal,
 ): Promise<{ exitCode: number | undefined; output: string; spawnError: boolean; aborted: boolean }> {
+  const env = await envWithRegistryPath();
+  // 讀 PATH 期間學生可能已經按了停止；這時不要再啟動指令。
+  if (signal?.aborted) return { exitCode: undefined, output: "", spawnError: false, aborted: true };
   return new Promise((resolve) => {
     let settled = false;
     let aborted = false;
@@ -27,7 +31,7 @@ export function collectOutput(
     };
     const child = spawn(command, args, {
       cwd,
-      env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+      env: { ...env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
       windowsHide: process.platform === "win32",
       // A process group lets abort reach grandchildren such as servers started by uv.
       detached: process.platform !== "win32",

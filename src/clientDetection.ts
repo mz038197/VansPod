@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import type { AdapterClient } from "./adapters";
+import { envWithRegistryPath } from "./systemPath";
 
-function succeeds(command: string, args: string[]): Promise<boolean> {
+async function succeeds(command: string, args: string[]): Promise<boolean> {
+  const env = await envWithRegistryPath();
   return new Promise(resolve => {
-    execFile(command, args, { timeout: 8000, windowsHide: true, maxBuffer: 64 * 1024 }, error => resolve(!error));
+    execFile(command, args, { env, timeout: 8000, windowsHide: true, maxBuffer: 64 * 1024 }, error => resolve(!error));
   });
 }
 

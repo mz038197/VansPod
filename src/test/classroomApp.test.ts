@@ -3382,18 +3382,30 @@ actions:
     assert.equal(JSON.stringify(app.view()).includes(KEY), false);
   });
 
-  it("asks the student to reopen the terminal after exit 0 and does not mark the tool ready", async () => {
-    const { app, probeCalls } = harness();
+  it("rechecks after exit 0 so a freshly installed tool shows as ready without restarting VansPod", async () => {
+    let installed = false;
+    const { app } = harness(undefined, {
+      async probe(tool) { return { installed: tool === "uv" && installed }; },
+      async install() { installed = true; return { exitCode: 0, output: "" }; },
+    });
     await app.setProjectFolder("D:\\lesson");
     await app.checkEnvironment();
-    const probesAfterCheck = probeCalls.length;
     app.selectEnvironment(["uv"]);
     await app.confirmEnvironment();
     const view = app.view();
-    assert.equal(view.tools.find((tool) => tool.id === "uv")?.installed, false);
-    assert.equal(view.environmentNotice, "請重開終端機再重新檢查。");
-    assert.equal(probeCalls.length, probesAfterCheck);
+    assert.equal(view.tools.find((tool) => tool.id === "uv")?.installed, true);
+    assert.equal(view.environmentNotice, undefined);
     assert.equal(JSON.stringify(view).includes(KEY), false);
+  });
+
+  it("names the installed tools that still are not detected after the recheck", async () => {
+    const { app } = harness();
+    await app.setProjectFolder("D:\\lesson");
+    app.selectEnvironment(["uv", "node"]);
+    await app.confirmEnvironment();
+    const view = app.view();
+    assert.equal(view.tools.find((tool) => tool.id === "node")?.installed, false);
+    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 uv、Node.js。請稍後按「重新檢查」。");
   });
 
   it("treats the official already-installed message as success and a bare boom as failure", async () => {
@@ -3423,12 +3435,12 @@ actions:
     );
     const view = app.view();
     assert.equal(view.tools.every((tool) => tool.installed === false), true);
-    assert.equal(view.environmentNotice, "請重開終端機再重新檢查。");
-    assert.equal(probeCalls.length, probesAfterCheck);
+    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 git。請稍後按「重新檢查」。");
+    assert.equal(probeCalls.length, probesAfterCheck * 2);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 
-  it("treats winget already-installed wording as success and does not mark the tool ready", async () => {
+  it("treats winget already-installed wording as success and rechecks the tools", async () => {
     const { app, installCalls, probeCalls } = harness(undefined, {
       async install(tool) {
         if (tool === "git") {
@@ -3454,8 +3466,8 @@ actions:
     );
     const view = app.view();
     assert.equal(view.tools.every((tool) => tool.installed === false), true);
-    assert.equal(view.environmentNotice, "請重開終端機再重新檢查。");
-    assert.equal(probeCalls.length, probesAfterCheck);
+    assert.equal(view.environmentNotice, "已執行安裝，但還偵測不到 git、Node.js。請稍後按「重新檢查」。");
+    assert.equal(probeCalls.length, probesAfterCheck * 2);
     assert.equal(JSON.stringify(view).includes(KEY), false);
   });
 });

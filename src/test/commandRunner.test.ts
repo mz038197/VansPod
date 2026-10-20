@@ -95,3 +95,16 @@ child.unref();
   assert.notEqual(result, "hung");
   assert.equal((result as { aborted?: boolean }).aborted, true);
 });
+
+it("does not start the command when the student aborts before it launches", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "classroom command early abort "));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const marker = path.join(root, "ran.txt");
+  const controller = new AbortController();
+  const running = runCommand(root, `"${process.execPath}" -e "require('fs').writeFileSync(process.argv[1], '')" "${marker}"`, undefined, controller.signal);
+  controller.abort();
+  const result = await running;
+  assert.equal(result.aborted, true);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(await fs.stat(marker).then(() => true, () => false), false);
+});

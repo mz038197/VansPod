@@ -202,7 +202,6 @@ export type ClassroomAppView = {
 const LOCAL_LIST_NOTE = "這是本機清單。";
 export const COPIED_KEY_NOTICE = "已複製 Classroom API Key。請勿分享給不信任的人。";
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
-const REOPEN_TERMINAL = "請重開終端機再重新檢查。";
 const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
 export class ClassroomApp {
@@ -412,7 +411,7 @@ export class ClassroomApp {
     this.commandRunning = true;
     this.environmentNotice = undefined;
     const abort = this.beginInstall();
-    let succeeded = false;
+    const installedTools: EnvironmentToolId[] = [];
     try {
       for (const tool of selected) {
         let result: CommandResult;
@@ -424,7 +423,7 @@ export class ClassroomApp {
         if (abort.signal.aborted || !environmentInstallSucceeded(result)) {
           break;
         }
-        succeeded = true;
+        installedTools.push(tool);
       }
     } finally {
       this.endInstall();
@@ -433,8 +432,13 @@ export class ClassroomApp {
     if (abort.signal.aborted) {
       await this.checkEnvironment();
       this.environmentNotice = ENVIRONMENT_ABORTED;
-    } else if (succeeded) {
-      this.environmentNotice = REOPEN_TERMINAL;
+    } else if (installedTools.length > 0) {
+      // 偵測時會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
+      await this.checkEnvironment();
+      const missing = installedTools.filter((tool) => !this.environmentInstalled[tool]);
+      if (missing.length > 0) {
+        this.environmentNotice = `已執行安裝，但還偵測不到 ${missing.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")}。請稍後按「重新檢查」。`;
+      }
     }
   }
 
