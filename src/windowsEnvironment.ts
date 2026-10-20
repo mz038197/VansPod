@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   ENVIRONMENT_LABEL,
   type EnvironmentInstallLog,
@@ -7,9 +8,9 @@ import {
   type ToolReadiness,
 } from "./classroomApp";
 import { type InstallLogFile, startInstallLogFile } from "./environmentInstallLog";
-import path from "node:path";
 import { managementDirectory } from "./instance";
-import { installOfficialInstaller, type OfficialInstaller, runEntry } from "./officialInstaller";
+import { lookupDownload, vsCodeInstaller, type WindowsArchitecture, type WingetTool, wingetToolInstaller } from "./officialDownloads";
+import { abortedResult, failedResult, installOfficialInstaller, REBOOT_REQUIRED, runEntry } from "./officialInstaller";
 
 export type RunOptions = { timeoutMs?: number; signal?: AbortSignal; onOutput?: (output: string) => void };
 
@@ -59,7 +60,7 @@ const VERSION_CHECK: Record<EnvironmentToolId, { command: string; pattern: RegEx
 const CHECK_TIMEOUT_MS = 15_000;
 const NODE_LTS_REASON = "需要 Node.js LTS，且 npm 必須可正常執行";
 
-type Check ={ ok: true; output: string } | { ok: false; readiness: "missing" | "needsRepair"; reason: string };
+type Check = { ok: true; output: string } | { ok: false; readiness: "missing" | "needsRepair"; reason: string };
 
 /** 一次檢查：結束碼必須為 0，且完整輸出符合格式；版本文字掩蓋不了非 0 結束碼。 */
 async function check(system: EnvironmentSystem, command: string, args: string[], pattern: RegExp): Promise<Check> {
@@ -75,13 +76,16 @@ async function check(system: EnvironmentSystem, command: string, args: string[],
   return { ok: true, output };
 }
 
-const WINGET_ID: Record<Exclude<EnvironmentToolId, "uv" | "vscode">, string> = {
+const WINGET_ID: Record<WingetTool, string> = {
   git: "Git.Git",
   node: "OpenJS.NodeJS.LTS",
   pwsh: "Microsoft.PowerShell",
 };
+
+function isWingetTool(tool: EnvironmentToolId): tool is WingetTool {
+  return tool in WINGET_ID;
+}
 const WINGET_QUIET = ["--source", "winget", "--disable-interactivity", "-h", "--accept-package-agreements", "--accept-source-agreements"];
-const REBOOT_REQUIRED = 3010;
 // 0x8A15002B：winget 回報已安裝、沒有可用的升級；有號與無號兩種寫法都可能出現。
 const WINGET_ALREADY_INSTALLED = [-1978335189, 2316632107];
 const WINGET_ACCEPTED = [0, REBOOT_REQUIRED, ...WINGET_ALREADY_INSTALLED];
@@ -93,127 +97,12 @@ function installLaunch(tool: Exclude<EnvironmentToolId, "vscode">): { command: s
   return { command: "winget", args: ["install", "--id", WINGET_ID[tool], "-e", ...WINGET_QUIET] };
 }
 
-export type WindowsArchitecture = "x64" | "arm64";
-
 /** OS 的實際架構：32 位元行程看到的 PROCESSOR_ARCHITECTURE 是 x86，真正的架構在 PROCESSOR_ARCHITEW6432。 */
 function windowsArchitecture(env: NodeJS.ProcessEnv): WindowsArchitecture | string {
   const value = (env.PROCESSOR_ARCHITEW6432 || env.PROCESSOR_ARCHITECTURE || "").toUpperCase();
   if (value === "AMD64") return "x64";
   if (value === "ARM64") return "arm64";
   return value || "未知";
-}
-
-const MICROSOFT_SIGNER = /(?:^|,\s*)O=Microsoft Corporation(?:,|$)/;
-
-/** VS Code User 版：裝在學生自己的帳號下，不需要系統管理員；不自動啟動，等驗證完由學生開啟。 */
-function vsCodeInstaller(architecture: WindowsArchitecture, setupLog: string): OfficialInstaller {
-  return {
-    label: ENVIRONMENT_LABEL.vscode,
-    url: `https://update.code.visualstudio.com/latest/win32-${architecture}-user/stable`,
-    fileName: `VSCodeUserSetup-${architecture}.exe`,
-    signer: MICROSOFT_SIGNER,
-    launch: (installer) => ({
-      command: installer,
-      // 參數不加引號：Node 會替含空白的參數整個加上引號，Inno Setup 解析時去掉。
-      args: [
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        "/MERGETASKS=desktopicon,addcontextmenufiles,addcontextmenufolders,addtopath,!runcode",
-        `/LOG=${setupLog}`,
-      ],
-    }),
-  };
-}
-
-type WingetTool = keyof typeof WINGET_ID;
-
-function isWingetTool(tool: EnvironmentToolId): tool is WingetTool {
-  return tool in WINGET_ID;
-}
-
-const OPENJS_SIGNER = /(?:^|,\s*)O=OpenJS Foundation(?:,|$)/;
-// Git for Windows 由維護者 Johannes Schindelin 個人簽署，不是「Git for Windows」。
-const GIT_FOR_WINDOWS_SIGNER = /(?:^|,\s*)O=Johannes Schindelin(?:,|$)/;
-const NODE_INDEX_URL = "https://nodejs.org/dist/index.json";
-const GITHUB_LATEST: Record<Exclude<WingetTool, "node">, { url: string; asset: Record<WindowsArchitecture, RegExp> }> = {
-  git: {
-    url: "https://api.github.com/repos/git-for-windows/git/releases/latest",
-    asset: { x64: /^Git-\d[\d.]*-64-bit\.exe$/, arm64: /^Git-\d[\d.]*-arm64\.exe$/ },
-  },
-  pwsh: {
-    url: "https://api.github.com/repos/PowerShell/PowerShell/releases/latest",
-    asset: { x64: /^PowerShell-\d[\d.]*-win-x64\.msi$/, arm64: /^PowerShell-\d[\d.]*-win-arm64\.msi$/ },
-  },
-};
-
-type Download = { url: string; fileName: string };
-type Lookup = { download: Download } | { failure: string } | { aborted: true };
-
-/** 查詢官方來源的 JSON；失敗時回傳學生看得懂、可以重試的原因。 */
-async function fetchLatest(system: EnvironmentSystem, label: string, url: string, signal?: AbortSignal): Promise<{ body: unknown } | { failure: string } | { aborted: true }> {
-  let response: { status: number; body: unknown };
-  try {
-    response = await system.fetchJson(url, { signal });
-  } catch (error) {
-    if (signal?.aborted) return { aborted: true };
-    return { failure: `查詢 ${label} 最新版本失敗：${error instanceof Error ? error.message : String(error)}，請稍後再按重試` };
-  }
-  if (signal?.aborted) return { aborted: true };
-  if ((response.status === 403 || response.status === 429) && url.startsWith("https://api.github.com/")) {
-    // 未驗證的 GitHub API 每個對外 IP 每小時 60 次；教室共用 IP 時容易用完（ADR-0011）。
-    return { failure: `查詢 ${label} 最新版本失敗：GitHub 查詢次數已達上限（同一個網路每小時 60 次），請稍後再按重試` };
-  }
-  if (response.status !== 200) return { failure: `查詢 ${label} 最新版本失敗（HTTP ${response.status}），請稍後再按重試` };
-  return { body: response.body };
-}
-
-/** 沒有 winget 時，找出官方最新穩定版（Node.js 為 LTS）安裝檔的下載網址。 */
-async function lookupDownload(system: EnvironmentSystem, tool: WingetTool, architecture: WindowsArchitecture, signal?: AbortSignal): Promise<Lookup> {
-  const label = ENVIRONMENT_LABEL[tool];
-  const missing = { failure: `找不到 ${label} 的 ${architecture} 安裝檔，請稍後再按重試` };
-  if (tool === "node") {
-    const latest = await fetchLatest(system, label, NODE_INDEX_URL, signal);
-    if (!("body" in latest)) return latest;
-    const releases = Array.isArray(latest.body) ? (latest.body as Array<{ version?: unknown; lts?: unknown }>) : [];
-    // index.json 由新到舊排列；第一個 lts 為真的就是最新 LTS。
-    const version = releases.find((release) => release?.lts && typeof release.version === "string" && /^v\d+\.\d+\.\d+$/.test(release.version))?.version as string | undefined;
-    if (!version) return missing;
-    const fileName = `node-${version}-${architecture}.msi`;
-    return { download: { url: `https://nodejs.org/dist/${version}/${fileName}`, fileName } };
-  }
-  const source = GITHUB_LATEST[tool];
-  const latest = await fetchLatest(system, label, source.url, signal);
-  if (!("body" in latest)) return latest;
-  const assets = (latest.body as { assets?: unknown } | null)?.assets;
-  const asset = (Array.isArray(assets) ? (assets as Array<{ name?: unknown; browser_download_url?: unknown }>) : []).find(
-    (candidate) => typeof candidate?.name === "string" && source.asset[architecture].test(candidate.name) && typeof candidate.browser_download_url === "string",
-  );
-  if (!asset) return missing;
-  return { download: { url: asset.browser_download_url as string, fileName: asset.name as string } };
-}
-
-/** 官方安裝檔：Git 是 Inno Setup，Node.js 與 PowerShell 是 MSI；全部靜默、不自動重新開機，並寫安裝器自己的 log。 */
-function wingetToolInstaller(tool: WingetTool, download: Download, setupLog: string): OfficialInstaller {
-  const base = { label: ENVIRONMENT_LABEL[tool], url: download.url, fileName: download.fileName };
-  if (tool === "git") {
-    return {
-      ...base,
-      signer: GIT_FOR_WINDOWS_SIGNER,
-      launch: (installer) => ({
-        command: installer,
-        args: ["/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES", `/LOG=${setupLog}`],
-      }),
-    };
-  }
-  return {
-    ...base,
-    signer: tool === "node" ? OPENJS_SIGNER : MICROSOFT_SIGNER,
-    launch: (installer) => ({
-      command: "msiexec",
-      args: ["/i", installer, "/qn", "/norestart", ...(tool === "pwsh" ? ["ADD_PATH=1"] : []), "/L*v", setupLog],
-    }),
-  };
 }
 
 function readinessText(readiness: ToolReadiness): string {
@@ -260,7 +149,7 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
       // 安裝不設逾時（ADR-0008）：卡住時由學生 Abort Install。
       const result = await system.run(command, args, { signal });
       await currentLog?.append(runEntry(ENVIRONMENT_LABEL[tool], command, args, result));
-      if (result.aborted) return { output: result.output, exitCode: result.exitCode, aborted: true, exitAccepted: false };
+      if (result.aborted) return abortedResult(result.output);
       if (result.notFound) return { output: "安裝命令無法啟動。", exitCode: undefined, exitAccepted: false };
       // 安裝程式結束後由 ClassroomApp 立刻驗證。
       onProgress?.({ stage: "verifying" });
@@ -304,7 +193,7 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
 
   async function failed(tool: EnvironmentToolId, failure: string): Promise<EnvironmentInstallResult> {
     await currentLog?.append(`== ${ENVIRONMENT_LABEL[tool]} ==\r\n${failure}\r\n\r\n`);
-    return { output: failure, exitCode: undefined, exitAccepted: false, failure };
+    return failedResult(failure);
   }
 
   /** 官方安裝檔只有 x64 與 arm64；回傳架構，無法判斷時回傳失敗原因。 */
@@ -339,7 +228,7 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
     const lookup = await lookupDownload(system, tool, architecture, signal);
     if ("aborted" in lookup) {
       await context.log(`${ENVIRONMENT_LABEL[tool]}：查詢最新版本時已中止\r\n\r\n`);
-      return { output: "", exitCode: undefined, aborted: true, exitAccepted: false };
+      return abortedResult();
     }
     if ("failure" in lookup) return failed(tool, lookup.failure);
     return installOfficialInstaller(wingetToolInstaller(tool, lookup.download, setupLogFile(tool, context.cacheFolder)), context);

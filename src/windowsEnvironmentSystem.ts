@@ -93,10 +93,13 @@ async function run(environment: () => Promise<NodeJS.ProcessEnv>, command: strin
   }
 }
 
+// GitHub API 拒絕沒有 User-Agent 的請求；官方下載也一併帶上。
+const USER_AGENT = `VansPod/${VERSION}`;
+
 async function download(url: string, destination: string, options: { signal?: AbortSignal; onProgress?: (received: number, total: number | undefined) => void } = {}): Promise<void> {
   const file = await fs.open(destination, "w");
   try {
-    const response = await fetch(url, { signal: options.signal, headers: { "User-Agent": `VansPod/${VERSION}` } });
+    const response = await fetch(url, { signal: options.signal, headers: { "User-Agent": USER_AGENT } });
     if (!response.ok || !response.body) throw new DownloadHttpError(response.status);
     const length = Number(response.headers.get("content-length"));
     const total = Number.isFinite(length) && length > 0 ? length : undefined;
@@ -119,7 +122,7 @@ async function download(url: string, destination: string, options: { signal?: Ab
 async function fetchJson(url: string, options: { signal?: AbortSignal } = {}): Promise<{ status: number; body: unknown }> {
   const timeout = AbortSignal.timeout(30_000);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  const response = await fetch(url, { signal, headers: { "User-Agent": `VansPod/${VERSION}`, Accept: "application/json" } });
+  const response = await fetch(url, { signal, headers: { "User-Agent": USER_AGENT, Accept: "application/json" } });
   if (response.status !== 200) {
     await response.body?.cancel().catch(() => {});
     return { status: response.status, body: undefined };

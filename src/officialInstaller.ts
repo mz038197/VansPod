@@ -31,8 +31,18 @@ export type OfficialInstallContext = {
 };
 
 /** 安裝程式的結束碼：0 成功、3010 需要重新開機（Inno Setup 與 msiexec 相同）；成敗仍以驗證為準。 */
-const REBOOT_REQUIRED = 3010;
+export const REBOOT_REQUIRED = 3010;
 const ACCEPTED_EXIT = [0, REBOOT_REQUIRED];
+
+/** Abort Install 停下的安裝：之後由 ClassroomApp 重新檢查全部工具。 */
+export function abortedResult(output = ""): EnvironmentInstallResult {
+  return { output, exitCode: undefined, aborted: true, exitAccepted: false };
+}
+
+/** 安裝程式沒有執行（例如下載失敗、簽章不符）：failure 是給學生看的原因。 */
+export function failedResult(failure: string): EnvironmentInstallResult {
+  return { output: failure, exitCode: undefined, exitAccepted: false, failure };
+}
 
 export function runEntry(label: string, command: string, args: string[], result: RunResult): string {
   const quote = (value: string) => (/[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value);
@@ -113,11 +123,11 @@ export async function installOfficialInstaller(installer: OfficialInstaller, con
     // 中止時立即刪除安裝檔，下次重新下載（ADR-0008 補充）。
     await remove();
     await context.log(`${installer.label}：已中止，已刪除安裝檔\r\n\r\n`);
-    return { output, exitCode: undefined, aborted: true, exitAccepted: false };
+    return abortedResult(output);
   };
   const failed = async (failure: string): Promise<EnvironmentInstallResult> => {
     await context.log(`${installer.label}：${failure}\r\n\r\n`);
-    return { output: failure, exitCode: undefined, exitAccepted: false, failure };
+    return failedResult(failure);
   };
 
   await fs.mkdir(context.cacheFolder, { recursive: true });

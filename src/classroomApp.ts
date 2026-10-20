@@ -303,7 +303,8 @@ export class ClassroomApp {
   // 每次學生改勾選就加一；檢查開始後學生改過，檢查結束就不覆蓋他的勾選。
   private environmentSelectionEdits = 0;
   private environmentCheck: Promise<void> | undefined;
-  private environmentCheckStarted = false;
+  // 任何一次檢查開始過就為真：啟動時的背景檢查只跑一次，學生已按過「重新檢查」也不再補跑。
+  private initialEnvironmentCheckStarted = false;
   private environmentNotice: string | undefined;
   private environmentLog: EnvironmentInstallLog | undefined;
   // 背景 Environment Install 進行中才有：這次要裝的每個工具目前的階段。
@@ -435,11 +436,11 @@ export class ClassroomApp {
   checkEnvironment(): Promise<void> {
     if (this.environmentCheck) return this.environmentCheck;
     if (this.commandRunning) return Promise.resolve();
-    this.environmentCheckStarted = true;
+    this.initialEnvironmentCheckStarted = true;
     const edits = this.environmentSelectionEdits;
     const check = (async () => {
       try {
-        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        await this.probeAllEnvironmentTools();
         // 檢查期間學生自己改過勾選，就保留他的選擇。
         if (this.environmentSelectionEdits === edits) this.selectNotReadyEnvironmentTools();
         // 學生在 VansPod 外裝好 VS Code，按「重新檢查」也讓 VS Code Chat 跟著可用。
@@ -460,6 +461,10 @@ export class ClassroomApp {
         return checked !== undefined && checked.readiness !== "ready";
       }),
     );
+  }
+
+  private async probeAllEnvironmentTools(): Promise<void> {
+    await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
   }
 
   private async probeEnvironmentTool(tool: EnvironmentToolId): Promise<ToolReadiness> {
@@ -553,7 +558,7 @@ export class ClassroomApp {
       }
       if (abort.signal.aborted) {
         // 中止後重新檢查全部工具，畫面顯示實際狀態（ADR-0008）；仍算在這次安裝裡。
-        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        await this.probeAllEnvironmentTools();
         this.selectNotReadyEnvironmentTools();
       }
     } finally {
@@ -1523,16 +1528,18 @@ export class ClassroomApp {
     if (this.stopping || !this.initialization) return;
     await this.initialization.catch(() => undefined);
     if (this.stopping || this.detectedClients.vsCodeChat) return;
-    try { this.detectedClients.vsCodeChat = await this.deps.detectClient?.("vsCodeChat") ?? false; }
-    catch { this.detectedClients.vsCodeChat = false; }
+    await this.detectClient("vsCodeChat");
     if (this.detectedClients.vsCodeChat) await this.startVsCodeRoute();
   }
 
   private async detectClients(): Promise<void> {
-    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(async client => {
-      try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
-      catch { this.detectedClients[client] = false; }
-    }));
+    await Promise.all((["codex", "claude", "vsCodeChat"] as const).map(client => this.detectClient(client)));
+  }
+
+  /** 偵測失敗就當作沒裝。 */
+  private async detectClient(client: AdapterClient | "vsCodeChat"): Promise<void> {
+    try { this.detectedClients[client] = await this.deps.detectClient?.(client) ?? false; }
+    catch { this.detectedClients[client] = false; }
   }
 
   private async reloadAllowlistNow(): Promise<void> {
@@ -1790,7 +1797,7 @@ export class ClassroomApp {
   private async startNow(): Promise<void> {
     this.stopping = false;
     // 啟動後在背景檢查一次開發工具；不擋住連線與路由的恢復。
-    if (!this.environmentCheckStarted) void this.checkEnvironment();
+    if (!this.initialEnvironmentCheckStarted) void this.checkEnvironment();
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
