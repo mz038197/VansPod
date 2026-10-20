@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClassroomAppView } from "../classroomApp";
-import { modelStatus, renderInspectorPage, renderPage } from "../page";
+import { environmentStageText, environmentStatus, modelStatus, renderInspectorPage, renderPage } from "../page";
+import { environmentProgressScript } from "../environmentProgress";
 import { patrolKeyframes } from "../connectionMascot";
 import { modelStatusScript } from "../modelStatus";
 import { renderPrototypePage } from "../pagePrototype";
@@ -27,6 +28,7 @@ function view(extra?: Partial<ClassroomAppView>): ClassroomAppView {
       { id: "node", label: "Node.js", readiness: "missing", selected: false },
       { id: "pwsh", label: "PowerShell 7", readiness: "missing", selected: false },
     ],
+    environmentInstalling: false,
     ...extra,
   };
 }
@@ -584,6 +586,63 @@ describe("Environment Install card", () => {
     assert.match(card(renderPage(view({ tools, environmentLogFolder: folder }))), openLog);
     assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder, commandRunning: true })), /environment-log/);
     assert.doesNotMatch(renderPage(view({ tools, environmentLogFolder: folder })), /InstallLogs/, "the path stays off the page");
+  });
+
+  it("shows each tool's stage and download progress while an Environment Install runs", () => {
+    const MB = 1024 * 1024;
+    const running = [
+      { ...tools[0], progress: { stage: "done" as const } },
+      { ...tools[1], progress: { stage: "downloading" as const, downloaded: 2 * MB, total: 8 * MB } },
+      { ...tools[2], progress: { stage: "waiting" as const } },
+      tools[3],
+    ];
+    const html = renderPage(view({ commandRunning: true, environmentInstalling: true, tools: running }));
+    const stage = (id: string) => row(html, id).match(new RegExp(`<span class="tool-stage" data-environment-stage="${id}">([^<]*)</span>`))?.[1];
+    assert.equal(stage("uv"), "完成");
+    assert.equal(stage("git"), "下載中 2.0 / 8.0 MB（25%）");
+    assert.equal(stage("node"), "等待中");
+    assert.equal(stage("pwsh"), undefined, "tools outside this install keep their readiness");
+    assert.match(row(html, "pwsh"), /<em>已就緒<\/em>/);
+    assert.match(html, /<details class="environment-tools" open>/);
+    assert.match(html, /正在安裝工具…/);
+    assert.match(html, /<form[^>]*data-environment-progress/);
+  });
+
+  it("words every Environment Install stage for the student", () => {
+    const MB = 1024 * 1024;
+    assert.equal(environmentStageText({ stage: "waiting" }), "等待中");
+    assert.equal(environmentStageText({ stage: "downloading" }), "下載中");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 3.5 * MB }), "下載中 3.5 MB");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 0, total: 0 }), "下載中 0.0 MB");
+    assert.equal(environmentStageText({ stage: "downloading", downloaded: 50 * MB, total: 100 * MB }), "下載中 50.0 / 100.0 MB（50%）");
+    assert.equal(environmentStageText({ stage: "installing" }), "安裝中");
+    assert.equal(environmentStageText({ stage: "verifying" }), "驗證中");
+    assert.equal(environmentStageText({ stage: "done" }), "完成");
+    assert.equal(environmentStageText({ stage: "failed" }), "失敗");
+  });
+
+  it("reports the running Environment Install's stages for polling", () => {
+    const running = [
+      { ...tools[0], progress: { stage: "installing" as const } },
+      { ...tools[1], progress: { stage: "downloading" as const, downloaded: 1024 * 1024 } },
+      tools[2],
+      tools[3],
+    ];
+    assert.deepEqual(environmentStatus(view({ commandRunning: true, environmentInstalling: true, tools: running })), {
+      running: true,
+      tools: [{ id: "uv", stage: "安裝中" }, { id: "git", stage: "下載中 1.0 MB" }],
+    });
+    assert.deepEqual(environmentStatus(view({ tools })), { running: false, tools: [] });
+  });
+
+  it("polls for progress while an Environment Install runs", () => {
+    const html = renderPage(view({ commandRunning: true, environmentInstalling: true, tools: [{ ...tools[1], progress: { stage: "waiting" as const } }] }));
+    assert.ok(html.includes(environmentProgressScript));
+  });
+
+  it("does not poll for progress when no Environment Install runs", () => {
+    assert.doesNotMatch(renderPage(view({ tools })), /<form[^>]*data-environment-progress/);
+    assert.doesNotMatch(renderPage(view({ tools, commandRunning: true })), /<form[^>]*data-environment-progress/, "a Course Install Action is not an Environment Install");
   });
 });
 describe("Abort Install on the page", () => {

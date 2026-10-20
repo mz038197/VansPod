@@ -57,6 +57,15 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
  */
 export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
 
+/** Environment Install 中一個工具的階段：等待中、下載中、安裝中、驗證中、完成、失敗。 */
+export type EnvironmentInstallStage = "waiting" | "downloading" | "installing" | "verifying" | "done" | "failed";
+
+/** 一個工具目前的階段；下載中附已下載位元組，伺服器沒給總量時沒有 total。 */
+export type EnvironmentInstallProgress = { stage: EnvironmentInstallStage; downloaded?: number; total?: number };
+
+/** environment.install 透過 onProgress 回報的進度；等待、完成與失敗由 ClassroomApp 決定。 */
+export type EnvironmentInstallReport = EnvironmentInstallProgress & { stage: "downloading" | "installing" | "verifying" };
+
 /** 一次 Environment Install 的紀錄：安裝指令與輸出由 environment 自己寫入，驗證結果與總結由 ClassroomApp 補上。 */
 export type EnvironmentInstallLog = {
   /** 本次的紀錄資料夾，結果畫面「開啟紀錄資料夾」開啟它。 */
@@ -104,6 +113,7 @@ export type ClassroomAppDeps = {
     install(
       tool: EnvironmentToolId,
       signal?: AbortSignal,
+      onProgress?: (progress: EnvironmentInstallReport) => void,
     ): Promise<EnvironmentInstallResult>;
     /** 開始一次安裝紀錄；沒有實作的平台（macOS）不留紀錄。 */
     startLog?(): Promise<EnvironmentInstallLog>;
@@ -182,6 +192,8 @@ export type EnvironmentToolView = {
   version?: string;
   reason?: string;
   selected: boolean;
+  /** 只在 Environment Install 進行中、且這個工具在這次安裝裡時才有。 */
+  progress?: EnvironmentInstallProgress;
 };
 
 export type ClassroomAppView = {
@@ -216,6 +228,8 @@ export type ClassroomAppView = {
   allowedModels?: string[];
   modelId?: string;
   tools: EnvironmentToolView[];
+  /** Environment Install 在背景執行中；頁面據此輪詢進度。 */
+  environmentInstalling: boolean;
   environmentNotice?: string;
   /** 最近一次 Environment Install 的紀錄資料夾；有值時結果畫面提供「開啟紀錄資料夾」。 */
   environmentLogFolder?: string;
@@ -281,6 +295,8 @@ export class ClassroomApp {
   private environmentCheckStarted = false;
   private environmentNotice: string | undefined;
   private environmentLog: EnvironmentInstallLog | undefined;
+  // 背景 Environment Install 進行中才有：這次要裝的每個工具目前的階段。
+  private environmentProgress: Partial<Record<EnvironmentToolId, EnvironmentInstallProgress>> | undefined;
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
@@ -319,6 +335,7 @@ export class ClassroomApp {
       adapters: { ...this.adapters },
       adapterNotice: this.adapterNotice,
       tools: this.environmentTools(),
+      environmentInstalling: this.environmentProgress !== undefined,
     };
     if (this.connectionError) view.connectionError = this.connectionError;
     if (this.notice && this.notice === this.connectionNotice) view.connectionNotice = this.connectionNotice;
@@ -464,8 +481,13 @@ export class ClassroomApp {
     if (selected.length === 0) {
       return;
     }
+    // 頁面請求不等安裝結束（見 start.ts 的 POST /environment）；commandRunning 在整段背景安裝期間保持為真，
+    // exit guard、版本更新與移除都靠它詢問是否中止。
     this.commandRunning = true;
     this.environmentNotice = undefined;
+    const progress: Partial<Record<EnvironmentToolId, EnvironmentInstallProgress>> = {};
+    for (const tool of selected) progress[tool] = { stage: "waiting" };
+    this.environmentProgress = progress;
     const abort = this.beginInstall();
     const rebootSuggested: EnvironmentToolId[] = [];
     const failures: string[] = [];
@@ -475,9 +497,15 @@ export class ClassroomApp {
       await this.startEnvironmentLog();
       for (const tool of selected) {
         if (abort.signal.aborted) break;
+        // 安裝程式一啟動就算「安裝中」；environment 可再回報下載中與下載量。
+        progress[tool] = { stage: "installing" };
+        const report = (reported: EnvironmentInstallReport) => {
+          if (abort.signal.aborted) return;
+          progress[tool] = { ...reported };
+        };
         let result: EnvironmentInstallResult | undefined;
         try {
-          result = await this.deps.environment.install(tool, abort.signal);
+          result = await this.deps.environment.install(tool, abort.signal, report);
         } catch {
           result = undefined;
         }
@@ -486,21 +514,29 @@ export class ClassroomApp {
         }
         // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
         // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
+        progress[tool] = { stage: "verifying" };
         const verified = await this.probeEnvironmentTool(tool);
         await this.environmentLog?.verified(tool, verified).catch(() => {});
         if (verified.readiness === "ready") {
+          progress[tool] = { stage: "done" };
           if (result?.rebootRequired) rebootSuggested.push(tool);
           continue;
         }
         // 單一工具失敗不中斷後續工具；結果列出每個失敗的工具與原因。
+        progress[tool] = { stage: "failed" };
         failures.push(environmentInstallFailure(ENVIRONMENT_LABEL[tool], result, verified));
       }
+      if (abort.signal.aborted) {
+        // 中止後重新檢查全部工具，畫面顯示實際狀態（ADR-0008）；仍算在這次安裝裡。
+        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        this.selectNotReadyEnvironmentTools();
+      }
     } finally {
+      this.environmentProgress = undefined;
       this.endInstall();
       this.commandRunning = false;
     }
     if (abort.signal.aborted) {
-      await this.checkEnvironment();
       this.environmentNotice = ENVIRONMENT_ABORTED;
       await this.environmentLog?.finish("已中止").catch(() => {});
       return;
@@ -539,6 +575,7 @@ export class ClassroomApp {
       label: ENVIRONMENT_LABEL[id],
       ...(this.environmentReadiness[id] ?? { readiness: "checking" as const }),
       selected: this.environmentSelected.has(id),
+      ...(this.environmentProgress?.[id] ? { progress: { ...this.environmentProgress[id] } } : {}),
     }));
   }
 
