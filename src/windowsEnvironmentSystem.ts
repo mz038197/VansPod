@@ -93,6 +93,18 @@ async function download(url: string, destination: string, options: { signal?: Ab
   }
 }
 
+/** 查詢官方最新版本資訊；30 秒沒有回應視為失敗。非 200 時不解析內容。 */
+async function fetchJson(url: string, options: { signal?: AbortSignal } = {}): Promise<{ status: number; body: unknown }> {
+  const timeout = AbortSignal.timeout(30_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const response = await fetch(url, { signal, headers: { "User-Agent": `VansPod/${VERSION}`, Accept: "application/json" } });
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => {});
+    return { status: response.status, body: undefined };
+  }
+  return { status: response.status, body: await response.json() };
+}
+
 function signature(file: string): Promise<{ status: string; subject: string }> {
   const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $s = Get-AuthenticodeSignature -LiteralPath $env:VANSPOD_SIGNED_FILE; @{ status = [string]$s.Status; subject = [string]$s.SignerCertificate.Subject } | ConvertTo-Json -Compress";
   const powershell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -118,6 +130,7 @@ export const windowsEnvironmentSystem: EnvironmentSystem = {
   run,
   download,
   signature,
+  fetchJson,
   async wingetAvailable() {
     return (await resolveCommand("winget", await envWithRegistryPath())) !== undefined;
   },

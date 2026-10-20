@@ -28,6 +28,7 @@ function fakeSystem(replies: Record<string, Reply | ((call: Call) => Reply | Pro
     },
     async download() { throw new Error("not used"); },
     async signature() { throw new Error("not used"); },
+    async fetchJson() { throw new Error("not used"); },
     async wingetAvailable() { return true; },
     async openFolder(folder) { opened.push(folder); },
     ...overrides,
@@ -489,5 +490,201 @@ describe("Environment Install logs", () => {
     const { system, opened } = fakeSystem({});
     await createWindowsEnvironment(system).openLogFolder("C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000");
     assert.deepEqual(opened, ["C:\\Users\\學生 A\\VansPod\\InstallLogs\\2026-10-20_100000"]);
+  });
+});
+
+describe("Windows Environment Install without winget", () => {
+  const GIT_SIGNER = { status: "Valid", subject: "CN=Johannes Schindelin, O=Johannes Schindelin, L=Bruehl, C=DE" };
+  const OPENJS = { status: "Valid", subject: "CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US" };
+  const GIT_RELEASE = {
+    tag_name: "v2.51.0.windows.1",
+    assets: [
+      { name: "Git-2.51.0-64-bit.tar.bz2", browser_download_url: "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-64-bit.tar.bz2" },
+      { name: "Git-2.51.0-64-bit.exe", browser_download_url: "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-64-bit.exe" },
+      { name: "Git-2.51.0-arm64.exe", browser_download_url: "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-arm64.exe" },
+      { name: "PortableGit-2.51.0-64-bit.7z.exe", browser_download_url: "https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe" },
+    ],
+  };
+  const PWSH_RELEASE = {
+    tag_name: "v7.5.3",
+    assets: [
+      { name: "PowerShell-7.5.3-win-x64.zip", browser_download_url: "https://github.com/PowerShell/PowerShell/releases/download/v7.5.3/PowerShell-7.5.3-win-x64.zip" },
+      { name: "PowerShell-7.5.3-win-x64.msi", browser_download_url: "https://github.com/PowerShell/PowerShell/releases/download/v7.5.3/PowerShell-7.5.3-win-x64.msi" },
+      { name: "PowerShell-7.5.3-win-arm64.msi", browser_download_url: "https://github.com/PowerShell/PowerShell/releases/download/v7.5.3/PowerShell-7.5.3-win-arm64.msi" },
+    ],
+  };
+  const NODE_INDEX = [
+    { version: "v25.1.0", lts: false },
+    { version: "v24.11.0", lts: "Krypton" },
+    { version: "v22.21.1", lts: "Jod" },
+  ];
+  const LOOKUPS: Record<string, unknown> = {
+    "https://api.github.com/repos/git-for-windows/git/releases/latest": GIT_RELEASE,
+    "https://api.github.com/repos/PowerShell/PowerShell/releases/latest": PWSH_RELEASE,
+    "https://nodejs.org/dist/index.json": NODE_INDEX,
+  };
+  const READY: Record<string, Reply> = {
+    "git --version": { output: "git version 2.51.0.windows.1\n" },
+    "pwsh --version": { output: "PowerShell 7.5.3\n" },
+    "node --version": { output: "v24.11.0\n" },
+    "node -p Boolean(process.release.lts)": { output: "true\n" },
+    "npm --version": { output: "11.6.1\n" },
+    "code --version": VSCODE_READY,
+  };
+
+  /** 沒有 winget 的電腦（winget: true 時有）：fetchJson 依網址回覆最新版本資訊。 */
+  async function noWinget(setup: {
+    env?: NodeJS.ProcessEnv;
+    replies?: Record<string, Reply>;
+    signature?: EnvironmentSystem["signature"];
+    fetchJson?: EnvironmentSystem["fetchJson"];
+    winget?: boolean;
+  } = {}) {
+    const root = await weirdRoot();
+    const fake = fakeDownloads();
+    const lookups: string[] = [];
+    const cache = path.join(root, "Downloads");
+    const { system, calls } = fakeSystem(
+      {
+        winget: { output: "Successfully installed\n" },
+        msiexec: { exitCode: 0 },
+        "powershell.exe": { output: "" },
+        [path.join(cache, "Git-2.51.0-64-bit.exe")]: { exitCode: 0 },
+        [path.join(cache, "Git-2.51.0-arm64.exe")]: { exitCode: 0 },
+        [path.join(cache, "VSCodeUserSetup-x64.exe")]: { exitCode: 0 },
+        ...READY,
+        ...setup.replies,
+      },
+      {
+        download: fake.download,
+        signature: setup.signature ?? (async (file) => (/node-/.test(file) ? OPENJS : /Git-/.test(file) ? GIT_SIGNER : MICROSOFT)),
+        wingetAvailable: async () => setup.winget ?? false,
+        fetchJson: async (url, options) => {
+          lookups.push(url);
+          if (setup.fetchJson) return setup.fetchJson(url, options);
+          return { status: 200, body: LOOKUPS[url] };
+        },
+      },
+    );
+    const environment = createWindowsEnvironment(system, { managementDirectory: root, env: setup.env ?? X64, retryDelayMs: 0 });
+    const log = await environment.startLog();
+    return { root, environment, log, calls, downloads: fake.downloads, lookups, cache };
+  }
+
+  it("downloads Git for Windows from its latest GitHub release and installs it silently", async () => {
+    const { environment, calls, downloads, cache, log } = await noWinget();
+    const result = await environment.install("git");
+    const installer = path.join(cache, "Git-2.51.0-64-bit.exe");
+    assert.deepEqual(downloads, [{ url: GIT_RELEASE.assets[1]!.browser_download_url, destination: installer }]);
+    assert.ok(!calls.some((call) => call.command === "winget"));
+    const run = calls.find((call) => call.command === installer);
+    assert.deepEqual(run?.args, ["/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES", `/LOG=${path.join(log.folder, "git-setup.log")}`]);
+    assert.equal(result.exitAccepted, true);
+    assert.equal(await exists(installer), false);
+  });
+
+  it("downloads the latest Node.js LTS MSI from nodejs.org and installs it with msiexec", async () => {
+    const { environment, calls, downloads, cache, log, lookups } = await noWinget();
+    const result = await environment.install("node");
+    const installer = path.join(cache, "node-v24.11.0-x64.msi");
+    assert.deepEqual(lookups, ["https://nodejs.org/dist/index.json"]);
+    assert.deepEqual(downloads, [{ url: "https://nodejs.org/dist/v24.11.0/node-v24.11.0-x64.msi", destination: installer }]);
+    const run = calls.find((call) => call.command === "msiexec");
+    assert.deepEqual(run?.args, ["/i", installer, "/qn", "/norestart", "/L*v", path.join(log.folder, "node-setup.log")]);
+    assert.equal(result.exitAccepted, true);
+  });
+
+  it("downloads the latest PowerShell 7 MSI from its GitHub release and installs it with msiexec", async () => {
+    const { environment, calls, downloads, cache, log } = await noWinget();
+    const result = await environment.install("pwsh");
+    const installer = path.join(cache, "PowerShell-7.5.3-win-x64.msi");
+    assert.deepEqual(downloads, [{ url: PWSH_RELEASE.assets[1]!.browser_download_url, destination: installer }]);
+    const run = calls.find((call) => call.command === "msiexec");
+    assert.deepEqual(run?.args, ["/i", installer, "/qn", "/norestart", "ADD_PATH=1", "/L*v", path.join(log.folder, "pwsh-setup.log")]);
+    assert.equal(result.exitAccepted, true);
+  });
+
+  it("picks each tool's arm64 installer on ARM64 Windows", async () => {
+    const { environment, downloads } = await noWinget({ env: { PROCESSOR_ARCHITECTURE: "ARM64" } });
+    for (const tool of ["git", "node", "pwsh"] as const) await environment.install(tool);
+    assert.deepEqual(downloads.map((download) => download.url), [
+      GIT_RELEASE.assets[2]!.browser_download_url,
+      "https://nodejs.org/dist/v24.11.0/node-v24.11.0-arm64.msi",
+      PWSH_RELEASE.assets[2]!.browser_download_url,
+    ]);
+  });
+
+  it("keeps using winget, without looking up versions, when winget is available", async () => {
+    const { environment, calls, downloads, lookups } = await noWinget({ winget: true });
+    for (const tool of ["git", "node", "pwsh"] as const) await environment.install(tool);
+    assert.equal(calls.filter((call) => call.command === "winget").length, 3);
+    assert.deepEqual(lookups, []);
+    assert.deepEqual(downloads, []);
+  });
+
+  it("installs uv with its install script whether or not winget is available", async () => {
+    const { environment, calls, lookups } = await noWinget();
+    await environment.install("uv");
+    assert.deepEqual(calls.map((call) => call.command), ["powershell.exe"]);
+    assert.deepEqual(lookups, []);
+  });
+
+  it("still installs VS Code when Git cannot be installed without winget", async () => {
+    const { environment, calls, cache } = await noWinget({ fetchJson: async (url) => ({ status: url.includes("api.github.com") ? 503 : 200, body: undefined }) });
+    const git = await environment.install("git");
+    const vscode = await environment.install("vscode");
+    assert.equal(git.exitAccepted, false);
+    assert.match(git.failure ?? "", /git.*HTTP 503.*重試/);
+    assert.equal(vscode.exitAccepted, true);
+    assert.ok(calls.some((call) => call.command === path.join(cache, "VSCodeUserSetup-x64.exe")));
+  });
+
+  it("does not run an installer signed by someone other than the tool's publisher", async () => {
+    const wrong = { status: "Valid", subject: "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" };
+    for (const tool of ["git", "node"] as const) {
+      const { environment, calls } = await noWinget({ signature: async () => wrong });
+      const result = await environment.install(tool);
+      assert.ok(!calls.some((call) => call.command === "msiexec" || /Git-/.test(call.command)), tool);
+      assert.match(result.failure ?? "", /簽章/, tool);
+    }
+    const { environment, calls } = await noWinget({ signature: async () => ({ status: "Valid", subject: "CN=OpenJS Foundation, O=OpenJS Foundation" }) });
+    const result = await environment.install("pwsh");
+    assert.ok(!calls.some((call) => call.command === "msiexec"));
+    assert.match(result.failure ?? "", /簽章/);
+  });
+
+  it("shows a GitHub rate limit as a failure the student can retry", async () => {
+    for (const status of [403, 429]) {
+      const { environment, downloads, log } = await noWinget({ fetchJson: async () => ({ status, body: { message: "API rate limit exceeded" } }) });
+      const result = await environment.install("pwsh");
+      assert.deepEqual(downloads, []);
+      assert.equal(result.exitAccepted, false);
+      assert.match(result.failure ?? "", /GitHub 查詢次數已達上限.*重試/);
+      assert.match(await fs.readFile(path.join(log.folder, "install.log"), "utf8"), /GitHub 查詢次數已達上限/);
+    }
+  });
+
+  it("shows a failed or unusable version lookup as a failure the student can retry", async () => {
+    const cases: Array<EnvironmentSystem["fetchJson"]> = [
+      async () => { throw new Error("getaddrinfo ENOTFOUND nodejs.org"); },
+      async () => ({ status: 500, body: undefined }),
+      async () => ({ status: 200, body: [{ version: "v25.1.0", lts: false }] }),
+    ];
+    for (const fetchJson of cases) {
+      const { environment, downloads } = await noWinget({ fetchJson });
+      const result = await environment.install("node");
+      assert.deepEqual(downloads, []);
+      assert.match(result.failure ?? "", /Node\.js.*重試/);
+    }
+  });
+
+  it("stops at the version lookup on Abort Install", async () => {
+    const controller = new AbortController();
+    const { environment, downloads } = await noWinget({
+      fetchJson: async () => { controller.abort(); throw new DOMException("aborted", "AbortError"); },
+    });
+    const result = await environment.install("git", controller.signal);
+    assert.equal(result.aborted, true);
+    assert.deepEqual(downloads, []);
   });
 });

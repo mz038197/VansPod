@@ -82,6 +82,23 @@ it("streams a download to the destination with progress and leaves no partial fi
   await assert.rejects(fs.stat(partial));
 });
 
+it("looks up version JSON and reports a non-200 status without failing", async (t) => {
+  const agents: string[] = [];
+  const server = http.createServer((req, res) => {
+    agents.push(String(req.headers["user-agent"]));
+    if (req.url === "/limited") { res.writeHead(403, { "Content-Type": "application/json" }); res.end('{"message":"API rate limit exceeded"}'); return; }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('[{"version":"v24.11.0","lts":"Krypton"}]');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  assert.deepEqual(await windowsEnvironmentSystem.fetchJson(`${base}/index.json`), { status: 200, body: [{ version: "v24.11.0", lts: "Krypton" }] });
+  assert.equal((await windowsEnvironmentSystem.fetchJson(`${base}/limited`)).status, 403);
+  // GitHub API 拒絕沒有 User-Agent 的請求。
+  assert.ok(agents.every((agent) => agent.startsWith("VansPod/")));
+});
+
 it("reports Abort Install as aborted, not timed out", async (t) => {
   const folder = await trickyFolder(t);
   const script = path.join(folder, "hang.cjs");
