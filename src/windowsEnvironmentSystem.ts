@@ -44,17 +44,38 @@ function launch(file: string, args: string[]): { command: string; args: string[]
   return { command: file, args };
 }
 
-async function run(command: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
-  const env = await envWithRegistryPath();
-  const file = await resolveCommand(command, env);
-  if (!file) return { exitCode: undefined, output: "", notFound: true, timedOut: false, aborted: false };
+/** 等 promise，但 signal 先中止時立即回傳 undefined。 */
+function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise((resolve, reject) => {
+    const done = () => resolve(undefined);
+    signal.addEventListener("abort", done, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", done); resolve(value); },
+      (error) => { signal.removeEventListener("abort", done); reject(error); },
+    );
+  });
+}
+
+/** 子程序要用的環境：預設補進登錄檔裡最新的 PATH；測試可換掉。 */
+export type WindowsEnvironmentSystemOptions = { environment?: () => Promise<NodeJS.ProcessEnv> };
+
+async function run(environment: () => Promise<NodeJS.ProcessEnv>, command: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
   const controller = new AbortController();
   const stop = () => controller.abort();
   if (options.signal?.aborted) stop();
   else options.signal?.addEventListener("abort", stop, { once: true });
   let timedOut = false;
+  // 逾時從呼叫就開始算：讀登錄檔 PATH 與找指令也算在檢查的 15 秒內。
   const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs);
   try {
+    const resolved = await unlessAborted(
+      environment().then(async (env) => ({ env, file: await resolveCommand(command, env) })),
+      controller.signal,
+    );
+    if (!resolved) return { exitCode: undefined, output: "", notFound: false, timedOut, aborted: !timedOut };
+    const { env, file } = resolved;
+    if (!file) return { exitCode: undefined, output: "", notFound: true, timedOut: false, aborted: false };
     const target = launch(file, args);
     // 開發工具與 Project Folder 無關：一律以使用者家目錄為工作目錄。
     const result = await collectOutput(target.command, target.args, os.homedir(), options.onOutput, controller.signal, env);
@@ -126,38 +147,43 @@ function signature(file: string): Promise<{ status: string; subject: string }> {
 }
 
 /** 真正的 Windows 系統動作。 */
-export const windowsEnvironmentSystem: EnvironmentSystem = {
-  run,
-  download,
-  signature,
-  fetchJson,
-  async wingetAvailable() {
-    return (await resolveCommand("winget", await envWithRegistryPath())) !== undefined;
-  },
-  async openFolder(folder) {
-    if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
-    // explorer.exe 直接收路徑參數，中文、空白、驚嘆號都不必經過 cmd.exe 的引號規則。
-    const explorer = path.join(process.env.SystemRoot ?? "C:\\Windows", "explorer.exe");
-    const child = spawn(explorer, [folder], { detached: true, stdio: "ignore", windowsHide: false });
-    child.on("error", () => {});
-    child.unref();
-  },
-  async start(command, args) {
-    if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
-    const env = await envWithRegistryPath();
-    const file = await resolveCommand(command, env);
-    if (!file) throw new Error(`找不到 ${command}`);
-    const target = launch(file, args);
-    // code.cmd 經由 cmd.exe 轉手：隱藏 cmd 視窗，VS Code 自己的視窗照常出現。
-    const child = spawn(target.command, target.args, {
-      cwd: os.homedir(),
-      env,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      windowsVerbatimArguments: target.command === "cmd.exe",
-    });
-    child.on("error", () => {});
-    child.unref();
-  },
-};
+export function createWindowsEnvironmentSystem(options: WindowsEnvironmentSystemOptions = {}): EnvironmentSystem {
+  const environment = options.environment ?? envWithRegistryPath;
+  return {
+    run: (command, args, runOptions) => run(environment, command, args, runOptions),
+    download,
+    signature,
+    fetchJson,
+    async wingetAvailable() {
+      return (await resolveCommand("winget", await environment())) !== undefined;
+    },
+    async openFolder(folder) {
+      if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
+      // explorer.exe 直接收路徑參數，中文、空白、驚嘆號都不必經過 cmd.exe 的引號規則。
+      const explorer = path.join(process.env.SystemRoot ?? "C:\\Windows", "explorer.exe");
+      const child = spawn(explorer, [folder], { detached: true, stdio: "ignore", windowsHide: false });
+      child.on("error", () => {});
+      child.unref();
+    },
+    async start(command, args) {
+      if (process.env.CLASSROOM_APP_HEADLESS === "1") return;
+      const env = await environment();
+      const file = await resolveCommand(command, env);
+      if (!file) throw new Error(`找不到 ${command}`);
+      const target = launch(file, args);
+      // code.cmd 經由 cmd.exe 轉手：隱藏 cmd 視窗，VS Code 自己的視窗照常出現。
+      const child = spawn(target.command, target.args, {
+        cwd: os.homedir(),
+        env,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: target.command === "cmd.exe",
+      });
+      child.on("error", () => {});
+      child.unref();
+    },
+  };
+}
+
+export const windowsEnvironmentSystem: EnvironmentSystem = createWindowsEnvironmentSystem();
