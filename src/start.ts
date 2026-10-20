@@ -236,15 +236,15 @@ function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
   });
 }
 
+/** 開發工具與 Project Folder 無關，安裝一律在使用者家目錄執行。 */
 function installMacEnvironment(
   tool: EnvironmentToolId,
-  cwd: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
   const launch = tool === "pwsh"
     ? { command: "open", args: [MAC_PWSH_PAGE] }
     : shellLaunch(macEnvironmentInstallCommand(tool));
-  return collectOutput(launch.command, launch.args, cwd, undefined, signal).then((result) => {
+  return collectOutput(launch.command, launch.args, os.homedir(), undefined, signal).then((result) => {
     if (result.aborted) return { exitCode: result.exitCode, output: result.output, aborted: true };
     if (result.spawnError) {
       return { exitCode: 1, output: "安裝命令無法啟動。" };

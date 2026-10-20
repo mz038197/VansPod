@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { collectOutput } from "./commandRunner";
 import { envWithRegistryPath } from "./systemPath";
@@ -55,7 +56,8 @@ async function run(command: string, args: string[], options: RunOptions = {}): P
   const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; stop(); }, options.timeoutMs);
   try {
     const target = launch(file, args);
-    const result = await collectOutput(target.command, target.args, undefined, options.onOutput, controller.signal, env);
+    // 開發工具與 Project Folder 無關：一律以使用者家目錄為工作目錄。
+    const result = await collectOutput(target.command, target.args, os.homedir(), options.onOutput, controller.signal, env);
     return {
       exitCode: result.exitCode,
       output: result.output,

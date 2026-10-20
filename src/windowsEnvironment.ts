@@ -64,8 +64,8 @@ function installLaunch(tool: EnvironmentToolId): { command: string; args: string
 
 export function createWindowsEnvironment(system: EnvironmentSystem) {
   return {
-    /** cwd 保留給目前的 ClassroomApp 介面；開發工具與 Project Folder 無關，不使用。 */
-    async install(tool: EnvironmentToolId, _cwd: string, signal?: AbortSignal): Promise<EnvironmentInstallResult> {
+    /** 開發工具與 Project Folder 無關；程序在使用者家目錄執行（見 windowsEnvironmentSystem）。 */
+    async install(tool: EnvironmentToolId, signal?: AbortSignal): Promise<EnvironmentInstallResult> {
       const { command, args } = installLaunch(tool);
       // 安裝不設逾時（ADR-0008）：卡住時由學生 Abort Install。
       const result = await system.run(command, args, { signal });

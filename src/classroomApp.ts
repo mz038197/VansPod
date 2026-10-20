@@ -92,9 +92,9 @@ export type ClassroomAppDeps = {
   };
   environment: {
     probe(tool: EnvironmentToolId): Promise<ToolReadiness>;
+    /** 開發工具與 Project Folder 無關；實作自行決定工作目錄（使用者家目錄）。 */
     install(
       tool: EnvironmentToolId,
-      cwd: string,
       signal?: AbortSignal,
     ): Promise<EnvironmentInstallResult>;
   };
@@ -166,7 +166,8 @@ export type ClientForward = {
 export type EnvironmentToolView = {
   id: EnvironmentToolId;
   label: string;
-  readiness: EnvironmentReadiness;
+  /** checking：還沒有第一次檢查結果；不可顯示成「未安裝」。 */
+  readiness: EnvironmentReadiness | "checking";
   version?: string;
   reason?: string;
   selected: boolean;
@@ -259,13 +260,12 @@ export class ClassroomApp {
   private set mode(mode: ModelSwitchMode) { this.clientModes = { codex: mode, claude: mode }; }
   private modelIds: string[] = [];
   private modelProviders: VsCodeProvider[] = [];
-  private environmentReadiness: Record<EnvironmentToolId, ToolReadiness> = {
-    uv: { readiness: "missing" },
-    git: { readiness: "missing" },
-    node: { readiness: "missing" },
-    pwsh: { readiness: "missing" },
-  };
+  private environmentReadiness: Partial<Record<EnvironmentToolId, ToolReadiness>> = {};
   private environmentSelected = new Set<EnvironmentToolId>();
+  // 每次學生改勾選就加一；檢查開始後學生改過，檢查結束就不覆蓋他的勾選。
+  private environmentSelectionEdits = 0;
+  private environmentCheck: Promise<void> | undefined;
+  private environmentCheckStarted = false;
   private environmentNotice: string | undefined;
   private proxyRunning = false;
   private mustRestart: MustRestartClient[] = [];
@@ -386,13 +386,33 @@ export class ClassroomApp {
     };
   }
 
-  async checkEnvironment(): Promise<void> {
-    if (this.commandRunning) {
-      return;
-    }
-    for (const tool of ENVIRONMENT_TOOLS) {
-      await this.probeEnvironmentTool(tool);
-    }
+  /** 檢查全部工具的 Environment Tool Readiness；已有檢查在跑就等它，不重複探測。 */
+  checkEnvironment(): Promise<void> {
+    if (this.environmentCheck) return this.environmentCheck;
+    if (this.commandRunning) return Promise.resolve();
+    this.environmentCheckStarted = true;
+    const edits = this.environmentSelectionEdits;
+    const check = (async () => {
+      try {
+        await Promise.all(ENVIRONMENT_TOOLS.map((tool) => this.probeEnvironmentTool(tool)));
+        // 檢查期間學生自己改過勾選，就保留他的選擇。
+        if (this.environmentSelectionEdits === edits) this.selectNotReadyEnvironmentTools();
+      } finally {
+        this.environmentCheck = undefined;
+      }
+    })();
+    this.environmentCheck = check;
+    return check;
+  }
+
+  /** 每次檢查後的預設勾選：未就緒（未安裝或需要修復）的工具。 */
+  private selectNotReadyEnvironmentTools(): void {
+    this.environmentSelected = new Set(
+      ENVIRONMENT_TOOLS.filter((id) => {
+        const checked = this.environmentReadiness[id];
+        return checked !== undefined && checked.readiness !== "ready";
+      }),
+    );
   }
 
   private async probeEnvironmentTool(tool: EnvironmentToolId): Promise<ToolReadiness> {
@@ -410,13 +430,15 @@ export class ClassroomApp {
     if (this.commandRunning) {
       return;
     }
+    this.environmentSelectionEdits += 1;
     this.environmentSelected = new Set(
       ENVIRONMENT_TOOLS.filter((id) => tools.includes(id)),
     );
   }
 
+  /** Environment Install：開發工具與 Project Folder 無關，沒選資料夾也能安裝。 */
   async confirmEnvironment(): Promise<void> {
-    if (this.stopping || this.commandRunning || !this.projectFolder) {
+    if (this.stopping || this.commandRunning) {
       return;
     }
     const selected = ENVIRONMENT_TOOLS.filter((id) =>
@@ -425,17 +447,19 @@ export class ClassroomApp {
     if (selected.length === 0) {
       return;
     }
-    const cwd = this.projectFolder;
     this.commandRunning = true;
     this.environmentNotice = undefined;
     const abort = this.beginInstall();
     const rebootSuggested: EnvironmentToolId[] = [];
-    let failure: string | undefined;
+    const failures: string[] = [];
     try {
+      // 啟動時的背景檢查還沒結束就先等它，避免檢查與安裝後的驗證互相覆蓋。
+      if (this.environmentCheck) await this.environmentCheck;
       for (const tool of selected) {
+        if (abort.signal.aborted) break;
         let result: EnvironmentInstallResult | undefined;
         try {
-          result = await this.deps.environment.install(tool, cwd, abort.signal);
+          result = await this.deps.environment.install(tool, abort.signal);
         } catch {
           result = undefined;
         }
@@ -449,8 +473,8 @@ export class ClassroomApp {
           if (result?.rebootRequired) rebootSuggested.push(tool);
           continue;
         }
-        failure = environmentInstallFailure(ENVIRONMENT_LABEL[tool], result, verified);
-        break;
+        // 單一工具失敗不中斷後續工具；結果列出每個失敗的工具與原因。
+        failures.push(environmentInstallFailure(ENVIRONMENT_LABEL[tool], result, verified));
       }
     } finally {
       this.endInstall();
@@ -465,15 +489,17 @@ export class ClassroomApp {
     if (rebootSuggested.length > 0) {
       notices.push(`${rebootSuggested.map((tool) => ENVIRONMENT_LABEL[tool]).join("、")} 已就緒，建議重新開機。`);
     }
-    if (failure) notices.push(failure);
+    notices.push(...failures);
     this.environmentNotice = notices.length > 0 ? notices.join("") : undefined;
+    // 安裝後的驗證也算一次檢查：再按「確認安裝」只處理仍未就緒的工具。
+    this.selectNotReadyEnvironmentTools();
   }
 
   private environmentTools(): EnvironmentToolView[] {
     return ENVIRONMENT_TOOLS.map((id) => ({
       id,
       label: ENVIRONMENT_LABEL[id],
-      ...this.environmentReadiness[id],
+      ...(this.environmentReadiness[id] ?? { readiness: "checking" as const }),
       selected: this.environmentSelected.has(id),
     }));
   }
@@ -1644,6 +1670,8 @@ export class ClassroomApp {
 
   private async startNow(): Promise<void> {
     this.stopping = false;
+    // 啟動後在背景檢查一次開發工具；不擋住連線與路由的恢復。
+    if (!this.environmentCheckStarted) void this.checkEnvironment();
     if (!this.initialization) this.initialization = (async () => {
       if (this.deps.adapterSettings) {
         try { this.adapters = await this.deps.adapterSettings.load(); }
