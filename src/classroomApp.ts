@@ -46,6 +46,17 @@ const ENVIRONMENT_LABEL: Record<EnvironmentToolId, string> = {
   pwsh: "PowerShell 7",
 };
 
+/** Environment Tool Readiness：已就緒／需要修復（找得到但驗證不通過或逾時）／未安裝（找不到）。 */
+export type EnvironmentReadiness = "ready" | "needsRepair" | "missing";
+
+export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string; reason?: string };
+
+/**
+ * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
+ * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
+ */
+export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean };
+
 export type MustRestartClient = "codex" | "claude" | "vscode";
 
 export type CopilotDocument = {
