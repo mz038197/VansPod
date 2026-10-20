@@ -259,6 +259,143 @@ describe("Windows Environment Install: VS Code", () => {
     assert.match(text, /win32-x64-user/);
     assert.match(text, /VSCodeUserSetup-x64\.exe/);
   });
+
+  /** 一次 VS Code 安裝：回傳結果、下載紀錄與安裝檔路徑。 */
+  async function installVsCode(setup: {
+    env?: NodeJS.ProcessEnv;
+    root?: string;
+    downloads?: Parameters<typeof fakeDownloads>[0];
+    signature?: EnvironmentSystem["signature"];
+    installer?: Reply | ((call: Call) => Reply | Promise<Reply>);
+    code?: Reply;
+    signal?: AbortSignal;
+  } = {}) {
+    const root = setup.root ?? await weirdRoot();
+    const fake = fakeDownloads(setup.downloads);
+    const architecture = setup.env?.PROCESSOR_ARCHITECTURE === "ARM64" ? "arm64" : "x64";
+    const installer = path.join(root, "Downloads", `VSCodeUserSetup-${architecture}.exe`);
+    const signatures: string[] = [];
+    const { system, calls } = fakeSystem(
+      { [installer]: setup.installer ?? { exitCode: 0 }, "code --version": setup.code ?? VSCODE_READY },
+      {
+        download: fake.download,
+        signature: async (file) => { signatures.push(file); return setup.signature ? setup.signature(file) : MICROSOFT; },
+      },
+    );
+    const environment = createWindowsEnvironment(system, { managementDirectory: root, env: setup.env ?? X64, retryDelayMs: 0 });
+    const result = await environment.install("vscode", setup.signal);
+    const ran = calls.filter((call) => call.command === installer);
+    return { root, result, downloads: fake.downloads, installer, ran, signatures, calls };
+  }
+
+  it("downloads the arm64 installer on ARM64 Windows", async () => {
+    const { downloads } = await installVsCode({ env: { PROCESSOR_ARCHITECTURE: "ARM64" } });
+    assert.equal(downloads[0]?.url, "https://update.code.visualstudio.com/latest/win32-arm64-user/stable");
+  });
+
+  it("downloads the x64 installer when a 32-bit VansPod runs on 64-bit Windows", async () => {
+    const { downloads } = await installVsCode({ env: { PROCESSOR_ARCHITECTURE: "x86", PROCESSOR_ARCHITEW6432: "AMD64" } });
+    assert.equal(downloads[0]?.url, "https://update.code.visualstudio.com/latest/win32-x64-user/stable");
+  });
+
+  it("fails without downloading on an architecture VS Code has no installer for", async () => {
+    const { downloads, result } = await installVsCode({ env: { PROCESSOR_ARCHITECTURE: "x86" } });
+    assert.equal(downloads.length, 0);
+    assert.match(result.failure ?? "", /架構/);
+  });
+
+  it("does not run an installer whose signature is not valid, and deletes it", async () => {
+    const { result, ran, installer } = await installVsCode({ signature: async () => ({ status: "HashMismatch", subject: MICROSOFT.subject }) });
+    assert.equal(ran.length, 0);
+    assert.equal(result.exitAccepted, false);
+    assert.match(result.failure ?? "", /簽章/);
+    assert.equal(await exists(installer), false);
+  });
+
+  it("does not run a validly signed installer from a publisher other than Microsoft", async () => {
+    const { result, ran } = await installVsCode({ signature: async () => ({ status: "Valid", subject: "CN=Microsoft Corporation Fake, O=Contoso, C=US" }) });
+    assert.equal(ran.length, 0);
+    assert.match(result.failure ?? "", /簽章/);
+  });
+
+  it("retries a temporary download failure until it succeeds", async () => {
+    const { downloads, ran, result } = await installVsCode({ downloads: [new Error("ECONNRESET"), new Error("ECONNRESET"), "ok"] });
+    assert.equal(downloads.length, 3);
+    assert.equal(ran.length, 1);
+    assert.equal(result.exitAccepted, true);
+  });
+
+  it("gives up after 3 failed downloads and reports why", async () => {
+    const { downloads, ran, result } = await installVsCode({ downloads: [new Error("下載失敗（HTTP 503）")] });
+    assert.equal(downloads.length, 3);
+    assert.equal(ran.length, 0);
+    assert.equal(result.exitAccepted, false);
+    assert.match(result.failure ?? "", /下載失敗.*HTTP 503/);
+  });
+
+  it("cancels a download on Abort Install without retrying and leaves no partial file", async () => {
+    const controller = new AbortController();
+    const { downloads, ran, result, installer } = await installVsCode({
+      signal: controller.signal,
+      downloads: [async (destination) => {
+        await fs.writeFile(destination, "MZ half");
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      }],
+    });
+    assert.equal(downloads.length, 1);
+    assert.equal(ran.length, 0);
+    assert.equal(result.aborted, true);
+    assert.equal(await exists(installer), false);
+  });
+
+  it("deletes the installer right away when Abort Install stops it after launch", async () => {
+    const { result, installer, ran } = await installVsCode({ installer: { aborted: true, exitCode: undefined, output: "partial" } });
+    assert.equal(ran.length, 1);
+    assert.equal(result.aborted, true);
+    assert.equal(result.exitAccepted, false);
+    assert.equal(await exists(installer), false);
+  });
+
+  it("passes Abort Install through to the running installer", async () => {
+    const controller = new AbortController();
+    const { ran } = await installVsCode({ signal: controller.signal });
+    assert.equal(ran[0]?.options.signal, controller.signal);
+  });
+
+  it("fails when the installer exits non-zero and VS Code still does not verify, keeping the installer for a retry", async () => {
+    const { result, installer } = await installVsCode({ installer: { exitCode: 1, output: "Setup failed" }, code: { exitCode: 1, output: "1.90.0\n" } });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.exitAccepted, false);
+    assert.equal(await exists(installer), true);
+  });
+
+  it("reuses a kept installer on retry after checking its signature again", async () => {
+    const first = await installVsCode({ code: { notFound: true } });
+    assert.equal(await exists(first.installer), true);
+    const retry = await installVsCode({ root: first.root });
+    assert.equal(retry.downloads.length, 0);
+    assert.deepEqual(retry.signatures, [first.installer]);
+    assert.equal(retry.ran.length, 1);
+    assert.equal(await exists(first.installer), false);
+  });
+
+  it("downloads again when the kept installer's signature no longer checks out", async () => {
+    const first = await installVsCode({ code: { notFound: true } });
+    let checks = 0;
+    const retry = await installVsCode({
+      root: first.root,
+      signature: async () => (checks++ === 0 ? { status: "HashMismatch", subject: MICROSOFT.subject } : MICROSOFT),
+    });
+    assert.equal(retry.downloads.length, 1);
+    assert.equal(retry.ran.length, 1);
+  });
+
+  it("asks for a reboot when the installer exits 3010", async () => {
+    const { result } = await installVsCode({ installer: { exitCode: 3010 } });
+    assert.equal(result.exitAccepted, true);
+    assert.equal(result.rebootRequired, true);
+  });
 });
 
 describe("Environment Install logs", () => {

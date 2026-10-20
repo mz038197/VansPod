@@ -225,10 +225,12 @@ function isEnvironmentTool(value: string): value is EnvironmentToolId {
 
 const MAC_PWSH_PAGE =
   "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos";
+// VS Code 的直接下載安裝只做 Windows；macOS 開啟官方下載頁，由學生自己安裝。
+const MAC_VSCODE_PAGE = "https://code.visualstudio.com/download";
 
 /** macOS 維持原本的偵測：找得到且有輸出版本就算已就緒（ADR-0008：第一版只完整支援 Windows）。 */
 function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
-  return collectOutput(tool, ["--version"]).then((result) => {
+  return collectOutput(tool === "vscode" ? "code" : tool, ["--version"]).then((result) => {
     if (result.spawnError) {
       return { readiness: "missing" };
     }
@@ -243,7 +245,9 @@ function installMacEnvironment(
 ): Promise<CommandResult> {
   const launch = tool === "pwsh"
     ? { command: "open", args: [MAC_PWSH_PAGE] }
-    : shellLaunch(macEnvironmentInstallCommand(tool));
+    : tool === "vscode"
+      ? { command: "open", args: [MAC_VSCODE_PAGE] }
+      : shellLaunch(macEnvironmentInstallCommand(tool));
   return collectOutput(launch.command, launch.args, os.homedir(), undefined, signal).then((result) => {
     if (result.aborted) return { exitCode: result.exitCode, output: result.output, aborted: true };
     if (result.spawnError) {
