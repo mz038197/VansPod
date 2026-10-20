@@ -393,6 +393,15 @@ describe("Windows Environment Install: VS Code", () => {
     assert.equal(retry.ran.length, 1);
   });
 
+  it("verifies VS Code exactly once after installing and returns that verdict", async () => {
+    const ready = await installVsCode();
+    assert.equal(ready.calls.filter((call) => call.command === "code").length, 1);
+    assert.deepEqual(ready.result.verified, { readiness: "ready", version: "1.105.1" });
+    const broken = await installVsCode({ code: { notFound: true } });
+    assert.equal(broken.calls.filter((call) => call.command === "code").length, 1);
+    assert.equal(broken.result.verified?.readiness, "missing");
+  });
+
   it("asks for a reboot when the installer exits 3010", async () => {
     const { result } = await installVsCode({ installer: { exitCode: 3010 } });
     assert.equal(result.exitAccepted, true);

@@ -296,7 +296,7 @@ export function createWindowsEnvironment(system: EnvironmentSystem, options: Win
       signal,
       onProgress,
       log: async (text: string) => { await currentLog?.append(text); },
-      verify: async () => (await probe(tool)).readiness === "ready",
+      verify: () => probe(tool),
     };
   }
 

@@ -57,8 +57,14 @@ export type ToolReadiness = { readiness: EnvironmentReadiness; version?: string;
  * 安裝程式的結果只用來產生提示；成敗一律以安裝後的 probe 為準。
  * exitAccepted：結束碼屬於可接受的值（例如 winget 0、3010、已安裝）；rebootRequired：安裝程式要求重新開機。
  * failure：安裝程式沒有執行的原因（例如下載失敗、簽章不符），驗證未通過時顯示給學生。
+ * verified：environment 安裝後已經跑過的驗證（要依結果決定是否刪除安裝檔）；有值時 ClassroomApp 直接採用，不再 probe 一次。
  */
-export type EnvironmentInstallResult = CommandResult & { exitAccepted?: boolean; rebootRequired?: boolean; failure?: string };
+export type EnvironmentInstallResult = CommandResult & {
+  exitAccepted?: boolean;
+  rebootRequired?: boolean;
+  failure?: string;
+  verified?: ToolReadiness;
+};
 
 /** Environment Install 中一個工具的階段：等待中、下載中、安裝中、驗證中、完成、失敗。 */
 export type EnvironmentInstallStage = "waiting" | "downloading" | "installing" | "verifying" | "done" | "failed";
@@ -467,6 +473,13 @@ export class ClassroomApp {
     return readiness;
   }
 
+  /** 安裝後的驗證：environment 已經驗證過就採用它的結果，每個工具只檢查一次。 */
+  private async verifyInstalledTool(tool: EnvironmentToolId, result: EnvironmentInstallResult | undefined): Promise<ToolReadiness> {
+    if (!result?.verified) return this.probeEnvironmentTool(tool);
+    this.environmentReadiness[tool] = result.verified;
+    return result.verified;
+  }
+
   selectEnvironment(tools: readonly EnvironmentToolId[]): void {
     if (this.commandRunning) {
       return;
@@ -522,7 +535,7 @@ export class ClassroomApp {
         // 安裝程式的結束碼只產生提示；裝好與否以立刻重新驗證為準。
         // 驗證會讀登錄檔裡最新的 PATH，剛裝好的工具不必重開 VansPod 就看得到。
         progress[tool] = { stage: "verifying" };
-        const verified = await this.probeEnvironmentTool(tool);
+        const verified = await this.verifyInstalledTool(tool, result);
         await this.environmentLog?.verified(tool, verified).catch(() => {});
         if (verified.readiness === "ready") {
           progress[tool] = { stage: "done" };

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { EnvironmentInstallReport, EnvironmentInstallResult } from "./classroomApp";
+import type { EnvironmentInstallReport, EnvironmentInstallResult, ToolReadiness } from "./classroomApp";
 import type { EnvironmentSystem, RunResult } from "./windowsEnvironment";
 
 /** 一個官方安裝檔：從哪裡下載、在下載快取裡叫什麼、預期誰簽署、怎麼靜默執行。 */
@@ -26,8 +26,8 @@ export type OfficialInstallContext = {
   onProgress?: (progress: EnvironmentInstallReport) => void;
   /** 寫入本次安裝紀錄。 */
   log(text: string): Promise<void>;
-  /** 安裝程式結束後驗證工具；通過才刪除安裝檔，否則保留給重試沿用。 */
-  verify(): Promise<boolean>;
+  /** 安裝程式結束後驗證工具；已就緒才刪除安裝檔，否則保留給重試沿用。結果放進 verified，ClassroomApp 不再重驗。 */
+  verify(): Promise<ToolReadiness>;
 };
 
 /** 安裝程式的結束碼：0 成功、3010 需要重新開機（Inno Setup 與 msiexec 相同）；成敗仍以驗證為準。 */
@@ -137,11 +137,13 @@ export async function installOfficialInstaller(installer: OfficialInstaller, con
   if (result.notFound) return failed("安裝檔無法啟動");
   onProgress?.({ stage: "verifying" });
   // 驗證通過才刪除安裝檔；沒過就保留，重試時重新驗證簽章後沿用。
-  if (await context.verify().catch(() => false)) await remove();
+  const verified = await context.verify().catch((): ToolReadiness => ({ readiness: "missing" }));
+  if (verified.readiness === "ready") await remove();
   return {
     output: result.output,
     exitCode: result.exitCode,
     exitAccepted: result.exitCode !== undefined && ACCEPTED_EXIT.includes(result.exitCode),
     ...(result.exitCode === REBOOT_REQUIRED ? { rebootRequired: true } : {}),
+    verified,
   };
 }
