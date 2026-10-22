@@ -34,7 +34,7 @@ import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { forwardRouter, sendRouter, relayResponse } from "./modelProxy";
-import { assertClassroomKeyAccepted } from "./classroomKeyRejection";
+import { fetchCourseCatalog as fetchRouterCourseCatalog } from "./routerCourseCatalog";
 import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
 import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
@@ -156,27 +156,8 @@ function isRedeemResult(value: unknown): value is NicknameRedeemResult {
   );
 }
 
-async function fetchCourseCatalog(
-  apiKey: string,
-): Promise<{ course_catalog_yaml?: unknown }> {
-  const root = routerBaseUrl();
-  const response = await fetch(`${root}/extension/course-catalog`, {
-    signal: AbortSignal.timeout(5_000),
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-  });
-  await assertClassroomKeyAccepted(response);
-  if (!response.ok) {
-    throw new Error("course catalog failed");
-  }
-  const json: unknown = await response.json();
-  if (!json || typeof json !== "object") {
-    throw new Error("course catalog failed");
-  }
-  return json as { course_catalog_yaml?: unknown };
+async function fetchCourseCatalog(apiKey: string): Promise<{ course_catalog_yaml?: unknown }> {
+  return fetchRouterCourseCatalog({ root: routerBaseUrl(), apiKey });
 }
 
 async function readClassroomInstalls(

@@ -16,6 +16,10 @@ _Avoid_: Google Sign-in Handoff、全班共用 API Key、登入學生 Google 帳
 Nickname Redeem 取得、屬於特定 Class Session 的課堂憑證；本機代理憑此向 Router 呼叫模型 API。它不是上游供應商金鑰，也不是 Invite Code。
 _Avoid_: OpenAI／Anthropic 上游 API Key、Google token、Invite Code、在畫面上顯示金鑰明文
 
+**Refused Classroom API Key**:
+Router 明確拒絕、已不能再用的 Classroom API Key，分為「已過期」與「已失效」（無效或被停用）兩種。它只能以 Clear Classroom Connection 後重新 Nickname Redeem 取得的新 Classroom API Key 取代。
+_Avoid_: 籠統稱為「重新載入失敗」、把學校過濾器或 Proxy 的封鎖頁面當成金鑰失效、要學生一直按更新
+
 **Classroom Connection**:
 VansPod 目前持有、指向一個 Class Session 的連線身分，包含 Classroom API Key 與恢復課堂辨識所需資訊。清除 Classroom Connection 不等於停止本機代理。
 _Avoid_: Router Portal session、僅指一把 API Key、把「清除連線」當成「停止代理」

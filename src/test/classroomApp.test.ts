@@ -783,6 +783,30 @@ it("an invalid or disabled Classroom API Key on Reload tells the student to rede
   assert.doesNotMatch(page, /重新載入課堂模型失敗|遠端清單不可用|找不到 classroom-installs.yaml/);
 });
 
+it("a Classroom API Key refused by the course catalog alone is explained right after the catalog reload", async () => {
+  let refused = false;
+  const h = harness(undefined, {
+    catalogFetch: async () => { if (refused) throw new ClassroomKeyRejectedError("invalid"); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  refused = true;
+  await h.app.reloadCatalog();
+  assert.match(renderPage(h.app.view()), /Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+});
+
+it("a Classroom API Key the course catalog refuses while VansPod opens is explained right away", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Demo" }, nickname: "Student", mode: "native" });
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    sessionModels: async () => ["lesson"],
+    catalogFetch: async () => { throw new ClassroomKeyRejectedError("invalid"); },
+  });
+  await h.app.start();
+  assert.match(renderPage(h.app.view()), /Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+});
+
 it("redeeming a new invite code after the Classroom API Key expired clears the expiry message", async () => {
   let expired = false;
   const h = harness(undefined, {

@@ -1322,7 +1322,15 @@ export class ClassroomApp {
   }
 
   async reloadCatalog(): Promise<void> {
-    return this.serialConnectionOperation(() => this.loadCatalog());
+    return this.serialConnectionOperation(async () => {
+      await this.loadCatalog();
+      if (this.keyRejection) this.showKeyRejection(this.keyRejection);
+    });
+  }
+
+  /** A refused Classroom API Key replaces any reload warning: the student has to redeem again. */
+  private showKeyRejection(rejection: ClassroomKeyRejection): void {
+    this.allowlistError = KEY_REJECTED_NOTICE[rejection];
   }
 
   async reloadAllowlist(): Promise<void> {
@@ -1558,7 +1566,7 @@ export class ClassroomApp {
     }
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     const refreshed = await this.loadModels(apiKey);
-    if (this.keyRejection) this.allowlistError = KEY_REJECTED_NOTICE[this.keyRejection];
+    if (this.keyRejection) this.showKeyRejection(this.keyRejection);
     else this.allowlistError = refreshed ? undefined : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     if (previous !== current) {
@@ -1880,7 +1888,7 @@ export class ClassroomApp {
     this.mode = "native";
     await this.loadCatalog();
     await this.loadModels(connection.apiKey);
-    if (this.keyRejection) this.allowlistError = KEY_REJECTED_NOTICE[this.keyRejection];
+    if (this.keyRejection) this.showKeyRejection(this.keyRejection);
     if (connection.mode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
       this.clientModes = connection.clientModes ?? { codex: "classroom", claude: "classroom" };
