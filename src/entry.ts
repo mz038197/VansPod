@@ -2,6 +2,9 @@ import { runCli } from "./launcher";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { managementDirectory } from "./instance";
+import { preferIpv4 } from "./networkPreference";
+
+preferIpv4();
 
 void runCli().catch(async (error: unknown) => {
   const message = error instanceof Error ? error.message : "VansPod 操作失敗。";
