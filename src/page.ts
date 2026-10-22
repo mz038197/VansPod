@@ -341,10 +341,6 @@ function catalogTable(view: ClassroomAppView): string {
   return `${head}${table}${snippetBlock}`;
 }
 
-function stopForm(): string {
-  return `<form method="post" action="/stop"><button type="submit" class="stop">停止</button></form>`;
-}
-
 function tile(title: string, body: string, wide = false): string {
   return `<section class="tile${wide ? " wide" : ""}"><h2>${title}</h2>${body}</section>`;
 }
@@ -639,20 +635,6 @@ function appearanceScript(): string {
       navigator.sendBeacon("/close");
     });
   `;
-}
-
-export function classroomBlocks(view: ClassroomAppView) {
-  return {
-    status: statusWord(view),
-    notices: notices(view),
-    connect: connectInner(view),
-    folder: folderInner(view),
-    model: modelInner(view),
-    environment: environmentInner(view),
-    command: commandInner(view),
-    catalog: catalogTable(view),
-    stop: stopForm(),
-  };
 }
 
 type PageId = "settings" | "inspector";

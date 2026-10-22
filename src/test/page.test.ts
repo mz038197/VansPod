@@ -5,7 +5,6 @@ import { environmentStageText, environmentStatus, modelStatus, renderInspectorPa
 import { environmentProgressScript } from "../environmentProgress";
 import { patrolKeyframes } from "../connectionMascot";
 import { modelStatusScript } from "../modelStatus";
-import { renderPrototypePage } from "../pagePrototype";
 import vm from "node:vm";
 import { settingsActionsScript } from "../settingsActions";
 import { connectionMascotScript } from "../connectionMascot";
@@ -357,38 +356,19 @@ describe("VansPod page", () => {
     assert.match(html, /data-appearance-toggle/);
     assert.match(html, /\[data-appearance="light"\]/);
     assert.match(html, /\[data-appearance="dark"\]/);
-    assert.equal(html.includes("proto-bar"), false);
     assert.equal(html.includes(KEY), false);
   });
 
-  it("serves the D layout as the official page without the prototype bar", () => {
+  it("serves the sidebar layout as the official page", () => {
     const html = renderPage(view());
     assert.match(html, /class="brand-title">VansPod</);
     assert.match(html, /教室設定/);
     assert.match(html, /<h2>課程安裝<\/h2>/);
     assert.match(html, /<h2>課程片段<\/h2>/);
-    assert.equal(html.includes("proto-bar"), false);
-    assert.equal(html.includes("prototype_variant"), false);
     assert.equal(html.includes(KEY), false);
   });
 
-  it("prototype variants disagree about layout and keep the key off the page", () => {
-    const rail = renderPrototypePage(view(), "A");
-    const list = renderPrototypePage(view(), "B");
-    const split = renderPrototypePage(view(), "C");
-    assert.match(rail, /class="shell"/);
-    assert.match(rail, /A · 側欄控制台/);
-    assert.equal(list.includes('class="shell"'), false);
-    assert.match(list, /class="set-row"/);
-    assert.match(split, /class="split"/);
-    assert.equal(split.includes('class="set-row"'), false);
-    assert.match(split, /data-proto-go="D"/);
-    const current = renderPrototypePage(view(), "D");
-    assert.match(current, /D · 原本/);
-    assert.match(current, /class="proto-bar"/);
-    assert.match(current, /class="brand-title">VansPod/);
-    assert.match(current, /name="prototype_variant" value="D"/);
-    assert.equal(renderPage(view()).includes("proto-bar"), false);
+  it("lays out the official settings page and keeps the key off it", () => {
     const official = renderPage(view());
     assert.match(official, /class="modules"/);
     assert.match(official, /class="display"/);
@@ -540,7 +520,6 @@ describe("VansPod page", () => {
     assert.equal(welcomed.includes('<p class="detail">Classroom API Key 已設定。</p>'), false);
     assert.equal(welcomed.includes("邀請碼"), false);
     assert.equal(official.includes('class="shell"'), false);
-    assert.equal(rail.includes(KEY), false);
     assert.equal(official.includes(KEY), false);
   });
 });

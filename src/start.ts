@@ -26,7 +26,6 @@ import { collectOutput, shellLaunch, runCommand, type CommandResult } from "./co
 import { createWindowsEnvironment } from "./windowsEnvironment";
 import { windowsEnvironmentSystem } from "./windowsEnvironmentSystem";
 import { exitDecision, removalInterruptions } from "./exitGuard";
-import { isPrototypeVariant, renderPrototypePage } from "./pagePrototype";
 import { createRouteFiles } from "./routeFiles";
 import { decodeRequestBody } from "./responsesChat";
 import { createAdapterSettingsStorage } from "./adapterSettings";
@@ -491,16 +490,11 @@ export async function main(instance?: Instance): Promise<void> {
     if (!/^(127\.0\.0\.1|localhost):\d+$/.test(req.headers.host ?? "")) { res.writeHead(403); res.end("本機網址無效。"); return; }
     const parsed = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
     const pathname = parsed.pathname;
-    const goHome = (params?: URLSearchParams) => {
+    const goHome = () => {
       if (req.headers["x-classroom-settings"] === "1") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         const html = renderPage(app.pageView());
         res.end(instance ? lifecyclePage(html, instance.token) : html);
-        return;
-      }
-      const variant = params?.get("prototype_variant") ?? "";
-      if (process.env.NODE_ENV !== "production" && isPrototypeVariant(variant)) {
-        redirect(res, `/?variant=${variant}`);
         return;
       }
       redirect(res);
@@ -589,11 +583,7 @@ export async function main(instance?: Instance): Promise<void> {
         // 版本更新後重新啟動時，舊分頁一拿到首頁就重新整理頁面；
         // 等 Classroom Connection 恢復、Course Catalog 載入後才給頁面，免得課程安裝停在尚未載入的狀態。
         await startupSettled;
-        const variant = parsed.searchParams.get("variant") ?? "";
-        const html =
-          process.env.NODE_ENV !== "production" && isPrototypeVariant(variant)
-            ? renderPrototypePage(app.pageView(), variant)
-            : renderPage(app.pageView());
+        const html = renderPage(app.pageView());
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
@@ -616,14 +606,14 @@ export async function main(instance?: Instance): Promise<void> {
           params.get("invite_code") ?? "",
           params.get("nickname") ?? "",
         );
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/pick-folder") {
         const params = new URLSearchParams(await readBody(req));
         const picked = await pickProjectFolder();
         if (picked) await app.setProjectFolder(picked);
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/project-folder") {
@@ -634,7 +624,7 @@ export async function main(instance?: Instance): Promise<void> {
         } else {
           app.rejectProjectFolder();
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/prepare") {
@@ -646,7 +636,7 @@ export async function main(instance?: Instance): Promise<void> {
           res.end(renderPage(view));
           return;
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/confirm") {
@@ -658,7 +648,7 @@ export async function main(instance?: Instance): Promise<void> {
           res.end(JSON.stringify({ succeeded: view.commandSucceeded, aborted: view.commandAborted === true, output: view.commandOutput ?? "", installedActionIds: view.installedActionIds ?? [] }));
           return;
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/cancel") {
@@ -670,7 +660,7 @@ export async function main(instance?: Instance): Promise<void> {
           res.end(JSON.stringify({ canceled }));
           return;
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/abort-install") {
@@ -681,25 +671,25 @@ export async function main(instance?: Instance): Promise<void> {
           res.end(JSON.stringify({ aborted: true }));
           return;
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/environment-check") {
         const params = new URLSearchParams(await readBody(req));
         await app.checkEnvironment();
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/environment-log") {
         const params = new URLSearchParams(await readBody(req));
         await app.openEnvironmentLog();
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/open-vscode") {
         const params = new URLSearchParams(await readBody(req));
         await app.openVsCode().catch(() => {});
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/environment") {
@@ -711,13 +701,13 @@ export async function main(instance?: Instance): Promise<void> {
         // 背景安裝：請求立刻回來，頁面輪詢 /environment-status。commandRunning 在 confirmEnvironment 同步開頭就設好，
         // 轉回首頁時已顯示進行中，exit guard、版本更新與移除也照常看得到這次安裝。
         void app.confirmEnvironment().catch(() => {});
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/copy") {
         const params = new URLSearchParams(await readBody(req));
         await app.copyKey();
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/copy-snippet") {
@@ -730,7 +720,7 @@ export async function main(instance?: Instance): Promise<void> {
       if (req.method === "POST" && pathname === "/clear") {
         const params = new URLSearchParams(await readBody(req));
         await app.clearConnection();
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/switch") {
@@ -743,7 +733,7 @@ export async function main(instance?: Instance): Promise<void> {
           }
           await app.setSwitch(mode, client ?? undefined);
         }
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/adapter") {
@@ -753,13 +743,13 @@ export async function main(instance?: Instance): Promise<void> {
           res.writeHead(400); res.end("無效的客戶端。"); return;
         }
         await app.setAdapter(client, params.get("adapter") ?? "");
-        goHome(params); return;
+        goHome(); return;
       }
       if (req.method === "POST" && pathname === "/reload") {
         const params = new URLSearchParams(await readBody(req));
         await app.reloadCatalog();
         await app.reloadAllowlist();
-        goHome(params);
+        goHome();
         return;
       }
       if (
@@ -803,7 +793,7 @@ export async function main(instance?: Instance): Promise<void> {
         if (instance) { res.writeHead(409); res.end("請使用畫面的結束 VansPod，確認後再結束。"); return; }
         const params = new URLSearchParams(await readBody(req));
         await app.stop();
-        goHome(params);
+        goHome();
         return;
       }
       if (req.method === "POST" && pathname === "/close") {
