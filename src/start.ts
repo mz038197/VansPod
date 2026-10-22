@@ -211,6 +211,8 @@ const MAC_PWSH_PAGE =
   "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-macos";
 // VS Code 的直接下載安裝只做 Windows；macOS 開啟官方下載頁，由學生自己安裝。
 const MAC_VSCODE_PAGE = "https://code.visualstudio.com/download";
+/** 首頁最多等啟動這麼久；涵蓋 Course Catalog 重試與 Session Model Allowlist 的抓取。 */
+const PAGE_STARTUP_WAIT_MS = 30_000;
 
 /** macOS 維持原本的偵測：找得到且有輸出版本就算已就緒（ADR-0008：第一版只完整支援 Windows）。 */
 function probeMacEnvironment(tool: EnvironmentToolId): Promise<ToolReadiness> {
@@ -424,6 +426,9 @@ export async function main(instance?: Instance): Promise<void> {
     },
   });
   let ready = false;
+  // 和 ready 不同：啟動失敗但服務保留時也會放行，頁面才能顯示 startupError。
+  let settleStartup!: () => void;
+  const startupSettled = new Promise<void>(resolve => { settleStartup = resolve; });
   let startupError: string | undefined;
   let tray: ChildProcess | undefined;
   let trayError: string | undefined;
@@ -580,6 +585,9 @@ export async function main(instance?: Instance): Promise<void> {
         return;
       }
       if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
+        // 版本更新後重新啟動時，舊分頁一拿到首頁就重新整理頁面；
+        // 等 Classroom Connection 恢復、Course Catalog 載入後才給頁面，免得課程安裝停在尚未載入的狀態。
+        await startupSettled;
         const variant = parsed.searchParams.get("variant") ?? "";
         const html =
           process.env.NODE_ENV !== "production" && isPrototypeVariant(variant)
@@ -817,6 +825,8 @@ export async function main(instance?: Instance): Promise<void> {
   const home = `${ui.origin}/`;
   try { if (instance) { instance.pid = process.pid; instance.origin = ui.origin; await saveInstance(instance); } }
   catch (error) { await clientRouteRuntime.stop(); throw error; }
+  // 啟動卡住時不讓首頁無限等待；顯示未完成的頁面總比一直轉圈好。
+  setTimeout(settleStartup, PAGE_STARTUP_WAIT_MS).unref();
   try { await app.start(); ready = true; }
   catch {
     startupError = "客戶端初始化失敗，請檢查本機 Client Route 設定、備份格式與檔案權限。";
@@ -830,6 +840,7 @@ export async function main(instance?: Instance): Promise<void> {
     }
     startupError += " 設定恢復未完成，服務已保留；修復後請重試 vanspod stop。";
   }
+  finally { settleStartup(); }
   versionUpdate.start();
   // 系統匣起不來時 VansPod 仍要繼續；頁面會提示改用頁面上的「結束 VansPod」。
   if (runtimeOptions.desktop && process.platform === "win32" && instance) {

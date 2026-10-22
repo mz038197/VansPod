@@ -4670,3 +4670,38 @@ describe("VS Code Chat after Environment Install", () => {
     assert.equal(app.view().clientRoutes?.vsCodeChat.health, "gray");
   });
 });
+
+it("a course catalog that fails once while VansPod restarts is fetched again before startup finishes", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const first = harness(undefined, { storage });
+  await first.app.start();
+  await first.app.redeem("DEMO", "Student");
+  let attempts = 0;
+  const restarted = harness(undefined, {
+    storage,
+    catalogFetch: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("course catalog failed");
+      return { course_catalog_yaml: REMOTE_YAML };
+    },
+  });
+  await restarted.app.start();
+  assert.equal(attempts, 2);
+  assert.deepEqual(restarted.app.view().catalog?.actions.map(action => action.title), ["安裝 demo"]);
+  assert.doesNotMatch(renderPage(restarted.app.view()), /遠端清單不可用/);
+});
+
+it("a Classroom API Key refused while VansPod restarts is not retried", async () => {
+  const storage = createConnectionStorage(createMemorySecureStorage());
+  const first = harness(undefined, { storage });
+  await first.app.start();
+  await first.app.redeem("DEMO", "Student");
+  let attempts = 0;
+  const restarted = harness(undefined, {
+    storage,
+    catalogFetch: async () => { attempts += 1; throw new ClassroomKeyRejectedError("expired"); },
+  });
+  await restarted.app.start();
+  assert.equal(attempts, 1);
+  assert.match(renderPage(restarted.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+});

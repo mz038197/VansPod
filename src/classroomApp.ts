@@ -258,6 +258,8 @@ const KEY_REJECTED_NOTICE: Record<ClassroomKeyRejection, string> = {
   expired: "Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。",
   invalid: "Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。",
 };
+const RESTORE_CATALOG_ATTEMPTS = 3;
+const RESTORE_CATALOG_RETRY_MS = 1_000;
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
@@ -1886,7 +1888,8 @@ export class ClassroomApp {
     this.hiddenKeys.add(connection.apiKey);
     this.applyConnectionIdentity(connection);
     this.mode = "native";
-    await this.loadCatalog();
+    // 版本更新後重新啟動時網路可能還沒穩；恢復 Classroom Connection 時抓不到 Course Catalog 就稍候再試，才退回本機的 classroom-installs.yaml。
+    await this.loadCatalog(RESTORE_CATALOG_ATTEMPTS);
     await this.loadModels(connection.apiKey);
     if (this.keyRejection) this.showKeyRejection(this.keyRejection);
     if (connection.mode === "classroom" && this.modelIds.length > 0) {
@@ -1959,7 +1962,7 @@ export class ClassroomApp {
     // 關分頁不停止代理，也不改路由。
   }
 
-  private async loadCatalog(): Promise<void> {
+  private async loadCatalog(attempts = 1): Promise<void> {
     if (!this.connected) {
       return;
     }
@@ -1971,13 +1974,19 @@ export class ClassroomApp {
       return;
     }
     let body: { course_catalog_yaml?: unknown };
-    try {
-      body = await this.deps.catalog.fetchCourseCatalog(apiKey);
-    } catch (error) {
-      // The refused key is reported with the allowlist; the last catalog stays on screen.
-      if (error instanceof ClassroomKeyRejectedError) { this.keyRejection = error.reason; return; }
-      await this.loadLocalCatalog();
-      return;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        body = await this.deps.catalog.fetchCourseCatalog(apiKey);
+        break;
+      } catch (error) {
+        // The refused key is reported with the allowlist; the last catalog stays on screen.
+        if (error instanceof ClassroomKeyRejectedError) { this.keyRejection = error.reason; return; }
+        if (attempt >= attempts) {
+          await this.loadLocalCatalog();
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, RESTORE_CATALOG_RETRY_MS));
+      }
     }
     const yaml = usableCatalogYaml(body?.course_catalog_yaml);
     if (yaml === undefined) {
