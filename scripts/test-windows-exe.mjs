@@ -111,7 +111,8 @@ export async function sandbox() {
 }
 
 async function allFiles(root) { const result = []; for (const d of await fs.readdir(root, { withFileTypes: true })) { const p = path.join(root, d.name); if (d.isDirectory()) result.push(...await allFiles(p)); else if (d.isFile()) result.push(p); } return result; }
-async function assertPrivateDisk(root) { for (const filename of await allFiles(root)) { const data = await fs.readFile(filename); for (const secret of sensitive) safeAssert(!data.includes(Buffer.from(secret)), `Sensitive data found in sandbox file ${path.relative(root, filename)}`); } }
+// A file can vanish between listing and reading (PowerShell's own policy-test temp files do); a gone file holds no secret.
+async function assertPrivateDisk(root) { for (const filename of await allFiles(root)) { const data = await fs.readFile(filename).catch(error => { if (error.code === 'ENOENT') return Buffer.alloc(0); throw error; }); for (const secret of sensitive) safeAssert(!data.includes(Buffer.from(secret)), `Sensitive data found in sandbox file ${path.relative(root, filename)}`); } }
 function assertPrivateOutput(text) { for (const secret of sensitive) safeAssert(!text.includes(secret), 'Sensitive data found in child output'); }
 
 async function startExe(exe, box, router, port, overrides = {}) {
