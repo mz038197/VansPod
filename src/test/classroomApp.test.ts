@@ -14,6 +14,7 @@ import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
 import { sendRouter } from "../modelProxy";
 import type { CommandResult } from "../commandRunner";
 import { fixture, withFakeRouter } from "./fakeRouter";
+import { ClassroomKeyExpiredError } from "../routerSessionModels";
 import {
   ClassroomApp,
   type EnvironmentInstallLog,
@@ -735,6 +736,62 @@ it("refuses client classroom switches without models and resets both after allow
   assert.deepEqual(h.app.view().clientModes, { codex: "native", claude: "native" });
   assert.deepEqual(h.app.view().allowedModels, []);
   assert.equal(h.modelOptions(), null);
+});
+
+it("an expired Classroom API Key on Reload tells the student to redeem a new invite code", async () => {
+  let expired = false;
+  const h = harness(undefined, {
+    sessionModels: async () => { if (expired) throw new ClassroomKeyExpiredError(); return ["lesson"]; },
+    catalogFetch: async () => { if (expired) throw new ClassroomKeyExpiredError(); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  expired = true;
+  await h.app.reloadCatalog();
+  await h.app.reloadAllowlist();
+  const page = renderPage(h.app.view());
+  assert.match(page, /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+  assert.doesNotMatch(page, /重新載入課堂模型失敗|遠端清單不可用|找不到 classroom-installs.yaml/);
+});
+
+it("an expired Classroom API Key seen only by the course catalog still tells the student to redeem again", async () => {
+  let expired = false;
+  const h = harness(undefined, {
+    catalogFetch: async () => { if (expired) throw new ClassroomKeyExpiredError(); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  expired = true;
+  await h.app.reloadCatalog();
+  await h.app.reloadAllowlist();
+  assert.match(renderPage(h.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+});
+
+it("redeeming a new invite code after the Classroom API Key expired clears the expiry message", async () => {
+  let expired = false;
+  const h = harness(undefined, {
+    sessionModels: async () => { if (expired) throw new ClassroomKeyExpiredError(); return ["lesson"]; },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  expired = true;
+  await h.app.reloadAllowlist();
+  expired = false;
+  await h.app.redeem("NEXT", "Student");
+  await h.app.reloadAllowlist();
+  assert.doesNotMatch(renderPage(h.app.view()), /Classroom API Key 已過期/);
+});
+
+it("a Classroom API Key that expired while VansPod was closed is explained as soon as VansPod opens", async () => {
+  const disk = persistentStorageFake();
+  await disk.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Demo" }, nickname: "Student", mode: "native" });
+  const h = harness(undefined, {
+    storage: createPersistentConnectionStorage(disk),
+    sessionModels: async () => { throw new ClassroomKeyExpiredError(); },
+    catalogFetch: async () => { throw new ClassroomKeyExpiredError(); },
+  });
+  await h.app.start();
+  assert.match(renderPage(h.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
 });
 
 it("detects clients on startup and refresh without treating probe failure as a connection failure", async () => {

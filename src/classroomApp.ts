@@ -20,6 +20,7 @@ import {
 import type { CommandResult } from "./commandRunner";
 import type { CodexRouteOptions, DetectedRouteClients } from "./routeFiles";
 import { isCodexSearch } from "./modelProxy";
+import { ClassroomKeyExpiredError } from "./routerSessionModels";
 
 export type NicknameRedeemResult = {
   api_key: string;
@@ -253,6 +254,7 @@ export type ClassroomAppView = {
 
 const LOCAL_LIST_NOTE = "這是本機清單。";
 export const COPIED_KEY_NOTICE = "已複製 Classroom API Key。請勿分享給不信任的人。";
+const KEY_EXPIRED_NOTICE = "Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。";
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
@@ -313,6 +315,8 @@ export class ClassroomApp {
   private mustRestart: MustRestartClient[] = [];
   private modelRestart: MustRestartClient[] = [];
   private allowlistError: string | undefined;
+  // Router said this Classroom API Key expired; only a new redeem or Clear resets it.
+  private keyExpired = false;
   private routeRestartNoted = false;
   private vsCodeOrigin: string | undefined;
   private sending = new Map<ProxyClient, string>();
@@ -1017,6 +1021,7 @@ export class ClassroomApp {
     this.modelIds = [];
     this.modelProviders = [];
     this.allowlistError = undefined;
+    this.keyExpired = false;
     this.forgetModelChoices();
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -1550,9 +1555,8 @@ export class ClassroomApp {
     }
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     const refreshed = await this.loadModels(apiKey);
-    this.allowlistError = refreshed
-      ? undefined
-      : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
+    if (this.keyExpired) this.allowlistError = KEY_EXPIRED_NOTICE;
+    else this.allowlistError = refreshed ? undefined : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     if (previous !== current) {
       this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
@@ -1573,7 +1577,8 @@ export class ClassroomApp {
     let payload: string[] | VsCodeProvider[];
     try {
       payload = await this.deps.router.fetchSessionModels(apiKey);
-    } catch {
+    } catch (error) {
+      if (error instanceof ClassroomKeyExpiredError) this.keyExpired = true;
       return false;
     }
     if (!Array.isArray(payload)) return false;
@@ -1734,6 +1739,7 @@ export class ClassroomApp {
     this.connectionDraft = undefined;
     this.notice = undefined;
     this.allowlistError = undefined;
+    this.keyExpired = false;
     this.catalog = undefined;
     this.catalogError = undefined;
     this.remoteCatalogHeld = false;
@@ -1871,6 +1877,7 @@ export class ClassroomApp {
     this.mode = "native";
     await this.loadCatalog();
     await this.loadModels(connection.apiKey);
+    if (this.keyExpired) this.allowlistError = KEY_EXPIRED_NOTICE;
     if (connection.mode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
       this.clientModes = connection.clientModes ?? { codex: "classroom", claude: "classroom" };
@@ -1955,7 +1962,9 @@ export class ClassroomApp {
     let body: { course_catalog_yaml?: unknown };
     try {
       body = await this.deps.catalog.fetchCourseCatalog(apiKey);
-    } catch {
+    } catch (error) {
+      // The expired key is reported with the allowlist; the last catalog stays on screen.
+      if (error instanceof ClassroomKeyExpiredError) { this.keyExpired = true; return; }
       await this.loadLocalCatalog();
       return;
     }
