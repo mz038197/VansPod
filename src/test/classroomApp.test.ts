@@ -4705,3 +4705,109 @@ it("a Classroom API Key refused while VansPod restarts is not retried", async ()
   assert.equal(attempts, 1);
   assert.match(renderPage(restarted.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
 });
+
+describe("Session Model Allowlist while VansPod restarts", () => {
+  type SavedRoutes = Awaited<ReturnType<ClientRouteSettingsStorage["load"]>>;
+  const classroomRoutes = (): SavedRoutes => ({
+    codex: { mode: "classroom", adapter: "responses" },
+    claudeCode: { mode: "classroom", adapter: "responses" },
+    vsCodeChat: { mode: "classroom", adapter: "responses" },
+  });
+  async function restartedClassroom(sessionModels: () => Promise<string[]>, codexHealth: () => "green" | "red" = () => "green") {
+    const storage = createConnectionStorage(createMemorySecureStorage());
+    const first = harness(undefined, { storage });
+    await first.app.start();
+    await first.app.redeem("DEMO", "Student");
+    let saved = classroomRoutes();
+    const runtime: ClientRouteRuntime = {
+      async start(route) { return { route, health: route === "codex" ? codexHealth() : "green", origin: `http://127.0.0.1:${route === "claudeCode" ? 47822 : route === "vsCodeChat" ? 47823 : 47821}` }; },
+      async stop() {},
+    };
+    const h = harness(undefined, {
+      storage,
+      sessionModels,
+      detectClient: async () => true,
+      clientRouteRuntime: runtime,
+      clientRouteSettings: {
+        async load() { return structuredClone(saved); },
+        async save(next) { saved = structuredClone(next); },
+      },
+      vsCodeRouteSettings: {
+        async initializeNative() { return { changed: false }; },
+        async publish() { return { changed: false }; },
+        async restore() { return { changed: false }; },
+      },
+    });
+    await h.app.start();
+    return { h, savedModes: () => Object.fromEntries(Object.entries(saved).map(([id, route]) => [id, route.mode])) };
+  }
+  const modes = (h: ReturnType<typeof harness>) =>
+    Object.fromEntries(Object.entries(h.app.view().clientRoutes ?? {}).map(([id, route]) => [id, route.mode]));
+  const allClassroom = { codex: "classroom", claudeCode: "classroom", vsCodeChat: "classroom" };
+
+  it("models that fail once are fetched again and every Client Route returns to Classroom", async () => {
+    let attempts = 0;
+    const { h } = await restartedClassroom(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("session models failed");
+      return ["lesson"];
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(h.app.view().allowedModels, ["lesson"]);
+    assert.deepEqual(modes(h), allClassroom);
+  });
+
+  it("models that never load tell the student to press Update and keep every saved Classroom choice", async () => {
+    const { h, savedModes } = await restartedClassroom(async () => { throw new Error("session models failed"); });
+    assert.match(renderPage(h.app.view()), /無法載入課堂模型，請按「↻ 更新」再試。/);
+    assert.deepEqual(modes(h), { codex: "native", claudeCode: "native", vsCodeChat: "native" });
+    assert.deepEqual(savedModes(), allClassroom);
+  });
+
+  it("pressing Update once models load returns every Client Route the student left alone to Classroom", async () => {
+    let online = false;
+    const { h, savedModes } = await restartedClassroom(async () => {
+      if (!online) throw new Error("session models failed");
+      return ["lesson"];
+    });
+    await h.app.setSwitch("native", "claude");
+    online = true;
+    await h.app.reloadAllowlist();
+    assert.deepEqual(modes(h), { codex: "classroom", claudeCode: "native", vsCodeChat: "classroom" });
+    assert.deepEqual(savedModes(), { codex: "classroom", claudeCode: "native", vsCodeChat: "classroom" });
+    assert.doesNotMatch(renderPage(h.app.view()), /無法載入課堂模型/);
+  });
+
+  it("a Client Route the student switches to Native while models are missing stays Native after a restart", async () => {
+    const { h, savedModes } = await restartedClassroom(async () => { throw new Error("session models failed"); });
+    await h.app.setSwitch("native", "claude");
+    assert.deepEqual(savedModes(), { codex: "classroom", claudeCode: "native", vsCodeChat: "classroom" });
+  });
+
+  it("a Client Route the student tries to switch to Classroom before models load still returns on Update", async () => {
+    let online = false;
+    const { h } = await restartedClassroom(async () => {
+      if (!online) throw new Error("session models failed");
+      return ["lesson"];
+    });
+    await h.app.setSwitch("classroom", "codex");
+    online = true;
+    await h.app.reloadAllowlist();
+    assert.deepEqual(modes(h), allClassroom);
+  });
+
+  it("a Client Route that turned red stays Native on Update without a misleading notice", async () => {
+    let online = false;
+    let codexHealth: "green" | "red" = "green";
+    const { h, savedModes } = await restartedClassroom(async () => {
+      if (!online) throw new Error("session models failed");
+      return ["lesson"];
+    }, () => codexHealth);
+    codexHealth = "red";
+    online = true;
+    await h.app.reloadAllowlist();
+    assert.deepEqual(modes(h), { codex: "native", claudeCode: "classroom", vsCodeChat: "classroom" });
+    assert.deepEqual(savedModes(), { codex: "native", claudeCode: "classroom", vsCodeChat: "classroom" });
+    assert.doesNotMatch(renderPage(h.app.view()), /目前無法切換 Classroom/);
+  });
+});

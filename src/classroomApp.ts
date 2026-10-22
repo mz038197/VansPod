@@ -5,6 +5,7 @@ import type { AdapterClient, AdapterId } from "./adapters";
 import {
   defaultClientRoutes,
   type ClientRouteHealth,
+  type ClientRouteId,
   type ClientRouteRestartState,
   type ClientRoutes,
   type ClientRouteSettingsStorage,
@@ -35,6 +36,7 @@ export type NicknameRedeemResult = {
 export type ModelSwitchMode = "native" | "classroom";
 export type ClientModes = Record<AdapterClient, ModelSwitchMode>;
 type ClientControl = AdapterClient | "vscode";
+const CLIENT_ROUTE_OF: Record<ClientControl, ClientRouteId> = { codex: "codex", claude: "claudeCode", vscode: "vsCodeChat" };
 
 // 新工具加在最後，不改既有 id。
 export const ENVIRONMENT_TOOLS = ["uv", "git", "node", "pwsh", "vscode"] as const;
@@ -258,8 +260,9 @@ const KEY_REJECTED_NOTICE: Record<ClassroomKeyRejection, string> = {
   expired: "Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。",
   invalid: "Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。",
 };
-const RESTORE_CATALOG_ATTEMPTS = 3;
-const RESTORE_CATALOG_RETRY_MS = 1_000;
+const MODELS_UNLOADED_NOTICE = "無法載入課堂模型，請按「↻ 更新」再試。";
+const RESTORE_FETCH_ATTEMPTS = 3;
+const RESTORE_FETCH_RETRY_MS = 1_000;
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
 const ENVIRONMENT_ABORTED = "已中止安裝。系統安裝程式可能仍在執行，請等待結束或稍後重新安裝。";
 const PROXY_CLIENTS: ProxyClient[] = ["codex", "claude", "copilot"];
@@ -322,6 +325,11 @@ export class ClassroomApp {
   private allowlistError: string | undefined;
   // Router refused this Classroom API Key; only a new redeem or Clear resets it.
   private keyRejection: ClassroomKeyRejection | undefined;
+  // 啟動時抓不到 Session Model Allowlist 而暫時退回 Native 的 Client Route；設定檔仍保留 Classroom，
+  // 「更新」抓到模型後切回去。學生自己切換或換堂後就不再代為恢復。
+  private classroomAwaitingModels = new Set<ClientRouteId>();
+  // 恢復 Classroom Connection 時重試後仍抓不到 Session Model Allowlist；和老師沒開放任何模型不同。
+  private allowlistUnloaded = false;
   private routeRestartNoted = false;
   private vsCodeOrigin: string | undefined;
   private sending = new Map<ProxyClient, string>();
@@ -1027,6 +1035,8 @@ export class ClassroomApp {
     this.modelProviders = [];
     this.allowlistError = undefined;
     this.keyRejection = undefined;
+    this.allowlistUnloaded = false;
+    this.classroomAwaitingModels.clear();
     this.forgetModelChoices();
     this.catalog = undefined;
     this.catalogError = undefined;
@@ -1111,6 +1121,13 @@ export class ClassroomApp {
   }
 
   private async setClientSwitch(mode: ModelSwitchMode, client: ClientControl): Promise<void> {
+    // 學生自己選了 Native，就不再代為恢復啟動前的 Classroom；路由此時已是 Native，只差存檔。
+    // 選 Classroom 則照常切換，抓不到模型被拒時仍等「更新」恢復。
+    const route = CLIENT_ROUTE_OF[client];
+    if (mode === "native" && this.classroomAwaitingModels.delete(route)) {
+      try { await this.saveClientRoutePreferences(); } catch { this.notice = "無法儲存 Native 模式，重新啟動仍可能恢復 Classroom；請重試。"; }
+      return;
+    }
     if (client === "vscode") {
       await this.setVsCodeClientRouteSwitch(mode);
       return;
@@ -1347,11 +1364,33 @@ export class ClassroomApp {
   }
 
   private async saveClientRoutePreferences(): Promise<void> {
+    const savedMode = (id: ClientRouteId) => this.classroomAwaitingModels.has(id) ? "classroom" : this.clientRoutes[id].mode;
     await this.deps.clientRouteSettings?.save({
-      codex: { mode: this.clientRoutes.codex.mode, adapter: this.clientRoutes.codex.adapter },
-      claudeCode: { mode: this.clientRoutes.claudeCode.mode, adapter: this.clientRoutes.claudeCode.adapter },
-      vsCodeChat: { mode: this.clientRoutes.vsCodeChat.mode, adapter: this.clientRoutes.vsCodeChat.adapter },
+      codex: { mode: savedMode("codex"), adapter: this.clientRoutes.codex.adapter },
+      claudeCode: { mode: savedMode("claudeCode"), adapter: this.clientRoutes.claudeCode.adapter },
+      vsCodeChat: { mode: savedMode("vsCodeChat"), adapter: this.clientRoutes.vsCodeChat.adapter },
     });
+  }
+
+  private noteClassroomAwaitingModels(route: ClientRouteId): void {
+    if (this.connected && this.allowlistUnloaded) this.classroomAwaitingModels.add(route);
+  }
+
+  /** 「更新」抓到 Session Model Allowlist 後，把啟動時暫時退回 Native 的 Client Route 切回 Classroom。 */
+  // 老師沒開放任何模型、或路由已紅燈／灰燈時不切回；紅燈恢復後仍須學生自己切入 Classroom（ADR-0006）。
+  private async resumeClassroomAwaitingModels(): Promise<void> {
+    const waiting = [...this.classroomAwaitingModels];
+    if (waiting.length === 0) return;
+    this.classroomAwaitingModels.clear();
+    for (const route of waiting) {
+      const health = this.clientRoutes[route].health;
+      if (this.modelIds.length === 0 || health === "red" || health === "gray") continue;
+      if (route === "codex") await this.setCodexClientRouteSwitch("classroom");
+      else if (route === "claudeCode") await this.setClaudeCodeClientRouteSwitch("classroom");
+      else await this.setVsCodeClientRouteSwitch("classroom");
+    }
+    // 沒切回的路由此時才把 Native 寫進設定檔。
+    try { await this.saveClientRoutePreferences(); } catch { /* Route state stays visible; the next save retries. */ }
   }
 
   private async startCodexRoute(): Promise<void> {
@@ -1381,6 +1420,7 @@ export class ClassroomApp {
     }
     lifecycle = this.codexLifecycle(); // start() supplied the route's authoritative origin.
     if (this.clientRoutes.codex.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.noteClassroomAwaitingModels("codex");
       lifecycle.setMode("native");
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
@@ -1451,6 +1491,7 @@ export class ClassroomApp {
         });
         this.settleVsCodePublish(result?.changed);
       } else {
+        if (this.clientRoutes.vsCodeChat.mode === "classroom") this.noteClassroomAwaitingModels("vsCodeChat");
         this.clientRoutes.vsCodeChat.mode = "native";
         await this.deps.vsCodeRouteSettings?.initializeNative();
         this.clientRoutes.vsCodeChat.health = "green";
@@ -1502,6 +1543,7 @@ export class ClassroomApp {
       return;
     }
     if (route.mode === "classroom" && (!this.connected || this.modelIds.length === 0)) {
+      this.noteClassroomAwaitingModels("claudeCode");
       route.mode = "native";
       try { await this.saveClientRoutePreferences(); } catch { /* Native remains the safe runtime state. */ }
     }
@@ -1569,7 +1611,12 @@ export class ClassroomApp {
     const previous = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     const refreshed = await this.loadModels(apiKey);
     if (this.keyRejection) this.showKeyRejection(this.keyRejection);
-    else this.allowlistError = refreshed ? undefined : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
+    else if (refreshed) this.allowlistError = undefined;
+    else this.allowlistError = this.allowlistUnloaded ? MODELS_UNLOADED_NOTICE : "重新載入課堂模型失敗，已保留上次成功的模型清單。";
+    if (refreshed) {
+      this.allowlistUnloaded = false;
+      await this.resumeClassroomAwaitingModels();
+    }
     const current = this.mode === "classroom" ? this.modelIds.join("\0") : "";
     if (previous !== current) {
       this.modelRestart = (["codex", "claude"] as const).filter(client => this.clientModes[client] === "classroom");
@@ -1586,10 +1633,10 @@ export class ClassroomApp {
     }
   }
 
-  private async loadModels(apiKey: string): Promise<boolean> {
+  private async loadModels(apiKey: string, attempts = 1): Promise<boolean> {
     let payload: string[] | VsCodeProvider[];
     try {
-      payload = await this.deps.router.fetchSessionModels(apiKey);
+      payload = await fetchWithRetries(attempts, () => this.deps.router.fetchSessionModels(apiKey));
     } catch (error) {
       if (error instanceof ClassroomKeyRejectedError) this.keyRejection = error.reason;
       return false;
@@ -1753,6 +1800,8 @@ export class ClassroomApp {
     this.notice = undefined;
     this.allowlistError = undefined;
     this.keyRejection = undefined;
+    this.allowlistUnloaded = false;
+    this.classroomAwaitingModels.clear();
     this.catalog = undefined;
     this.catalogError = undefined;
     this.remoteCatalogHeld = false;
@@ -1888,10 +1937,15 @@ export class ClassroomApp {
     this.hiddenKeys.add(connection.apiKey);
     this.applyConnectionIdentity(connection);
     this.mode = "native";
-    // 版本更新後重新啟動時網路可能還沒穩；恢復 Classroom Connection 時抓不到 Course Catalog 就稍候再試，才退回本機的 classroom-installs.yaml。
-    await this.loadCatalog(RESTORE_CATALOG_ATTEMPTS);
-    await this.loadModels(connection.apiKey);
+    // 版本更新後重新啟動時網路可能還沒穩；恢復 Classroom Connection 時抓不到 Course Catalog
+    // 或 Session Model Allowlist 就稍候再試，才退回本機的 classroom-installs.yaml 或 Native。
+    await this.loadCatalog(RESTORE_FETCH_ATTEMPTS);
+    const modelsLoaded = await this.loadModels(connection.apiKey, RESTORE_FETCH_ATTEMPTS);
     if (this.keyRejection) this.showKeyRejection(this.keyRejection);
+    else if (!modelsLoaded) {
+      this.allowlistUnloaded = true;
+      this.allowlistError = MODELS_UNLOADED_NOTICE;
+    }
     if (connection.mode === "classroom" && this.modelIds.length > 0) {
       this.mode = "classroom";
       this.clientModes = connection.clientModes ?? { codex: "classroom", claude: "classroom" };
@@ -1974,19 +2028,13 @@ export class ClassroomApp {
       return;
     }
     let body: { course_catalog_yaml?: unknown };
-    for (let attempt = 1; ; attempt++) {
-      try {
-        body = await this.deps.catalog.fetchCourseCatalog(apiKey);
-        break;
-      } catch (error) {
-        // The refused key is reported with the allowlist; the last catalog stays on screen.
-        if (error instanceof ClassroomKeyRejectedError) { this.keyRejection = error.reason; return; }
-        if (attempt >= attempts) {
-          await this.loadLocalCatalog();
-          return;
-        }
-        await new Promise(resolve => setTimeout(resolve, RESTORE_CATALOG_RETRY_MS));
-      }
+    try {
+      body = await fetchWithRetries(attempts, () => this.deps.catalog.fetchCourseCatalog(apiKey));
+    } catch (error) {
+      // The refused key is reported with the allowlist; the last catalog stays on screen.
+      if (error instanceof ClassroomKeyRejectedError) { this.keyRejection = error.reason; return; }
+      await this.loadLocalCatalog();
+      return;
     }
     const yaml = usableCatalogYaml(body?.course_catalog_yaml);
     if (yaml === undefined) {
@@ -2029,6 +2077,18 @@ export class ClassroomApp {
     }
     this.catalog = catalogView(parsed.actions, parsed.snippets, "local");
     this.catalogError = undefined;
+  }
+}
+
+/** 失敗時稍候再試，最多 attempts 次；Router 拒絕 Classroom API Key 時再試也沒用，立刻放棄。 */
+async function fetchWithRetries<T>(attempts: number, fetch: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetch();
+    } catch (error) {
+      if (error instanceof ClassroomKeyRejectedError || attempt >= attempts) throw error;
+      await new Promise(resolve => setTimeout(resolve, RESTORE_FETCH_RETRY_MS));
+    }
   }
 }
 

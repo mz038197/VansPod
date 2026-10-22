@@ -14,6 +14,7 @@ Claude Code 的 ANTHROPIC_BASE_URL 在移除本機代理網址後再次被寫回
 - 使用者將該客戶端切回 Native 時，恢復進入 Classroom 前的原設定；原本未設定的欄位恢復為未設定，不以刪除所有個人設定取代恢復。
 - 延續現有每個客戶端獨立切換的規則，切換 Codex 不改變 Claude 的選擇，反之亦然。
 - Q1 已確認：啟動沿用每個客戶端上次的模式；上次是 Classroom 就保持 Classroom，上次是 Native 就不寫入課堂設定。Native 客戶端若仍有 VansPod 課堂設定殘留，啟動時須恢復其個人設定。恢復原有 Classroom 仍須符合有效課堂連線與可用模型條件。
+- 2026-10-22 補充：啟動時若重試後仍抓不到 Session Model Allowlist（不是老師沒開放模型，也不是 Classroom API Key 被拒），上次為 Classroom 的 Client Route 暫時以 Native 執行，但設定檔保留 Classroom，畫面請學生按「↻ 更新」。之後「更新」抓到模型，視為延後完成的啟動恢復，切回 Classroom；學生在這之前自己切到 Native、或該路由已紅燈／灰燈時不切回（紅燈依 ADR-0006 須學生自行切入）。
 - Q2 已確認：Claude 的接管與恢復同時涵蓋終端 CLI 與 VS Code Claude 擴充；進入 Classroom 前保存原值，返回 Native 恢復原值，原本不存在的欄位才移除。
 - Q4 已確認：接管期間由使用者或其他程式修改的設定必須保留；恢復只針對仍由 VansPod 接管的欄位，不整份覆蓋個人設定檔。
 - Q5 已確認：成功保存原設定備份後才能接管；恢復失敗時保留備份供重試，明確顯示失敗，不宣稱已恢復。
