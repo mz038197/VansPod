@@ -34,7 +34,8 @@ import { createClientRouteSettingsStorage } from "./clientRoutes";
 import { createClientRouteRuntime, type AcceptedClientRoute } from "./clientRouteRuntime";
 import { createVsCodeRouteSettings, type VsCodeProvider } from "./vsCodeRouteSettings";
 import { forwardRouter, sendRouter, relayResponse } from "./modelProxy";
-import { ClassroomKeyExpiredError, fetchSessionModelProviders } from "./routerSessionModels";
+import { assertClassroomKeyAccepted } from "./classroomKeyRejection";
+import { fetchSessionModelProviders } from "./routerSessionModels";
 import { createClientTraffic } from "./clientTraffic";
 import { type Instance, saveInstance, releaseInstance, managementDirectory } from "./instance";
 import { asset, materializeAsset, openBrowser } from "./desktop";
@@ -167,7 +168,7 @@ async function fetchCourseCatalog(
       Authorization: `Bearer ${apiKey}`,
     },
   });
-  if (response.status === 401) throw new ClassroomKeyExpiredError();
+  await assertClassroomKeyAccepted(response);
   if (!response.ok) {
     throw new Error("course catalog failed");
   }

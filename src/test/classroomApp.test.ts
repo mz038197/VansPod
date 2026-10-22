@@ -14,7 +14,7 @@ import type { VsCodeRouteSettings } from "../vsCodeRouteSettings";
 import { sendRouter } from "../modelProxy";
 import type { CommandResult } from "../commandRunner";
 import { fixture, withFakeRouter } from "./fakeRouter";
-import { ClassroomKeyExpiredError } from "../routerSessionModels";
+import { ClassroomKeyRejectedError } from "../classroomKeyRejection";
 import {
   ClassroomApp,
   type EnvironmentInstallLog,
@@ -741,8 +741,8 @@ it("refuses client classroom switches without models and resets both after allow
 it("an expired Classroom API Key on Reload tells the student to redeem a new invite code", async () => {
   let expired = false;
   const h = harness(undefined, {
-    sessionModels: async () => { if (expired) throw new ClassroomKeyExpiredError(); return ["lesson"]; },
-    catalogFetch: async () => { if (expired) throw new ClassroomKeyExpiredError(); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+    sessionModels: async () => { if (expired) throw new ClassroomKeyRejectedError("expired"); return ["lesson"]; },
+    catalogFetch: async () => { if (expired) throw new ClassroomKeyRejectedError("expired"); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
   });
   await h.app.start();
   await h.app.redeem("DEMO", "Student");
@@ -757,7 +757,7 @@ it("an expired Classroom API Key on Reload tells the student to redeem a new inv
 it("an expired Classroom API Key seen only by the course catalog still tells the student to redeem again", async () => {
   let expired = false;
   const h = harness(undefined, {
-    catalogFetch: async () => { if (expired) throw new ClassroomKeyExpiredError(); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+    catalogFetch: async () => { if (expired) throw new ClassroomKeyRejectedError("expired"); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
   });
   await h.app.start();
   await h.app.redeem("DEMO", "Student");
@@ -767,10 +767,26 @@ it("an expired Classroom API Key seen only by the course catalog still tells the
   assert.match(renderPage(h.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
 });
 
+it("an invalid or disabled Classroom API Key on Reload tells the student to redeem a new invite code", async () => {
+  let refused = false;
+  const h = harness(undefined, {
+    sessionModels: async () => { if (refused) throw new ClassroomKeyRejectedError("invalid"); return ["lesson"]; },
+    catalogFetch: async () => { if (refused) throw new ClassroomKeyRejectedError("invalid"); return { course_catalog_yaml: "actions: []\nsnippets: []\n" }; },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  refused = true;
+  await h.app.reloadCatalog();
+  await h.app.reloadAllowlist();
+  const page = renderPage(h.app.view());
+  assert.match(page, /Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);
+  assert.doesNotMatch(page, /重新載入課堂模型失敗|遠端清單不可用|找不到 classroom-installs.yaml/);
+});
+
 it("redeeming a new invite code after the Classroom API Key expired clears the expiry message", async () => {
   let expired = false;
   const h = harness(undefined, {
-    sessionModels: async () => { if (expired) throw new ClassroomKeyExpiredError(); return ["lesson"]; },
+    sessionModels: async () => { if (expired) throw new ClassroomKeyRejectedError("expired"); return ["lesson"]; },
   });
   await h.app.start();
   await h.app.redeem("DEMO", "Student");
@@ -787,8 +803,8 @@ it("a Classroom API Key that expired while VansPod was closed is explained as so
   await disk.setConnection({ version: 1, apiKey: KEY, session: { class_name: "Demo" }, nickname: "Student", mode: "native" });
   const h = harness(undefined, {
     storage: createPersistentConnectionStorage(disk),
-    sessionModels: async () => { throw new ClassroomKeyExpiredError(); },
-    catalogFetch: async () => { throw new ClassroomKeyExpiredError(); },
+    sessionModels: async () => { throw new ClassroomKeyRejectedError("expired"); },
+    catalogFetch: async () => { throw new ClassroomKeyRejectedError("expired"); },
   });
   await h.app.start();
   assert.match(renderPage(h.app.view()), /Classroom API Key 已過期，請按「清除連線」，再用老師給的新邀請碼重新兌換。/);

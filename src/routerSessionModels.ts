@@ -1,14 +1,10 @@
+import { assertClassroomKeyAccepted } from "./classroomKeyRejection";
 import type { VsCodeProvider } from "./vsCodeRouteSettings";
 
 type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
-
-/** Router no longer accepts this Classroom API Key: the student has to redeem a new invite code. */
-export class ClassroomKeyExpiredError extends Error {
-  constructor() { super("Classroom API Key expired"); }
-}
 
 function isProviderRecord(value: unknown): value is VsCodeProvider {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -34,7 +30,7 @@ export async function fetchSessionModelProviders(options: {
       Authorization: `Bearer ${options.apiKey}`,
     },
   });
-  if (response.status === 401) throw new ClassroomKeyExpiredError();
+  await assertClassroomKeyAccepted(response);
   if (!response.ok) throw new Error("session models failed");
   const payload: unknown = await response.json();
   if (!Array.isArray(payload) || !payload.every(isProviderRecord)) {
