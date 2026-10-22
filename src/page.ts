@@ -18,6 +18,7 @@ import {
 import { CAPTURE_LIMIT, type CaptureList } from "./promptCapture";
 import { INSPECTOR_STYLES, inspectorBody, inspectorScript } from "./inspectorView";
 import { UPDATE_BUTTON, VERSION_UPDATE_STYLES } from "./versionUpdateView";
+import { POWER_MENU_STYLES, powerMenu, powerMenuScript } from "./powerMenuView";
 import {
   actionKindLabel,
   type InstallAction,
@@ -678,7 +679,7 @@ function sideMenu(current: PageId): string {
   const items = SIDE_PAGES.map((page) =>
     `<a class="side-item" href="${page.href}"${page.id === current ? ' aria-current="page"' : ""}>${page.icon}<span>${page.label}</span></a>`,
   ).join("");
-  return `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${BRAND}</div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">${BRAND}<nav aria-label="選單">${items}</nav><div class="side-foot"><button type="button" data-appearance-toggle aria-label="切換外觀"></button>${UPDATE_BUTTON}</div></header>`;
+  return `<div class="mobile-top"><button type="button" class="menu-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="side-menu"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>${BRAND}</div><button type="button" class="drawer-scrim" aria-label="關閉選單"></button><header class="bar" id="side-menu">${BRAND}<nav aria-label="選單">${items}</nav><div class="side-foot"><button type="button" data-appearance-toggle aria-label="切換外觀"></button>${UPDATE_BUTTON}${powerMenu(VERSION)}</div></header>`;
 }
 
 /** 兩頁共用的頁殼版面：側欄、行動版抽屜。 */
@@ -697,6 +698,7 @@ const SHELL_LAYOUT_STYLES = `
     .side-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .side-item svg { width: 18px; height: 18px; flex-shrink: 0; }
     ${VERSION_UPDATE_STYLES}
+    ${POWER_MENU_STYLES}
     .mobile-top, .drawer-scrim, .menu-toggle { display: none; }
     main { justify-self: center; width: min(52rem, 100%); }
     @media (max-width: 760px) {
@@ -761,7 +763,6 @@ function basePage(view: ClassroomAppView): string {
       ${tile("環境", environmentInner(view))}
       ${tile("指令", commandInner(view), true)}
       ${tile("課程", catalogTable(view), true)}
-      ${tile("離開", stopForm(), true)}
     </div>
   </main>
 </body>
@@ -1195,7 +1196,7 @@ export function renderPage(view: ClassroomAppView): string {
     main button.connection-clear:hover:not(:disabled) { color: light-dark(#b91c1c, #f87171); }
     ${classroomUpdateStyles}
   </style>
-  <script>${drawerScript()}${installProgressScript}${environmentProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
+  <script>${drawerScript()}${powerMenuScript}${installProgressScript}${environmentProgressScript}${snippetCopyScript()}${courseSectionScript()}${connectionMascotScript}${classroomUpdateScript}${settingsActionsScript}${modelStatusScript}
   </script>`;
   return html.replace("</body>", `${extra}</body>`);
 }
@@ -1273,7 +1274,7 @@ export function renderInspectorPage(view: InspectorView): string {
     ${INSPECTOR_STYLES}
   </style>
   ${headPatrol.sheet}
-  <script>${drawerScript()}${connectionMascotScript}${headPatrol.script}${recorderActionsScript}${inspectorScript()}</script>
+  <script>${drawerScript()}${powerMenuScript}${connectionMascotScript}${headPatrol.script}${recorderActionsScript}${inspectorScript()}</script>
 </body>
 </html>`;
 }

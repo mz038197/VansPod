@@ -520,7 +520,8 @@ export async function main(instance?: Instance): Promise<void> {
         if (req.method === "GET" && pathname === "/_vanspod/update") { reply(await versionUpdate.status({ refresh: parsed.searchParams.get("refresh") === "1", takeResult: parsed.searchParams.get("result") === "1" })); return; }
         if (req.method === "POST" && pathname === "/_vanspod/update") { reply(await versionUpdate.run(JSON.parse(await readBody(req) || "{}") as { interruptConfirmed?: boolean })); return; }
         if (req.method === "GET" && pathname === "/_vanspod/uninstall-preview") {
-          reply({ ok: true, message: `${await removalPreview()}${removalInterruptions(exitWork())}` }); return;
+          const interruptions = removalInterruptions(exitWork());
+          reply({ ok: true, message: `${await removalPreview()}${interruptions}`, interruptions: interruptions.trim() }); return;
         }
         if (req.method === "POST" && (pathname === "/_vanspod/stop" || pathname === "/_vanspod/uninstall")) {
           const body = JSON.parse(await readBody(req)) as { confirmed?: boolean; interruptConfirmed?: boolean; waitForPid?: number };

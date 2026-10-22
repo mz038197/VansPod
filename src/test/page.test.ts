@@ -793,6 +793,31 @@ describe("Prompt 觀察室 page", () => {
     }
   });
 
+  it("drops the 離開 card and puts an icon-only 結束 VansPod button last in the side-menu foot, on both pages", () => {
+    for (const html of [renderPage(view()), renderInspectorPage({ recording: false, captures: [], dropped: 0 })]) {
+      assert.doesNotMatch(html, /<h2>離開<\/h2>/);
+      const menu = html.match(/<header class="bar" id="side-menu">[\s\S]*?<\/header>/)?.[0] ?? "";
+      const foot = menu.slice(menu.indexOf('<div class="side-foot">'));
+      const power = foot.match(/<button[^>]*data-power-toggle[^>]*>([\s\S]*?)<\/button>/);
+      assert.ok(power, "power button in the foot");
+      assert.ok(foot.indexOf("data-version-update") < foot.indexOf("data-power-toggle"));
+      assert.match(power[0], /aria-label="結束或移除 VansPod"/);
+      assert.match(power[0], /aria-expanded="false"/);
+      assert.doesNotMatch(power[1].replace(/<svg[\s\S]*?<\/svg>/g, ""), /[^\s<>]+(?![^<]*>)/, "icon only");
+    }
+  });
+
+  it("opens 結束 VansPod into a hidden panel that explains the effect and offers 取消 before 結束", () => {
+    const html = renderPage(view());
+    const panel = html.match(/<div class="power-panel"[^>]*>[\s\S]*?<!-- \/power-panel -->/)?.[0] ?? "";
+    assert.match(panel, /^<div class="power-panel"[^>]*\bhidden\b/);
+    assert.match(panel, /課堂資料保留/);
+    assert.match(panel, /<p class="power-message" role="status" data-lifecycle-message><\/p>/);
+    const cancel = panel.indexOf("data-power-close");
+    const stop = panel.indexOf('action="/stop"');
+    assert.ok(cancel !== -1 && stop !== -1 && cancel < stop, "取消 comes before 結束");
+  });
+
   it("offers 開始錄製 and 清除 while recording is off", () => {
     const html = renderInspectorPage({ recording: false, captures: [], dropped: 0 });
     const bar = html.match(/<section[^>]*class="tile pi-recorder"[\s\S]*?<\/section>/)?.[0] ?? "";

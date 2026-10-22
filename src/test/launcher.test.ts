@@ -60,6 +60,10 @@ test("start returns while one background service survives and repeated starts sh
     const mismatch = await (await fetch(`${second.origin}/_vanspod/status`, {headers: {Authorization: `Bearer ${runtime.token}`}})).json() as { launchVersion: string; version: string };
     assert.equal(mismatch.version, expectedVersion);
     assert.equal(mismatch.launchVersion, "0.0.9");
+    const preview = await (await fetch(`${second.origin}/_vanspod/uninstall-preview`, {headers: {Authorization: `Bearer ${runtime.token}`}})).json() as { ok: boolean; message: string; interruptions: string };
+    assert.equal(preview.ok, true);
+    assert.match(preview.message, /將刪除 VansPod/);
+    assert.equal(preview.interruptions, "", "nothing to abort while idle");
     const marker = path.join(home, "local", "VansPod", "uninstall-ready");
     await fs.writeFile(marker, JSON.stringify({pid: process.pid}));
     await assert.rejects(execute(process.execPath, [entry, "start"], {env}), /完整移除中/);
