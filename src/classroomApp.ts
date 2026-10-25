@@ -261,6 +261,7 @@ const KEY_REJECTED_NOTICE: Record<ClassroomKeyRejection, string> = {
   invalid: "Classroom API Key 已失效，請按「清除連線」，再用老師給的新邀請碼重新兌換。",
 };
 const MODELS_UNLOADED_NOTICE = "無法載入課堂模型，請按「↻ 更新」再試。";
+const VS_CODE_KEPT_NOTICE = "VS Code 的 VCRouter 已被修改，不再指向 VansPod，VansPod 沒有移除它。";
 const RESTORE_FETCH_ATTEMPTS = 3;
 const RESTORE_FETCH_RETRY_MS = 1_000;
 const INSTALL_UNAVAILABLE = "尚未指定專案資料夾，安裝不可用。";
@@ -1048,7 +1049,7 @@ export class ClassroomApp {
     this.notice = undefined;
     // Storage is committed: publish its identity before any client-file operation can fail.
     if (desiredVsCodeMode === "classroom") {
-      try { await this.deps.vsCodeRouteSettings?.restore(); }
+      try { await this.restoreVsCodeRoute(); }
       catch {
         this.clientRoutes.vsCodeChat.health = "red";
         try { await this.saveClientRoutePreferences(); } catch { /* Native/red remains authoritative in memory. */ }
@@ -1220,16 +1221,16 @@ export class ClassroomApp {
     route.mode = mode;
     try {
       await this.saveClientRoutePreferences();
+      this.notice = undefined;
       const result = mode === "classroom"
         ? await this.deps.vsCodeRouteSettings?.publish({ providers: this.modelProviders, adapter: route.adapter as "responses" | "chat", origin: this.vsCodeOrigin! })
-        : await this.deps.vsCodeRouteSettings?.restore();
+        : await this.restoreVsCodeRoute();
       if (mode === "classroom") this.settleVsCodePublish(result?.changed);
       else {
         route.health = "green";
         route.restart = "ready";
         if (result?.changed) this.noteModelRestart("vscode");
       }
-      this.notice = undefined;
     } catch (error) {
       this.clientRoutes.vsCodeChat = previous;
       try { await this.saveClientRoutePreferences(); } catch { /* Keep visible state. */ }
@@ -1472,7 +1473,7 @@ export class ClassroomApp {
     }
     if (retryingNativeRecovery) {
       try {
-        await this.deps.vsCodeRouteSettings?.restore();
+        await this.restoreVsCodeRoute();
         this.clientRoutes.vsCodeChat.health = "green";
         this.clientRoutes.vsCodeChat.restart = "ready";
       } catch {
@@ -1493,7 +1494,7 @@ export class ClassroomApp {
       } else {
         if (this.clientRoutes.vsCodeChat.mode === "classroom") this.noteClassroomAwaitingModels("vsCodeChat");
         this.clientRoutes.vsCodeChat.mode = "native";
-        await this.deps.vsCodeRouteSettings?.initializeNative();
+        if ((await this.deps.vsCodeRouteSettings?.initializeNative())?.kept) this.notice = VS_CODE_KEPT_NOTICE;
         this.clientRoutes.vsCodeChat.health = "green";
         this.clientRoutes.vsCodeChat.restart = "ready";
       }
@@ -1506,8 +1507,15 @@ export class ClassroomApp {
     try { await this.saveClientRoutePreferences(); } catch { /* Route health remains visible. */ }
   }
 
+  // 不再指向 VansPod 的 VCRouter 會留在 VS Code 裡，要讓學生知道（ADR-0005 2026-10-26 補充）。
+  private async restoreVsCodeRoute(): Promise<{ changed: boolean } | undefined> {
+    const result = await this.deps.vsCodeRouteSettings?.restore();
+    if (result?.kept) this.notice = VS_CODE_KEPT_NOTICE;
+    return result;
+  }
+
   private async failVsCodeRouteStart(): Promise<void> {
-    try { await this.deps.vsCodeRouteSettings?.restore(); } catch { /* Journal remains available for retry. */ }
+    try { await this.restoreVsCodeRoute(); } catch { /* Journal remains available for retry. */ }
     this.clientRoutes.vsCodeChat = { ...this.clientRoutes.vsCodeChat, mode: "native", health: "red", restart: "ready" };
     try { await this.saveClientRoutePreferences(); } catch { /* Visible red state wins. */ }
   }
@@ -1687,7 +1695,7 @@ export class ClassroomApp {
           }
         } catch { this.clientRoutes.claudeCode.health = "red"; }
         try {
-          await this.deps.vsCodeRouteSettings?.restore();
+          await this.restoreVsCodeRoute();
           if (this.clientRoutes.vsCodeChat.health !== "red") {
             this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
           }
@@ -1844,7 +1852,7 @@ export class ClassroomApp {
         this.clientRoutes.claudeCode.health = "red";
       }
       try {
-        await this.deps.vsCodeRouteSettings?.restore();
+        await this.restoreVsCodeRoute();
         if (this.clientRoutes.vsCodeChat.health !== "red") {
           this.clientRoutes.vsCodeChat.health = this.detectedClients.vsCodeChat ? "green" : "gray";
         }
@@ -1981,7 +1989,7 @@ export class ClassroomApp {
     }
     try {
       if (this.deps.clientRouteRuntime) {
-        await this.deps.vsCodeRouteSettings?.restore();
+        await this.restoreVsCodeRoute();
         await this.deps.clientRouteRuntime.stop("vsCodeChat");
       }
     } catch (error) {

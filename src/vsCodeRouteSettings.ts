@@ -26,8 +26,9 @@ function isJournal(value: unknown): value is Journal {
 
 export type VsCodeRouteSettings = {
   publish(options: { providers: VsCodeProvider[]; adapter: Extract<AdapterId, "responses" | "chat">; origin: string }): Promise<{ changed: boolean }>;
-  restore(): Promise<{ changed: boolean }>;
-  initializeNative(): Promise<{ changed: boolean }>;
+  /** `kept` 表示還有不屬於 VansPod 的 VCRouter，VansPod 沒有移除它。 */
+  restore(): Promise<{ changed: boolean; kept?: boolean }>;
+  initializeNative(): Promise<{ changed: boolean; kept?: boolean }>;
 };
 
 function asProviderArray(value: unknown): VsCodeProvider[] {
@@ -82,6 +83,16 @@ function namedIndexes(providers: VsCodeProvider[]): number[] {
     if (provider.name === "VCRouter") result.push(index);
   });
   return result;
+}
+
+// VansPod 的 provider 以代理網址辨認，不比對整份內容：VS Code 會自己加欄位（例如推理強度的 settings）。
+// 沒有模型可比網址時，只認得與寫入時完全相同的內容。
+function pointsAtVansPod(journal: Journal): (provider: VsCodeProvider) => boolean {
+  const urls = new Set((journal.intended.models ?? []).map(model => (model as { url?: unknown } | null)?.url).filter((url): url is string => typeof url === "string"));
+  return provider => isDeepStrictEqual(provider, journal.intended) ||
+    provider.name === "VCRouter" && provider.vendor === "customendpoint" &&
+    Array.isArray(provider.models) && provider.models.length > 0 &&
+    provider.models.every(model => !!model && typeof model === "object" && urls.has((model as { url?: unknown }).url as string));
 }
 
 function containsOldExtensionSecret(provider: VsCodeProvider): boolean {
@@ -140,18 +151,17 @@ function intendedProvider(template: VsCodeProvider, adapter: "responses" | "chat
 }
 
 export function createVsCodeRouteSettings(options: { settingsFile: string; journalFile: string; legacyOrigins?: string[] }): VsCodeRouteSettings {
-  const restore = async (): Promise<{ changed: boolean }> => {
+  // 只移除仍指向 VansPod 代理的 VCRouter；已被移除或改成別的網址的，視為不再由 VansPod 接管。
+  const restore = async (): Promise<{ changed: boolean; kept?: boolean }> => {
     const journal = await readJournal(options.journalFile);
     if (!journal) return { changed: false };
     const current = await readProviders(options.settingsFile);
-    const indexes = namedIndexes(current);
-    if (indexes.length !== 1 || !isDeepStrictEqual(current[indexes[0]!], journal.intended)) {
-      throw new Error("VS Code 的 VCRouter provider 已被其他程式修改，VansPod 不會覆寫。");
-    }
-    const next = current.filter((_provider, index) => index !== indexes[0]);
-    await atomicJson(options.settingsFile, next);
+    const owned = pointsAtVansPod(journal);
+    const next = current.filter(provider => !owned(provider));
+    const changed = next.length !== current.length;
+    if (changed) await atomicJson(options.settingsFile, next);
     await fs.rm(options.journalFile, { force: true });
-    return { changed: true };
+    return namedIndexes(next).length ? { changed, kept: true } : { changed };
   };
   return {
     async publish({ providers, adapter, origin }) {
@@ -160,15 +170,13 @@ export function createVsCodeRouteSettings(options: { settingsFile: string; journ
       const journal = await readJournal(options.journalFile);
       let original: VsCodeProvider | null = null;
       let next: VsCodeProvider[];
-      if (journal) {
-        const indexes = namedIndexes(current);
-        if (indexes.length !== 1 || !isDeepStrictEqual(current[indexes[0]!], journal.intended)) {
-          throw new Error("VS Code 的 VCRouter provider 已被其他程式修改，VansPod 不會覆寫。");
-        }
+      const existing = namedIndexes(current).map(index => current[index]!);
+      if (journal && existing.length === 1 && pointsAtVansPod(journal)(existing[0]!)) {
+        // VS Code 或學生加上的欄位（例如推理強度）保留；VansPod 寫過的欄位才覆寫。
+        const added = Object.fromEntries(Object.entries(existing[0]!).filter(([key]) => !(key in journal.intended) && !(key in intended)));
         original = journal.original;
-        next = current.map((provider, index) => index === indexes[0] ? intended : provider);
+        next = current.map(provider => provider === existing[0] ? { ...intended, ...added } : provider);
       } else {
-        const existing = namedIndexes(current).map(index => current[index]!);
         if (existing.some(containsOldExtensionSecret)) {
           throw new Error("偵測到舊擴充的 VCRouter provider。請先在舊擴充清除舊擴充的 Classroom Connection，再回到 VansPod 重新載入。");
         }

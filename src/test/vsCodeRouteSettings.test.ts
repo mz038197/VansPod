@@ -111,11 +111,73 @@ it("Native removes only the provider proven by its journal and preserves later p
 
   await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" });
   const edited = JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as Array<Record<string, unknown>>;
+  (edited[1]!.models as Array<Record<string, unknown>>)[0]!.url = "https://my-endpoint.example/v1";
+  await fs.writeFile(target.settingsFile, `${JSON.stringify(edited, null, 2)}\n`);
+  assert.deepEqual(await route.restore(), { changed: false, kept: true });
+  assert.deepEqual(JSON.parse(await fs.readFile(target.settingsFile, "utf8")), edited);
+  await assert.rejects(fs.stat(target.journalFile), /ENOENT/);
+});
+
+it("Native still removes the provider after VS Code adds its own fields to it", async () => {
+  const target = await files([{ name: "Personal", vendor: "openrouter" }]);
+  const route = createVsCodeRouteSettings(target);
+  await route.publish({ providers: [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "vcr-auto" }] }], adapter: "responses", origin: "http://127.0.0.1:47823" });
+  const edited = JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as Array<Record<string, unknown>>;
+  edited[1]!.settings = { "vcr-auto": { reasoningEffort: "none" } };
   (edited[1]!.models as Array<Record<string, unknown>>)[0]!.name = "My edit";
   await fs.writeFile(target.settingsFile, `${JSON.stringify(edited, null, 2)}\n`);
-  await assert.rejects(route.restore(), /已被其他程式修改/);
-  assert.equal(((JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as Array<Record<string, unknown>>)[1]!.models as Array<Record<string, unknown>>)[0]!.name, "My edit");
-  await fs.stat(target.journalFile);
+
+  assert.deepEqual(await route.restore(), { changed: true });
+  assert.deepEqual(JSON.parse(await fs.readFile(target.settingsFile, "utf8")), [{ name: "Personal", vendor: "openrouter" }]);
+  await assert.rejects(fs.stat(target.journalFile), /ENOENT/);
+});
+
+it("treats a provider already removed from VS Code as restored, and publishes it again as a first takeover", async () => {
+  const target = await files([]);
+  const route = createVsCodeRouteSettings(target);
+  const template = [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "vcr-auto" }] }];
+  await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" });
+  await fs.writeFile(target.settingsFile, "[]\n");
+
+  assert.deepEqual(await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" }), { changed: true });
+  assert.equal((JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as unknown[]).length, 1);
+  assert.equal((JSON.parse(await fs.readFile(target.journalFile, "utf8")) as Record<string, unknown>).original, null);
+
+  await fs.writeFile(target.settingsFile, "[]\n");
+  assert.deepEqual(await route.restore(), { changed: false });
+  assert.equal(await fs.readFile(target.settingsFile, "utf8"), "[]\n");
+  await assert.rejects(fs.stat(target.journalFile), /ENOENT/);
+});
+
+it("still recognizes an unchanged provider that has no models to compare addresses with", async () => {
+  const target = await files([]);
+  const route = createVsCodeRouteSettings(target);
+  const template = [{ name: "VCRouter", vendor: "customendpoint", models: [] }];
+  await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" });
+
+  assert.deepEqual(await route.publish({ providers: template, adapter: "chat", origin: "http://127.0.0.1:47823" }), { changed: true });
+  assert.deepEqual(await route.restore(), { changed: true });
+  assert.equal(await fs.readFile(target.settingsFile, "utf8"), "[]\n");
+});
+
+it("republishing keeps fields VS Code added and overwrites the ones VansPod wrote", async () => {
+  const target = await files([]);
+  const route = createVsCodeRouteSettings(target);
+  const template = [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "vcr-auto", vision: false }] }];
+  await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" });
+  const edited = JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as Array<Record<string, unknown>>;
+  edited[0]!.settings = { "vcr-auto": { reasoningEffort: "high" } };
+  await fs.writeFile(target.settingsFile, `${JSON.stringify(edited, null, 2)}\n`);
+
+  assert.deepEqual(await route.publish({ providers: template, adapter: "responses", origin: "http://127.0.0.1:47823" }), { changed: false });
+  const changed = [{ ...template[0]!, models: [{ id: "vcr-auto", vision: true }] }];
+  assert.deepEqual(await route.publish({ providers: changed, adapter: "chat", origin: "http://127.0.0.1:47823" }), { changed: true });
+
+  const written = (JSON.parse(await fs.readFile(target.settingsFile, "utf8")) as Array<Record<string, unknown>>)[0]!;
+  assert.deepEqual(written.settings, { "vcr-auto": { reasoningEffort: "high" } });
+  assert.equal(written.apiType, "chat");
+  assert.equal((written.models as Array<Record<string, unknown>>)[0]!.vision, true);
+  assert.equal(Object.hasOwn((JSON.parse(await fs.readFile(target.journalFile, "utf8")) as { intended: object }).intended, "settings"), false);
 });
 
 it("first Native initialization removes only the exact legacy VansPod localhost provider", async () => {

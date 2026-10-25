@@ -47,6 +47,7 @@ import { VERSION } from "./version";
 const runtimeOptions = readRuntimeOptions(process.env);
 const port = runtimeOptions.port;
 const pageUrl = `http://127.0.0.1:${port}/`;
+const CLIENT_ROUTE_LABELS: Record<string, string> = { codex: "Codex", claudeCode: "Claude Code", vsCodeChat: "VS Code Chat" };
 const responseSlot = new AsyncLocalStorage<{
   response?: Response;
 }>();
@@ -531,7 +532,7 @@ export async function main(instance?: Instance): Promise<void> {
             reply({ ok: true, message: uninstall ? "完整移除已開始；結果會以 Windows 訊息顯示。未完成時會保留移除工具供重試。" : "VansPod 已結束，可關閉此分頁。" });
             res.once("finish", () => { void exit(); });
           }
-          else reply({ ok: false, message: handed.restored ? `移除未完成：${handed.error instanceof Error ? handed.error.message : "移除工具啟動失敗"}。請重試移除。` : `客戶端設定恢復失敗（${Object.entries(app.view().clientRoutes ?? {}).filter(([, route]) => route.health === "red").map(([id]) => id).join("、")}），備份已保留，請重試結束。` });
+          else reply({ ok: false, message: handed.restored ? `移除未完成：${handed.error instanceof Error ? handed.error.message : "移除工具啟動失敗"}。請重試移除。` : `客戶端設定恢復失敗（${Object.entries(app.view().clientRoutes ?? {}).filter(([, route]) => route.health === "red").map(([id]) => CLIENT_ROUTE_LABELS[id] ?? id).join("、")}）：${handed.error instanceof Error ? handed.error.message : "原因不明"}。備份已保留，請重試結束。` });
           return;
         }
         reply({ ok: false, message: "管理操作無效。" }); return;

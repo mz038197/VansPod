@@ -1061,6 +1061,40 @@ it("switches VS Code independently, publishes its complete catalog, and becomes 
   await assert.rejects(h.app.forward({ client: "copilot", model: "lesson" }), /重開 VS Code/);
 });
 
+it("returns VS Code to Native and says so when it leaves a VCRouter that no longer points at VansPod", async () => {
+  let saved = {
+    codex: { mode: "native" as const, adapter: "responses" as const },
+    claudeCode: { mode: "native" as const, adapter: "responses" as const },
+    vsCodeChat: { mode: "native" as "native" | "classroom", adapter: "responses" as "responses" | "chat" },
+  };
+  const h = harness(undefined, {
+    detectClient: async client => client === "vsCodeChat",
+    clientRouteRuntime: {
+      async start(route) { return { route, health: "green", origin: "http://127.0.0.1:47823" }; },
+      async stop() {},
+    },
+    clientRouteSettings: {
+      async load() { return structuredClone(saved); },
+      async save(next) { saved = structuredClone(next) as typeof saved; },
+    },
+    sessionModels: async () => [{ name: "VCRouter", vendor: "customendpoint", models: [{ id: "lesson" }] }],
+    vsCodeRouteSettings: {
+      async initializeNative() { return { changed: false }; },
+      async publish() { return { changed: false }; },
+      async restore() { return { changed: false, kept: true }; },
+    },
+  });
+  await h.app.start();
+  await h.app.redeem("DEMO", "Student");
+  await h.app.setSwitch("classroom", "vscode");
+
+  await h.app.setSwitch("native", "vscode");
+
+  assert.equal(saved.vsCodeChat.mode, "native");
+  assert.equal(h.app.view().clientRoutes?.vsCodeChat.health, "green");
+  assert.match(h.app.view().notice ?? "", /VCRouter 已被修改.*沒有移除/);
+});
+
 it("marks only VS Code red when its listener collides", async () => {
   const runtime: ClientRouteRuntime = {
     async start(route) {
