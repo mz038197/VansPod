@@ -68,7 +68,7 @@ try {
   await fs.writeFile(box.paths.claude, '{invalid JSON');
   const failedStop = await manage('stop', {});
   assert.equal(failedStop.ok, false);
-  assert.match(failedStop.message, /claudeCode/);
+  assert.match(failedStop.message, /Claude Code/);
   assert.equal((await manage('status')).running, true);
   assert(await fs.stat(path.join(path.dirname(box.paths.claude), 'classroom-claude-code-settings-backup.json')));
   await fs.writeFile(box.paths.claude, classroomSettings);
