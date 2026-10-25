@@ -1,6 +1,6 @@
 {
   "name": "vanspod",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "bin": { "vanspod": "bin/vanspod.cjs" },
   "engines": { "node": ">=24" },
   "os": ["win32"],

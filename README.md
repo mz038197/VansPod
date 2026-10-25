@@ -38,7 +38,7 @@ npm run dist
 npm pack --pack-destination dist
 ```
 
-exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.4.7.tgz`；可在 Windows 用 `npm install -g <套件路徑>` 安裝測試。圖片、favicon、系統匣與移除腳本均包含在發佈產物中。更新 logo 後執行 `powershell.exe -NoProfile -File scripts/build-icon.ps1` 重建多尺寸 Windows icon。
+exe 產物為 `dist/VansPod.exe`，本機套件為 `dist/vanspod-0.4.8.tgz`；可在 Windows 用 `npm install -g <套件路徑>` 安裝測試。圖片、favicon、系統匣與移除腳本均包含在發佈產物中。更新 logo 後執行 `powershell.exe -NoProfile -File scripts/build-icon.ps1` 重建多尺寸 Windows icon。
 
 exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry 的 [`vanspod`](https://www.npmjs.com/package/vanspod) 套件。更新時不要執行完整移除，否則會清除課堂資料。
 
@@ -46,12 +46,12 @@ exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry 的 [`vans
 
 一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release，最後發佈 npm 套件。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。
 
-發版前同步 `package.json`、`package-lock.json` 與 `src/version.ts` 的版本；tag 必須等於 `v` 加版本號，否則流程失敗。以 `0.4.7` 為例：
+發版前同步 `package.json`、`package-lock.json` 與 `src/version.ts` 的版本；tag 必須等於 `v` 加版本號，否則流程失敗。以 `0.4.8` 為例：
 
 ```powershell
 git push origin master
-git tag -a v0.4.7 -m "VansPod 0.4.7"
-git push origin v0.4.7
+git tag -a v0.4.8 -m "VansPod 0.4.8"
+git push origin v0.4.8
 ```
 
 新版本使用新的版本號與 tag。相同 tag 的 Actions 重跑會更新該 Release 的產物。
