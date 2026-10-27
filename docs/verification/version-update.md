@@ -4,7 +4,7 @@
 
 ## 準備
 
-1. 把 `src/version.ts` 與 `package.json` 暫時改成 `0.2.1`，執行 `npm run dist`，把 `dist/VansPod.exe` 複製到 `<驗收>/release/v0.2.1/`，並在同一個資料夾產生 `SHA256SUMS.txt`（格式 `<sha256>  VansPod.exe`）。
+1. 把 `src/version.ts` 與 `package.json` 暫時改成 `0.2.1`，執行 `npm run dist`，把 `dist/VansPod.exe` 與 `dist/VansPod.exe.br` 複製到 `<驗收>/release/v0.2.1/`，並在同一個資料夾產生 `SHA256SUMS.txt`（每個檔案一行 `<sha256>  <檔名>`，與 `release.yml` 的 Create checksum 相同）。要驗沒有壓縮版的舊 Release 時，只放 `VansPod.exe` 並只列它那一行。
 2. 改回 `0.2.0`，再執行一次 `npm run dist`，把 `dist/VansPod.exe` 複製到 `<驗收>/student/`。確認 `git diff src/version.ts` 沒有變化。
 3. 在本機開一個 HTTP 服務：`/vanspod/latest` 回 `{"name":"vanspod","version":"0.2.1"}`，`/download/<路徑>` 回 `<驗收>/release/<路徑>` 的檔案。
 
@@ -25,7 +25,8 @@ VANSPOD_UPDATE_DOWNLOADS=http://127.0.0.1:48900/download \
 ## 預期結果
 
 - 頁面顯示「重新連線中…」，之後自動重新載入，版本標籤變成 v0.2.1，並短暫顯示「已更新到 v0.2.1」。不會另開新分頁。
-- `<驗收>/student/VansPod.exe` 的 SHA-256 等於 release 的 `SHA256SUMS.txt`，旁邊沒有 `.old` 或 `.new`。
+- `<驗收>/student/VansPod.exe` 的 SHA-256 等於 release 的 `SHA256SUMS.txt` 中 `VansPod.exe` 那一行，旁邊沒有 `.old` 或 `.new`。
+- HTTP 服務的紀錄只出現 `VansPod.exe.br` 的下載，沒有完整 `VansPod.exe`。
 - `<驗收>/home/local/VansPod/installations.json` 的 `sha256` 換成新 exe 的值，完整移除仍能辨認它。
 - `update-plan.json`、`update-ready`、`update-tool.ps1` 都已清掉；`update-result.json` 在頁面讀到結果後被刪除。
 

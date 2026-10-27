@@ -197,6 +197,44 @@ test("the new exe is downloaded next to the old one and kept only when SHA256SUM
   assert.deepEqual(await fs.readdir(folder), [], "a mismatching download is deleted");
 });
 
+test("when the release has a compressed exe, only that is downloaded; a broken one falls back to the full exe", async t => {
+  const { downloadExe } = await import("../versionUpdate");
+  const { createHash } = await import("node:crypto");
+  const { brotliCompressSync } = await import("node:zlib");
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "vanspod-download-"));
+  t.after(() => fs.rm(folder, { recursive: true, force: true }));
+  const file = path.join(folder, "VansPod.exe");
+  const exe = Buffer.from(Array.from({ length: 300_000 }, (_, index) => index % 251));
+  const packed = brotliCompressSync(exe);
+  const requested: string[] = [];
+  const exeHash = createHash("sha256").update(exe).digest("hex");
+  const release = (sums: string, compressed: Response | (() => Response) = () => new Response(packed, { headers: { "content-length": String(packed.length) } })): typeof fetch => async input => {
+    const name = String(input).split("/").at(-1)!;
+    requested.push(name);
+    if (name === "SHA256SUMS.txt") return new Response(sums);
+    if (name === "VansPod.exe.br") return typeof compressed === "function" ? compressed() : compressed;
+    return new Response(exe, { headers: { "content-length": String(exe.length) } });
+  };
+  const sums = (hash: string) => `${hash}  VansPod.exe\n${createHash("sha256").update(packed).digest("hex")}  VansPod.exe.br\n`;
+  const progress: number[] = [];
+  const good = await downloadExe("0.3.0", file, percent => progress.push(percent), release(sums(exeHash)));
+  assert.deepEqual(requested, ["SHA256SUMS.txt", "VansPod.exe.br"], "the full exe is not downloaded");
+  assert.deepEqual(await fs.readFile(good), exe);
+  assert.equal(progress.at(-1), 100);
+  await fs.rm(good);
+
+  for (const broken of [new Response(Buffer.from("not brotli")), new Response(null, { status: 404 })]) {
+    requested.length = 0;
+    const fallback = await downloadExe("0.3.0", file, () => {}, release(sums(exeHash), broken));
+    assert.deepEqual(requested, ["SHA256SUMS.txt", "VansPod.exe.br", "VansPod.exe"]);
+    assert.deepEqual(await fs.readFile(fallback), exe);
+    await fs.rm(fallback);
+  }
+
+  await assert.rejects(downloadExe("0.3.0", file, () => {}, release(sums("0".repeat(64)))), /驗證失敗/);
+  assert.deepEqual(await fs.readdir(folder), [], "when neither download matches, nothing is left behind");
+});
+
 test("after the restart the page can read how the last update ended, once", async t => {
   const registry = await fakeRegistry();
   t.after(registry.close);

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
+import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { createBrotliDecompress } from "node:zlib";
 import { startHiddenTool, writeTool } from "./desktop";
 import { exitDecision, type ExitWork } from "./exitGuard";
 import { managementDirectory } from "./instance";
@@ -73,13 +78,19 @@ function createUpdateChecker() {
   };
 }
 
-function checksumFor(sums: string, name: string): string {
+function listedChecksum(sums: string, name: string): string | undefined {
   for (const line of sums.split(/\r?\n/)) {
     const match = /^([a-f0-9]{64})\s+\*?(.+)$/i.exec(line.trim());
     if (match && match[2] === name) return match[1].toLowerCase();
   }
-  throw new Error(`SHA256SUMS.txt 沒有 ${name}`);
+  return undefined;
 }
+
+const EXE = "VansPod.exe";
+const COMPRESSED_EXE = "VansPod.exe.br";
+
+/** 讓每段資料經過時順手做一件事（算進度、算雜湊），資料原樣往下傳。 */
+const tap = (each: (chunk: Buffer) => void) => new Transform({ transform(chunk: Buffer, _encoding, done) { each(chunk); done(null, chunk); } });
 
 /** 從 GitHub Release 下載新版 exe 到原檔旁的 `.new`；SHA-256 不符就刪掉並失敗。 */
 export async function downloadExe(version: string, file: string, onProgress: (percent: number) => void, fetcher: typeof fetch = fetch): Promise<string> {
@@ -88,26 +99,32 @@ export async function downloadExe(version: string, file: string, onProgress: (pe
     if (!response.ok || !response.body) throw new Error(`下載 ${name} 失敗（${response.status}）`);
     return response;
   };
-  const expected = checksumFor(await (await get("SHA256SUMS.txt")).text(), "VansPod.exe");
-  const response = await get("VansPod.exe");
-  const total = Number(response.headers.get("content-length")) || 0;
+  const sums = await (await get("SHA256SUMS.txt")).text();
+  const expected = listedChecksum(sums, EXE);
+  if (!expected) throw new Error(`SHA256SUMS.txt 沒有 ${EXE}`);
   const target = `${file}.new`;
-  const hash = createHash("sha256");
-  const handle = await fs.open(target, "w");
-  let received = 0;
-  try {
-    const reader = response.body!.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      hash.update(value);
-      await handle.write(value);
-      received += value.length;
-      if (total) onProgress(Math.min(100, Math.floor(received * 100 / total)));
-    }
-  } finally { await handle.close(); }
-  if (hash.digest("hex") !== expected) { await fs.rm(target, { force: true }); throw new Error("下載的 VansPod.exe 驗證失敗，已刪除。"); }
-  return target;
+  const save = async (name: string, compressed: boolean) => {
+    const response = await get(name);
+    const total = Number(response.headers.get("content-length")) || 0;
+    const hash = createHash("sha256");
+    let received = 0;
+    try {
+      await pipeline([
+        Readable.fromWeb(response.body as WebReadableStream),
+        tap(chunk => { received += chunk.length; if (total) onProgress(Math.min(100, Math.floor(received * 100 / total))); }),
+        ...(compressed ? [createBrotliDecompress()] : []),
+        tap(chunk => hash.update(chunk)),
+        createWriteStream(target),
+      ]);
+    } catch (error) { await fs.rm(target, { force: true }); throw error; }
+    if (hash.digest("hex") !== expected) { await fs.rm(target, { force: true }); throw new Error(`下載的 ${EXE} 驗證失敗，已刪除。`); }
+    return target;
+  };
+  // 壓縮版只有完整 exe 的三分之一左右，驗證一律比對解壓後的 exe；舊 Release 沒列出它，或它下載、解壓、驗證任一步失敗，就改下載完整 exe。
+  if (listedChecksum(sums, COMPRESSED_EXE)) {
+    try { return await save(COMPRESSED_EXE, true); } catch {}
+  }
+  return save(EXE, false);
 }
 
 async function folderWritable(file: string): Promise<boolean> {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { builtinModules, createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -73,6 +74,23 @@ buildSea({
   icon: path.join(root, "media", "brand-icon.ico"),
 });
 process.stdout.write(`VansPod executable: ${exe}\n`);
+
+// 程式內更新下載這份壓縮版（約完整 exe 的三分之一）；品質 5 已接近最高壓縮率，壓縮卻快很多。
+const packed = `${exe}.br`;
+const exeBytes = fs.readFileSync(exe);
+const packedBytes = zlib.brotliCompressSync(exeBytes, {
+  params: {
+    [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+    [zlib.constants.BROTLI_PARAM_LGWIN]: 24,
+    [zlib.constants.BROTLI_PARAM_SIZE_HINT]: exeBytes.length,
+  },
+});
+if (!zlib.brotliDecompressSync(packedBytes).equals(exeBytes)) {
+  process.stderr.write("壓縮版 VansPod.exe 解壓後與原檔不同。\n");
+  process.exit(1);
+}
+fs.writeFileSync(packed, packedBytes);
+process.stdout.write(`VansPod compressed executable: ${packed}\n`);
 
 function buildSea({ main, blob, exe, assets, icon }) {
   const config = {

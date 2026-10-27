@@ -11,7 +11,7 @@ ADR-0008 讓學生自己下載新 exe 或執行 `npm i -g vanspod@<ver>`。實�
 - **只在學生按下時更新**：側欄底部的圓鈕平常就在，有新版時變藍色加小藍點。按下開確認對話框，列出目前與最新版本，以及實際要做的事（要取代哪個 exe，或要執行哪條 npm 指令）。從不在背景自動換版。
 - **一律以 npm registry 的 `vanspod@latest` 為準**：CI 最後才 `npm publish`，查得到就代表 GitHub Release 的 exe 也已發佈。只有一個通道。啟動 30 秒後檢查一次，之後每 6 小時一次，按下圓鈕時也會再檢查；查不到時不打擾學生。
 - **只更新正在執行的那一份**，依它的安裝方式自動決定：
-  - exe：先在 VansPod 還活著時下載同版號的 `VansPod.exe` 並以 `SHA256SUMS.txt` 驗證，放在原 exe 旁邊。
+  - exe：先在 VansPod 還活著時下載同版號的 exe 並以 `SHA256SUMS.txt` 驗證，放在原 exe 旁邊。Release 有 brotli 壓縮的 `VansPod.exe.br` 時下載它並在解壓後比對 `VansPod.exe` 的雜湊；沒有它或它失敗時才下載完整 `VansPod.exe`（2026-10-27 修訂）。
   - npm：以登記時的 node 與 npm 執行 `npm install -g vanspod@<確切版號>`。版號鎖死，避免查完到安裝之間 latest 又變了。
   - 原始碼執行：只顯示有新版，不更新。
 - **背景 PowerShell 接手**，跟完整移除同一套模式：VansPod 恢復客戶端設定、寫出計畫檔與 `update-tool.ps1`、啟動它後自己結束。工具等 VansPod 結束後才替換或安裝，再重新啟動並等新版回報就緒。
@@ -32,3 +32,7 @@ ADR-0008 讓學生自己下載新 exe 或執行 `npm i -g vanspod@<ver>`。實�
 - 更新會重新啟動 VansPod：Prompt 觀察室的紀錄清空，Client Route 依重新啟動的既有規則恢復。
 - exe 換檔後 SHA-256 改變；新版啟動時重新登記安裝，完整移除仍能辨認。
 - VansPod 一結束，頁面就無法得知工具的進度，所以畫面只顯示「重新連線中」，回來後才顯示結果。
+
+## 修訂
+
+2026-10-27 修訂 exe 下載。完整 `VansPod.exe` 約 98 MB，其中九成以上是內建的 Node runtime，學校網路下載很慢，而且每次發版學生按更新都要再下載一次。Release 改為另附 brotli（品質 5）壓縮的 `VansPod.exe.br`，約 32 MB；更新只下載這份。驗證仍比對解壓後的 `VansPod.exe` 雜湊，所以信任來源不變。舊 Release 的 `SHA256SUMS.txt` 沒列出壓縮版，或壓縮版下載、解壓、驗證失敗時，改下載完整 exe，不會因此無法更新。學生第一次下載仍用完整 exe，不需要自己解壓。

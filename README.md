@@ -44,7 +44,7 @@ exe 發佈管道為本專案 GitHub Releases，npm 為公開 registry 的 [`vans
 
 ## GitHub Actions 發佈
 
-一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release，最後發佈 npm 套件。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。
+一般 push 不發佈；推送 `v*` tag 會在 Windows runner 安裝 Node.js 24、檢查型別、執行測試、打包並驗證 exe／npm 生命週期，全部通過後才建立 GitHub Release，最後發佈 npm 套件。學生從 Release 下載 `VansPod.exe`，同頁提供 `SHA256SUMS.txt`。Release 另附 brotli 壓縮的 `VansPod.exe.br`（約三分之一大小），程式內更新只下載這份，解壓後再比對 `VansPod.exe` 的 SHA-256；SHA256SUMS 沒列出它的舊版 Release 則下載完整 exe。
 
 發版前同步 `package.json`、`package-lock.json` 與 `src/version.ts` 的版本；tag 必須等於 `v` 加版本號，否則流程失敗。以 `0.4.10` 為例：
 
