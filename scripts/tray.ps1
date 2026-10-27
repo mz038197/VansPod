@@ -15,7 +15,7 @@ $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = New-Object System.Drawing.Icon($IconPath)
 $notify.Text = "VansPod"
 $notify.Visible = $true
-$notify.add_Click($openPage)
+$notify.add_MouseClick({ if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { & $openPage } }.GetNewClosure())
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $open = $menu.Items.Add("開啟 VansPod")
