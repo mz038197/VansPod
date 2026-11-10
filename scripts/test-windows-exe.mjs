@@ -17,6 +17,9 @@ const sessions = {
 };
 const sensitive = Object.values(sessions).flatMap(s => [s.key, s.class_name, s.name, s.nickname]);
 function safeAssert(condition, message) { if (!condition) throw new Error(message); }
+// While VS Code Chat is Classroom, settings.json also holds the Classroom Default Model entry (ADR 0012).
+function withoutClassroomDefaultModel(text) { return text.replace(/"chat.defaultModel": "[^"]*",?/, ""); }
+function hasClassroomDefaultModel(text) { return /"chat.defaultModel": "[^"]+"/.test(text); }
 async function body(req) { let text = ''; for await (const chunk of req) text += chunk; return text; }
 function reply(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); }
 
@@ -491,13 +494,13 @@ export async function runLifecycle({ exe }) {
     await post(app, '/switch', { client: 'claude', mode: 'native' });
     safeAssert(await fs.readFile(box.paths.codex, 'utf8') === independentCodex, 'Claude switch changed Codex files');
     safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Native Claude failed to restore original CLI settings');
-    safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Native Claude failed to restore original VS Code settings');
+    { const vscodeText = await fs.readFile(box.paths.vscode, 'utf8'); safeAssert(withoutClassroomDefaultModel(vscodeText) === personalVsCode && hasClassroomDefaultModel(vscodeText), 'Native Claude failed to restore original VS Code settings'); }
     safeAssert(!/aria-label="Claude Code API 協定" disabled/.test(await page(app)), 'Healthy Native Claude adapter was disabled');
     await post(app, '/adapter', { client: 'claude', adapter: 'messages' });
     safeAssert(JSON.parse(await fs.readFile(box.paths.preferences, 'utf8')).routes.claudeCode.adapter === 'messages', 'Native Claude adapter preference was not saved');
     await restart();
     safeAssert(await fs.readFile(box.paths.claude, 'utf8') === personalClaude, 'Mixed restart rewrote Native Claude settings');
-    safeAssert(await fs.readFile(box.paths.vscode, 'utf8') === personalVsCode, 'Mixed restart rewrote Native VS Code Claude settings');
+    { const vscodeText = await fs.readFile(box.paths.vscode, 'utf8'); safeAssert(withoutClassroomDefaultModel(vscodeText) === personalVsCode && hasClassroomDefaultModel(vscodeText), 'Mixed restart rewrote Native VS Code Claude settings'); }
     const mixedHtml = await page(app);
     safeAssert(!/aria-label="Claude Code API 協定" disabled/.test(mixedHtml) && !/aria-label="Codex API 協定" disabled/.test(mixedHtml), 'Healthy mixed modes did not restore');
     await post(app, '/switch', { client: 'claude', mode: 'classroom' });

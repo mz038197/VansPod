@@ -132,7 +132,12 @@ function edit(text: string | null, value: string | undefined): string | undefine
   if (value === undefined) return undefined;
   const at = doc.root.end;
   const rest = text.slice(at);
-  return `${text.slice(0, at)}${eol}  ${line}${doc.members > 0 ? "," : ""}${/^[ \t]*\r?\n/.test(rest) ? "" : eol}${rest}`;
+  const comma = doc.members > 0 ? "," : "";
+  // Match the file's layout so removing the entry later gives back the exact bytes:
+  // its own line in a multi-line object, inline right after `{` in a compact one.
+  return /^[ \t]*\r?\n/.test(rest)
+    ? `${text.slice(0, at)}${eol}  ${line}${comma}${rest}`
+    : `${text.slice(0, at)}${line}${comma}${rest}`;
 }
 
 async function writeDefaultModel(file: string, value: string | undefined): Promise<void> {

@@ -351,3 +351,14 @@ it("keeps a comments-only settings.json and adds the object after it", async () 
   const text = await fs.readFile(target.userSettingsFile, "utf8");
   assert.match(text, /^\/\/ all disabled\n\{\n {2}"chat\.defaultModel": "vcr-auto"\n\}\n$/);
 });
+
+it("round-trips a compact single-line settings.json byte for byte", async () => {
+  for (const original of ['{"editor.fontSize":17,"personal_marker":"preserve-vscode"}', "{}"]) {
+    const target = await withUserSettings(original);
+    const route = createVsCodeRouteSettings(target);
+    await publishLesson(route);
+    assert.equal(JSON.parse(await fs.readFile(target.userSettingsFile, "utf8"))["chat.defaultModel"], "vcr-auto");
+    await route.restore();
+    assert.equal(await fs.readFile(target.userSettingsFile, "utf8"), original);
+  }
+});
