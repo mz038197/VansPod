@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AdapterId } from "./adapters";
+import { applyClassroomDefaultModel, planClassroomDefaultModel, restoreClassroomDefaultModel, type ClassroomDefaultModelRecord } from "./vsCodeDefaultModel";
 
 export type VsCodeProvider = Record<string, unknown> & {
   name?: string;
@@ -15,6 +16,8 @@ type Journal = {
   original: VsCodeProvider | null;
   intended: VsCodeProvider;
   owned: { name: "VCRouter"; vendor: "customendpoint" };
+  /** VS Code 使用者設定 chat.defaultModel 的原值與 VansPod 寫入的值。 */
+  defaultModel?: ClassroomDefaultModelRecord;
 };
 
 function isJournal(value: unknown): value is Journal {
@@ -150,7 +153,27 @@ function intendedProvider(template: VsCodeProvider, adapter: "responses" | "chat
   return provider;
 }
 
-export function createVsCodeRouteSettings(options: { settingsFile: string; journalFile: string; legacyOrigins?: string[] }): VsCodeRouteSettings {
+function firstModelId(provider: VsCodeProvider): string | undefined {
+  for (const model of provider.models ?? []) {
+    const id = (model as { id?: unknown } | null)?.id;
+    if (typeof id === "string" && id) return id;
+  }
+  return undefined;
+}
+
+export function createVsCodeRouteSettings(options: { settingsFile: string; journalFile: string; legacyOrigins?: string[]; userSettingsFile?: string }): VsCodeRouteSettings {
+  // 課堂預設模型是附加功能：讀寫失敗不擋連線或切回 Native，殘留的設定在 VCRouter 消失後也無作用。
+  // undefined = 不需要寫（同一個模型已寫過，或讀不到設定）；journal 裡原有的紀錄要保留。
+  const planDefault = async (intended: VsCodeProvider, journal: Journal | undefined): Promise<ClassroomDefaultModelRecord | undefined> => {
+    const modelId = firstModelId(intended);
+    if (!options.userSettingsFile || !modelId) return undefined;
+    try { return await planClassroomDefaultModel(options.userSettingsFile, modelId, journal?.defaultModel); }
+    catch { return undefined; }
+  };
+  const writeDefault = async (record: ClassroomDefaultModelRecord | undefined): Promise<void> => {
+    if (!options.userSettingsFile || !record) return;
+    try { await applyClassroomDefaultModel(options.userSettingsFile, record); } catch { /* best effort */ }
+  };
   // 只移除仍指向 VansPod 代理的 VCRouter；已被移除或改成別的網址的，視為不再由 VansPod 接管。
   const restore = async (): Promise<{ changed: boolean; kept?: boolean }> => {
     const journal = await readJournal(options.journalFile);
@@ -160,6 +183,9 @@ export function createVsCodeRouteSettings(options: { settingsFile: string; journ
     const next = current.filter(provider => !owned(provider));
     const changed = next.length !== current.length;
     if (changed) await atomicJson(options.settingsFile, next);
+    if (options.userSettingsFile) {
+      try { await restoreClassroomDefaultModel(options.userSettingsFile, journal.defaultModel); } catch { /* best effort */ }
+    }
     await fs.rm(options.journalFile, { force: true });
     return namedIndexes(next).length ? { changed, kept: true } : { changed };
   };
@@ -185,17 +211,24 @@ export function createVsCodeRouteSettings(options: { settingsFile: string; journ
         }
         next = [...current, intended];
       }
-      if (isDeepStrictEqual(next, current)) return { changed: false };
-      const nextJournal: Journal = {
-        version: 1,
-        route: "vsCodeChat",
-        original,
-        intended,
-        owned: { name: "VCRouter", vendor: "customendpoint" },
-      };
-      await atomicJson(options.journalFile, nextJournal);
-      await atomicJson(options.settingsFile, next);
-      return { changed: true };
+      const planned = await planDefault(intended, journal);
+      const defaultModel = planned ?? journal?.defaultModel;
+      const changed = !isDeepStrictEqual(next, current);
+      if (changed || planned) {
+        const nextJournal: Journal = {
+          version: 1,
+          route: "vsCodeChat",
+          original,
+          intended,
+          owned: { name: "VCRouter", vendor: "customendpoint" },
+          ...(defaultModel ? { defaultModel } : {}),
+        };
+        await atomicJson(options.journalFile, nextJournal);
+        if (changed) await atomicJson(options.settingsFile, next);
+      }
+      // chat.defaultModel 不需要重啟 VS Code，所以不算進 changed。
+      await writeDefault(planned);
+      return { changed };
     },
     restore,
     async initializeNative() {

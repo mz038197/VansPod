@@ -64,6 +64,10 @@ _Avoid_: 搜尋模型、把搜尋列進 Session Model Allowlist、學生自己�
 每個 Client Route 各自的本機開關，讓它獨立使用 Classroom 模型或自己的 Native 模型。Classroom 模式以有效的 Classroom Connection 與 Session Model Allowlist 為前提；切換一個 Client Route 不改變另一個。重新開啟沿用各自上次的模式，開啟本身不代表從 Native 切到 Classroom；返回 Native 時恢復該 Client Route 原有的個人設定。
 _Avoid_: 全域強制一起切換、把 Native 當成原本的第三方路由、沒有可用模型仍進入 Classroom
 
+**Classroom Default Model**:
+VS Code Chat 的 Client Route 在 Classroom 模式時，VS Code 使用者設定 `chat.defaultModel` 指向 Session Model Allowlist 的第一個 VCRouter 模型，讓新開的 Chat 對話自動使用課堂模型，不必重啟；已有內容的舊對話維持它自己的模型。VansPod 在 journal 記住學生原本的值，返回 Native 時只有設定仍是 VansPod 寫的值才還原或刪除，學生自己改過就不動；同一個模型已寫過時，重新啟動也不會再蓋掉學生自己改的值。與 classroom-one-click-install 擴充同一套規則（擴充 ADR 0018）。
+_Avoid_: 改 `state.vscdb` 強切目前對話, 透過擴充 URI 代為切換, 返回 Native 時無條件刪掉學生自己設的 `chat.defaultModel`, 把寫入 `chat.defaultModel` 算成需要重啟 VS Code
+
 **Model API Adapter**:
 VansPod 配合 Router 上游模型 API 協定、適配某個 Client Route 請求與回應的方式。每個 Client Route 各自保存選擇，不因其他 Client Route 切換模式、模型或 adapter 而改變。Adapter 是非敏感的個人偏好，在健康 Client Route 為 Native 時也可預先選擇；這只保存偏好，不會切入 Classroom。切回 Native 或清除 Classroom Connection 後仍保留 adapter 偏好，供下次進入 Classroom 時使用。它不同於 Model Switch 的 Classroom／Native 模式選擇。
 _Avoid_: Model Switch、模型本身、opencodex 的 adapter 實例

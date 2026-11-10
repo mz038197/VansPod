@@ -460,6 +460,7 @@ export async function main(instance?: Instance): Promise<void> {
       settingsFile: copilotModelsFile(),
       journalFile: path.join(os.homedir(), ".vanspod", "vscode-route-journal.json"),
       legacyOrigins: [pageUrl.replace(/\/$/, ""), "http://127.0.0.1:47821"],
+      userSettingsFile: routePaths().vsCode,
     }),
     router: { redeemNickname, fetchSessionModels },
     catalog: { fetchCourseCatalog },
